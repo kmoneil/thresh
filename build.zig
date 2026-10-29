@@ -57,6 +57,21 @@ pub fn build(b: *std.Build) void {
         .install_subdir = "corpus",
     }).step);
 
+    // The tests over the corpus: a module of their own, given the corpus's
+    // index (an option path must be a file), so -Dcorpus=false leaves a
+    // test run that needs no Python.
+    if (b.option(bool, "corpus", "Run the tests over the fixture corpus (needs python3; default true)") orelse true) {
+        const corpus_options = b.addOptions();
+        corpus_options.addOptionPath("corpus_index", corpus_dir.path(b, "index.txt"));
+        const corpus_mod = b.createModule(.{
+            .root_source_file = b.path("src/corpus_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        corpus_mod.addOptions("build_options", corpus_options);
+        test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = corpus_mod })).step);
+    }
+
     const lint_paths = [_][]const u8{ "build.zig", "src" };
     var fmt_paths: [lint_paths.len]std.Build.LazyPath = undefined;
     for (lint_paths, &fmt_paths) |p, *lp| lp.* = b.path(p);

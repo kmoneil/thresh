@@ -143,6 +143,8 @@ fn describe(e: anyerror) []const u8 {
 test {
     _ = cli;
     _ = dialect;
+    _ = @import("records.zig");
+    _ = @import("reference.zig");
 }
 
 test "worst keeps the higher status" {

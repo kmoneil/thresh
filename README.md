@@ -21,7 +21,8 @@ Zig 0.17.0.
 
 ```sh
 zig build                 # zig-out/bin/thresh
-zig build test            # unit tests and the command on test/cli inputs
+zig build test            # unit tests, the corpus tests and the command itself
+                          # (-Dcorpus=false skips the corpus, which needs python3)
 zig build fmt-check       # zig fmt --check
 zig build vet             # zigvet, built from the pinned dependency
 zig build corpus          # the fixture corpus, into zig-out/corpus (python3)
