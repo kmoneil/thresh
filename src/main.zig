@@ -145,6 +145,8 @@ test {
     _ = dialect;
     _ = @import("records.zig");
     _ = @import("reference.zig");
+    _ = @import("scan.zig");
+    _ = @import("input.zig");
 }
 
 test "worst keeps the higher status" {

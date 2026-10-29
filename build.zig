@@ -8,6 +8,9 @@ pub fn build(b: *std.Build) void {
     const dateparsa = b.dependency("dateparsa", .{ .target = target, .optimize = optimize });
     const options = b.addOptions();
     options.addOption([]const u8, "version", zon.version);
+    // How many random inputs the scanner and the reference parser are
+    // compared on; the milestone's bar is 1000000.
+    options.addOption(u32, "differential_cases", b.option(u32, "differential", "Random inputs the scanner is checked against the reference parser on (default 20000)") orelse 20_000);
 
     const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -63,6 +66,9 @@ pub fn build(b: *std.Build) void {
     if (b.option(bool, "corpus", "Run the tests over the fixture corpus (needs python3; default true)") orelse true) {
         const corpus_options = b.addOptions();
         corpus_options.addOptionPath("corpus_index", corpus_dir.path(b, "index.txt"));
+        // The module compiles the tests of every file it imports; the
+        // random inputs are the main module's to run.
+        corpus_options.addOption(u32, "differential_cases", 0);
         const corpus_mod = b.createModule(.{
             .root_source_file = b.path("src/corpus_test.zig"),
             .target = target,
@@ -72,7 +78,29 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = corpus_mod })).step);
     }
 
-    const lint_paths = [_][]const u8{ "build.zig", "src" };
+    // The stages' throughput, always ReleaseFast: `zig build bench --
+    // --size BYTES --runs N --profile narrow|wide|text`.
+    const bench_exe = b.addExecutable(.{
+        .name = "bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/main.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{.{ .name = "thresh", .module = b.createModule(.{
+                .root_source_file = b.path("src/root.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+            }) }},
+        }),
+    });
+    const run_bench = b.addRunArtifact(bench_exe);
+    run_bench.addPassthruArgs();
+    // A measurement, not a build product: never served from the cache.
+    run_bench.has_side_effects = true;
+    b.step("bench", "Measure each stage's throughput (-- --size BYTES --runs N --profile P)").dependOn(&run_bench.step);
+    b.step("bench-install", "Install the benchmark binary").dependOn(&b.addInstallArtifact(bench_exe, .{}).step);
+
+    const lint_paths = [_][]const u8{ "build.zig", "src", "bench" };
     var fmt_paths: [lint_paths.len]std.Build.LazyPath = undefined;
     for (lint_paths, &fmt_paths) |p, *lp| lp.* = b.path(p);
     const fmt = b.addFmt(.{ .paths = &fmt_paths, .check = true });

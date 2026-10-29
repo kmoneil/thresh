@@ -6,7 +6,10 @@ const std = @import("std");
 const build_options = @import("build_options");
 const Dialect = @import("dialect.zig").Dialect;
 const reference = @import("reference.zig");
-const Field = @import("records.zig").Field;
+const records = @import("records.zig");
+const Field = records.Field;
+const Record = records.Record;
+const Scanner = records.Scanner;
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -102,47 +105,108 @@ test "the reference parser finds every corpus field where the generator put it" 
         defer fx.deinit(gpa);
         const want = try corpus.sibling(io, gpa, name, ".fields");
         defer gpa.free(want);
-        total_fields += try expectFields(gpa, fx, want);
+        const e = fx.expected.value;
+        var p: reference.Parser = .init(fx.bytes, e.dialect(), .{ .start = if (e.bom) 3 else 0 });
+        var fields: std.ArrayList(Field) = .empty;
+        defer fields.deinit(gpa);
+        var check: FieldCheck = .init(name, want);
+        while (try p.next(gpa, &fields)) |rec| try check.add(rec, fields.items);
+        total_fields += try check.finish();
     }
     try testing.expect(files >= 40);
     try testing.expect(total_fields > 50_000);
 }
 
-/// Parses fx under its expected dialect and compares every field with
-/// the .fields lines, "record column start length flags".
-fn expectFields(gpa: Allocator, fx: Fixture, want: []const u8) !usize {
-    const e = fx.expected.value;
-    var p: reference.Parser = .init(fx.bytes, e.dialect(), .{ .start = if (e.bom) 3 else 0 });
-    var fields: std.ArrayList(Field) = .empty;
-    defer fields.deinit(gpa);
-    var lines = std.mem.tokenizeScalar(u8, want, '\n');
-    var record: u64 = 0;
-    var count: usize = 0;
-    while (try p.next(gpa, &fields)) |rec| : (record += 1) {
+test "the scanner finds every corpus field from the index alone, whole or in pieces" {
+    const io = testing.io;
+    const gpa = testing.allocator;
+    var corpus: Corpus = try .open(io, gpa);
+    defer corpus.close(io, gpa);
+    var it = corpus.names();
+    var indexed: u64 = 0;
+    while (it.next()) |name| {
+        var fx = try corpus.load(io, gpa, name);
+        defer fx.deinit(gpa);
+        const want = try corpus.sibling(io, gpa, name, ".fields");
+        defer gpa.free(want);
+        const e = fx.expected.value;
+        // Whole, as a mapped file is; then 4 KiB at a time, as a buffered
+        // read hands it over, with a window smaller than most text fields.
+        for ([_]usize{ 0, 4096 }) |piece| {
+            var s: Scanner = try .init(gpa, e.dialect(), .{
+                .reference = .{ .start = if (e.bom) 3 else 0 },
+                .window = if (piece == 0) 1 << 20 else 1024,
+            });
+            defer s.deinit();
+            var have = if (piece == 0) fx.bytes.len else @min(piece, fx.bytes.len);
+            s.feed(fx.bytes[0..have], 0, have == fx.bytes.len);
+            var fields: std.ArrayList(Field) = .empty;
+            defer fields.deinit(gpa);
+            var check: FieldCheck = .init(name, want);
+            while (true) {
+                fields.clearRetainingCapacity();
+                switch (try s.next(&fields)) {
+                    .record => |rec| try check.add(rec, fields.items),
+                    .need_more => {
+                        const keep: usize = @intCast(s.keepFrom());
+                        have = @min(have + piece, fx.bytes.len);
+                        s.feed(fx.bytes[keep..have], keep, have == fx.bytes.len);
+                    },
+                    .end => break,
+                }
+            }
+            _ = try check.finish();
+            if (s.stats.scalar != 0) {
+                std.debug.print("{s}: {d} records left the index\n", .{ name, s.stats.scalar });
+                return error.TestUnexpectedResult;
+            }
+            indexed += s.stats.indexed;
+        }
+    }
+    try testing.expect(indexed > 10_000);
+}
+
+/// Compares records, as a parser emits them, with a .fields file's lines,
+/// "record column start length flags".
+const FieldCheck = struct {
+    name: []const u8,
+    lines: std.mem.TokenIterator(u8, .scalar),
+    record: u64 = 0,
+    count: usize = 0,
+
+    fn init(name: []const u8, want: []const u8) FieldCheck {
+        return .{ .name = name, .lines = std.mem.tokenizeScalar(u8, want, '\n') };
+    }
+
+    fn add(c: *FieldCheck, rec: Record, fields: []const Field) !void {
+        defer c.record += 1;
         if (rec.problem) |pr| {
-            std.debug.print("{s}: record {d}: {t}\n", .{ fx.name, record, pr });
+            std.debug.print("{s}: record {d}: {t}\n", .{ c.name, c.record, pr });
             return error.TestUnexpectedResult;
         }
-        for (fields.items, 0..) |f, col| {
-            const line = lines.next() orelse {
-                std.debug.print("{s}: record {d} column {d}: the generator wrote no such field\n", .{ fx.name, record, col });
+        for (fields, 0..) |f, col| {
+            const line = c.lines.next() orelse {
+                std.debug.print("{s}: record {d} column {d}: the generator wrote no such field\n", .{ c.name, c.record, col });
                 return error.TestUnexpectedResult;
             };
             var nums: [5]u64 = undefined;
             var parts = std.mem.tokenizeScalar(u8, line, ' ');
             for (&nums) |*n| n.* = try std.fmt.parseInt(u64, parts.next().?, 10);
             const flags: u64 = @as(u64, @intFromBool(f.flags.quoted)) | @as(u64, @intFromBool(f.flags.needs_unescape)) << 1;
-            const got = [5]u64{ record, col, f.start, f.len, flags };
+            const got = [5]u64{ c.record, col, f.start, f.len, flags };
             if (!std.mem.eql(u64, &nums, &got)) {
-                std.debug.print("{s}: want (record column start length flags) {any}, got {any}\n", .{ fx.name, nums, got });
+                std.debug.print("{s}: want (record column start length flags) {any}, got {any}\n", .{ c.name, nums, got });
                 return error.TestUnexpectedResult;
             }
-            count += 1;
+            c.count += 1;
         }
     }
-    if (lines.next()) |line| {
-        std.debug.print("{s}: the parser stopped before the generator's field {s}\n", .{ fx.name, line });
-        return error.TestUnexpectedResult;
+
+    fn finish(c: *FieldCheck) !usize {
+        if (c.lines.next()) |line| {
+            std.debug.print("{s}: the parser stopped before the generator's field {s}\n", .{ c.name, line });
+            return error.TestUnexpectedResult;
+        }
+        return c.count;
     }
-    return count;
-}
+};

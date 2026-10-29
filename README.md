@@ -12,8 +12,10 @@ thresh convert  <file>... --to csv|arrow        writes output; infers types if n
 thresh run      <file>... --schema s.json --to arrow --out dir/
 ```
 
-Status: early. `sniff` runs and answers RFC 4180 for every file; the other
-commands parse their options and stop. `thresh --help` lists every option.
+Status: early. The parser is in (a SIMD structural index checked against a
+scalar reference parser); `sniff` answers RFC 4180 for every file until the
+sniffer lands, and the other commands parse their options and stop.
+`thresh --help` lists every option.
 
 ## Build
 
@@ -26,6 +28,7 @@ zig build test            # unit tests, the corpus tests and the command itself
 zig build fmt-check       # zig fmt --check
 zig build vet             # zigvet, built from the pinned dependency
 zig build corpus          # the fixture corpus, into zig-out/corpus (python3)
+zig build bench           # MB/s per parsing stage, ReleaseFast (-- --size BYTES)
 zig build run -- sniff a.csv
 ```
 
