@@ -41,6 +41,22 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&r.step);
     }
 
+    // The fixture corpus, test/gen/corpus.py, written into the cache and
+    // checked against test/gen/MANIFEST, so a change to what it writes shows
+    // up as a diff of that file. Needs python3 on PATH. `zig build corpus`
+    // also installs it into zig-out/corpus to look at.
+    const corpus = b.addSystemCommand(&.{ "python3", "-I" });
+    corpus.addFileArg(b.path("test/gen/corpus.py"));
+    const corpus_dir = corpus.addOutputDirectoryArg("corpus");
+    corpus.addArg("--check");
+    corpus.addFileArg(b.path("test/gen/MANIFEST"));
+    const corpus_step = b.step("corpus", "Generate the fixture corpus into zig-out/corpus, checked against test/gen/MANIFEST");
+    corpus_step.dependOn(&b.addInstallDirectory(.{
+        .source_dir = corpus_dir,
+        .install_dir = .prefix,
+        .install_subdir = "corpus",
+    }).step);
+
     const lint_paths = [_][]const u8{ "build.zig", "src" };
     var fmt_paths: [lint_paths.len]std.Build.LazyPath = undefined;
     for (lint_paths, &fmt_paths) |p, *lp| lp.* = b.path(p);

@@ -31,6 +31,9 @@ jobs:
       # source, so a new zigvet release cannot fail an unchanged commit.
       - name: zigvet
         run: zig build vet
+      # The generator must still write exactly what test/gen/MANIFEST says.
+      - name: fixture corpus
+        run: zig build corpus
 
   test:
     name: test (${{ matrix.os }})
