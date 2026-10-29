@@ -1,0 +1,40 @@
+# thresh
+
+One static Zig binary that takes any delimited file, works out its dialect,
+types and validates every column against a schema, and writes normalized
+RFC 4180 CSV or Arrow IPC, with a machine-readable report.
+
+```
+thresh sniff    <file>...                       dialect, confidence, header verdict
+thresh infer    <file>... [--out schema.json]   two-pass type inference, writes a schema
+thresh validate <file>... --schema s.json       checks only; report + optional reject file
+thresh convert  <file>... --to csv|arrow        writes output; infers types if no --schema
+thresh run      <file>... --schema s.json --to arrow --out dir/
+```
+
+Status: early. `sniff` runs and answers RFC 4180 for every file; the other
+commands parse their options and stop. `thresh --help` lists every option.
+
+## Build
+
+Zig 0.17.0.
+
+```sh
+zig build                 # zig-out/bin/thresh
+zig build test            # unit tests and the command on test/cli inputs
+zig build fmt-check       # zig fmt --check
+zig build vet             # zigvet, built from the pinned dependency
+zig build run -- sniff a.csv
+```
+
+Dates go through [dateparsa](https://github.com/kmoneil/dateparsa.zig), and
+[zigvet](https://github.com/kmoneil/zigvet) checks the sources for code Zig
+compiles that is almost certainly wrong.
+
+Exit status: 0 every file passed; 1 a file failed validation but every file
+was processed; 2 a file could not be read or its dialect could not be
+settled; 3 a usage error.
+
+## License
+
+Apache-2.0; see [LICENSE](LICENSE).

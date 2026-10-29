@@ -1,0 +1,23 @@
+.{
+    .name = .thresh,
+    .version = "0.0.0",
+    .fingerprint = 0x4062707b75bddaa9, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .dateparsa = .{
+            .url = "git+https://github.com/kmoneil/dateparsa.zig?ref=v0.4.1#f5ebd0bc0a8250116999f302eabdf3fcf1e4a523",
+            .hash = "dateparsa-0.4.1-Z2ygeLADCgA1CWNMG-CCGG6JyWHe7fEkV4_4Qp1WtAmU",
+        },
+        .zigvet = .{
+            .url = "git+https://github.com/kmoneil/zigvet?ref=v0.15.0#90224012ad3566af633de8ba0636b9bc437c61b6",
+            .hash = "zigvet-0.15.0-4vsyPElzCwACIo9CYDziq9k-0vKpJe_WlowTL3tFkAEw",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+        "README.md",
+    },
+}
