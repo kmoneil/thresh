@@ -240,6 +240,14 @@ const cli_checks = [_]struct {
         ,
         .stderr = "infer test/cli/orders.csv  2 rows  3 columns\n",
     },
+    .{
+        .args = &.{ "convert", "test/cli/orders.csv", "--to", "csv", "--out", ".zig-cache/cli-out", "--json" },
+        .stdout = "{\"file\":\"test/cli/orders.csv\",\"result\":\"pass\",\"rows\":2,\"rows_rejected\":0,\"problem\":null}\n",
+    },
+    .{
+        .args = &.{ "run", "test/cli/orders.csv", "--columns", "id:int64,amount:int64", "--to", "csv", "--out", ".zig-cache/cli-out", "--strict", "--quiet" },
+        .code = 1,
+    },
     .{ .args = &.{"--help"}, .stdout = null },
     .{ .args = &.{"--version"}, .stdout = "thresh " ++ zon.version ++ "\n" },
 };

@@ -22,6 +22,7 @@ const Field = records.Field;
 const Record = records.Record;
 const Dialect = @import("dialect.zig").Dialect;
 const csv = @import("write/csv.zig");
+const builders = @import("builders.zig");
 
 pub const Ragged = enum { reject, pad, truncate };
 
@@ -80,6 +81,11 @@ pub const Validator = struct {
     /// --strict made a ragged row fail the file.
     strict_failure: bool = false,
     reject: ?*Io.Writer = null,
+    /// Where accepted rows go, for the writers.
+    batch: ?*builders.Batch = null,
+    /// The row's text and value per schema column, for the batch.
+    raw: [][]const u8,
+    cells: []?types.Value,
     reject_header_written: bool = false,
     scratch: std.ArrayList(u8) = .empty,
     errors: std.ArrayList(u8) = .empty,
@@ -90,6 +96,8 @@ pub const Validator = struct {
         @memset(stats, .{});
         const mapping = try gpa.alloc(?u32, s.columns.len);
         for (mapping, 0..) |*m, i| m.* = @intCast(i);
+        const raw = try gpa.alloc([]const u8, s.columns.len);
+        const cells = try gpa.alloc(?types.Value, s.columns.len);
         const dates = try gpa.alloc(?types.date.Column, s.columns.len);
         for (dates, s.columns) |*dc, c| dc.* = switch (c.type) {
             .date, .timestamp => .init(c.format, c.day_first or options.day_first, options.strict),
@@ -108,6 +116,8 @@ pub const Validator = struct {
             .names = &.{},
             .stats = stats,
             .dates = dates,
+            .raw = raw,
+            .cells = cells,
         };
         const a = v.arena.allocator();
         const ns = try a.alloc([]const u8, s.columns.len);
@@ -121,6 +131,8 @@ pub const Validator = struct {
         v.gpa.free(v.stats);
         v.gpa.free(v.mapping);
         v.gpa.free(v.dates);
+        v.gpa.free(v.raw);
+        v.gpa.free(v.cells);
         v.rejected_sample.deinit(v.gpa);
         v.structural.deinit(v.gpa);
         v.scratch.deinit(v.gpa);
@@ -207,9 +219,15 @@ pub const Validator = struct {
             try v.errors.print(v.gpa, "*:{s}", .{r.text()});
             return v.rejectRow(rec, fields, data, base);
         }
-        for (v.schema.columns, v.mapping, v.stats, v.dates) |*c, m, *st, *dc| {
+        // Every value at once, so none overwrites another: the batch keeps
+        // them all.
+        try records.values(v.gpa, fields, data, base, v.dialect, &v.scratch, &v.values);
+        for (v.schema.columns, v.mapping, v.stats, v.dates, v.raw, v.cells) |*c, m, *st, *dc, *raw, *cell| {
+            cell.* = null;
+            raw.* = "";
             const i = m orelse continue;
-            const value = if (i < fields.len) try v.valueOf(fields[i], data, base) else "";
+            const value = if (i < v.values.items.len) v.values.items[i] else "";
+            raw.* = value;
             const r: Reason = if (v.isNull(c, value)) r: {
                 if (c.nullable) {
                     st.nulls += 1;
@@ -217,9 +235,18 @@ pub const Validator = struct {
                 }
                 break :r .null_value;
             } else if (dc.*) |*d| switch (d.read(value)) {
-                .ok => continue,
+                .ok => |t| {
+                    cell.* = if (c.type == .date) .{ .date = types.date.days(t) } else .{ .timestamp = types.date.micros(t) };
+                    continue;
+                },
                 .bad => |p| types.dateReason(p),
-            } else types.check(c, value, v.options.encoding) orelse continue;
+            } else switch (types.read(c, value, v.options.encoding)) {
+                .ok => |x| {
+                    cell.* = x;
+                    continue;
+                },
+                .bad => |r| r,
+            };
             st.mismatches += 1;
             if (st.samples.items.len < max_samples) try st.samples.append(v.gpa, .{
                 .row = rec.line,
@@ -229,7 +256,8 @@ pub const Validator = struct {
             if (v.errors.items.len > 0) try v.errors.append(v.gpa, ';');
             try v.errors.print(v.gpa, "{s}:{s}", .{ c.name, r.text() });
         }
-        if (v.errors.items.len > 0) try v.rejectRow(rec, fields, data, base);
+        if (v.errors.items.len > 0) return v.rejectRow(rec, fields, data, base);
+        if (v.batch) |b| try b.append(v.raw, v.cells);
     }
 
     fn isNull(v: *const Validator, c: *const Column, value: []const u8) bool {

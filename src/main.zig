@@ -97,10 +97,11 @@ fn execute(env: Env, args: []const []const u8, out: *Io.Writer, err: *Io.Writer)
         .sniff => sniff(env, cfg, out, err),
         .validate => validateFiles(env, &cfg, out, err),
         .infer => inferFiles(env, &cfg, out, err),
-        else => {
-            try err.print("thresh: {t} is not built yet\n", .{cfg.command});
-            return .usage;
-        },
+        .run => validateFiles(env, &cfg, out, err),
+        .convert => if (cfg.schema != null or cfg.columns != null)
+            validateFiles(env, &cfg, out, err)
+        else
+            convertInferred(env, &cfg, out, err),
     };
 }
 
@@ -182,6 +183,58 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
     return code;
 }
 
+fn outputOf(cfg: *const cli.Config) ?worker.OutputPlan {
+    return switch (cfg.command) {
+        .convert, .run => .{ .to = cfg.to.?, .dir = cfg.out.? },
+        else => null,
+    };
+}
+
+/// convert with no schema: each file's own, inferred from all of it
+/// (pass 1), then the file read again and written through validation
+/// (pass 2), the page cache making the second read cheap.
+fn convertInferred(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
+    const a = env.arena;
+    const no_schema: schema.Schema = .{ .columns = &.{} };
+    const nulls = try worker.nullsOf(a, &no_schema, cfg.nulls);
+    var outcomes: std.ArrayList(report.Outcome) = .empty;
+    var code: Exit = .ok;
+    for (cfg.files) |path| {
+        const inferred = try worker.inferFile(.{ .io = env.io, .gpa = env.gpa }, cfg, nulls, path, a);
+        var o = inferred.outcome;
+        if (o.result != .@"error") {
+            const s = try a.create(schema.Schema);
+            s.* = .{
+                .columns = try infer.columnsOf(a, inferred.columns),
+                .nulls = nulls,
+                .match = if (inferred.header) .name else .position,
+            };
+            const plan: worker.Plan = .{
+                .cfg = cfg,
+                .schema = s,
+                .nulls = nulls,
+                .threshold = cfg.threshold orelse 1.0,
+                .output = outputOf(cfg),
+            };
+            o = try worker.validateFile(.{ .io = env.io, .gpa = env.gpa }, plan, path, a);
+        }
+        try outcomes.append(a, o);
+        code = code.worst(@fromBackingInt(o.result.exitCode()));
+        if (cfg.json) {
+            try report.writeJsonLine(out, o);
+        } else if (!cfg.quiet) {
+            try report.writeLine(err, o);
+        }
+    }
+    if (cfg.report_dir) |dir| {
+        var sink: worker.Sink = try .create(env.io, env.gpa, dir, "summary", ".json");
+        defer sink.close(env.io, env.gpa);
+        try report.writeSummary(&sink.writer.interface, outcomes.items, @backingInt(code));
+        try sink.writer.interface.flush();
+    }
+    return code;
+}
+
 /// validate: each file against the schema, a line apiece on stderr (or a
 /// JSON object on stdout under --json), reports and reject files as asked.
 fn validateFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
@@ -193,6 +246,7 @@ fn validateFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Wri
         .schema = s,
         .nulls = try worker.nullsOf(env.arena, s, cfg.nulls),
         .threshold = cfg.threshold orelse s.threshold orelse 1.0,
+        .output = outputOf(cfg),
     };
     var outcomes: std.ArrayList(report.Outcome) = .empty;
     var code: Exit = .ok;

@@ -237,6 +237,7 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
         runners = .{ null, null };
         for (delimiters.slice()) |delim| {
             var best_for_delim: ?Scored = null;
+            var best_clean: ?Scored = null;
             for (prior_quotes) |quote| {
                 if (pins.quote) |pq| switch (pq) {
                     .none => if (quote != null) continue,
@@ -259,8 +260,16 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
                     };
                     const c = try score(gpa, sample[start..], whole, d, options, &parser_fields, &counts);
                     if (best_for_delim == null or c.score > best_for_delim.?.score + 1e-9) best_for_delim = c;
+                    if (c.clean_quoted and (best_clean == null or c.score > best_clean.?.score + 1e-9)) best_clean = c;
                 }
             }
+            // A quote whose parse is clean beats reading its characters as
+            // data: a file whose every row quotes two fields holding the
+            // delimiter splits into a consistent, wider shape without them,
+            // and the wider shape scores higher.
+            if (best_clean) |bc| if (best_for_delim) |b| if (bc.consistency >= b.consistency) {
+                best_for_delim = bc;
+            };
             const c = best_for_delim orelse continue;
             if (!any or c.score > best.score + 1e-9) {
                 if (any) pushRunner(&runners, .{ .delimiter = best.dialect.delimiter, .score = best.score });
@@ -388,6 +397,10 @@ const Scored = struct {
     consistency: f64,
     mode: usize,
     records: usize,
+    /// The parse quoted at least one field, and left no quote character
+    /// as data and no record broken: the quote explains every one of its
+    /// characters in the sample.
+    clean_quoted: bool = false,
 };
 
 /// One candidate's score over its first options.records complete records:
@@ -407,6 +420,8 @@ fn score(
     counts.clearRetainingCapacity();
     var p: reference.Parser = .init(sample, d, .{});
     var unbalanced = false;
+    var quoted_fields: usize = 0;
+    var dirty = false;
     while (counts.items.len < options.records) {
         const rec = try p.next(gpa, fields) orelse break;
         if (!whole and rec.end == sample.len) {
@@ -418,6 +433,8 @@ fn score(
             }
         }
         if (rec.problem == .unterminated_quote) unbalanced = true;
+        if (rec.problem != null or rec.stray_quotes > 0) dirty = true;
+        for (fields.items) |f| quoted_fields += @intFromBool(f.flags.quoted);
         // A broken record is no field count at all: 0 never wins the mode.
         try counts.append(gpa, if (rec.problem != null) 0 else @intCast(fields.items.len));
     }
@@ -444,7 +461,14 @@ fn score(
     if (options.schema) |cols| if (mode == cols.len) {
         s += 1.0;
     };
-    return .{ .dialect = d, .score = s, .consistency = consistency, .mode = mode, .records = n };
+    return .{
+        .dialect = d,
+        .score = s,
+        .consistency = consistency,
+        .mode = mode,
+        .records = n,
+        .clean_quoted = d.quote != null and quoted_fields > 0 and !dirty and !unbalanced,
+    };
 }
 
 const Shape = struct { newline: Dialect.Newline, mixed: bool, stray_quotes: bool };
@@ -633,6 +657,14 @@ test "sniff picks backslash escaping when the escaped quotes need it" {
     const data = "id,text\n1,\"say \\\"hi, there\\\" now\"\n2,\"plain\"\n3,\"a \\\"b, c\\\" d\"\n";
     const v = try sniffed(data, .{});
     try std.testing.expectEqual(Dialect.Escape.backslash, v.dialect.escape);
+}
+
+test "a clean quote beats a wider shape that reads its characters as data" {
+    const data = "id,price,qty,vat\n1,\"7408,07\",261,\"21,0\"\n2,\"1587,65\",323,\"19,0\"\n3,\"5714,51\",447,\"20,0\"\n";
+    const v = try sniffed(data, .{});
+    try std.testing.expectEqual(@as(?u8, '"'), v.dialect.quote);
+    try std.testing.expectEqual(@as(usize, 4), v.fields);
+    try std.testing.expect(v.dialect.header);
 }
 
 test "ragged records are low confidence, not a wrong high" {

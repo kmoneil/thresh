@@ -14,6 +14,8 @@ const Schema = schema_mod.Schema;
 const validate = @import("validate.zig");
 const report = @import("report.zig");
 const infer = @import("infer.zig");
+const builders = @import("builders.zig");
+const csv = @import("write/csv.zig");
 
 pub const Env = struct {
     io: Io,
@@ -30,6 +32,89 @@ pub const Plan = struct {
     threshold: f64,
     /// Leave timing out of reports (tests).
     timing: bool = true,
+    /// convert and run: where the accepted rows go, and as what.
+    output: ?OutputPlan = null,
+};
+
+pub const OutputPlan = struct {
+    to: cli.Format,
+    dir: []const u8,
+};
+
+/// A file's output: written to a dot-named temporary beside where it goes
+/// and renamed there when the file is done, so a crash or a Ctrl-C leaves
+/// no partial file under the real name.
+const Output = struct {
+    final_path: []const u8,
+    tmp_path: []const u8,
+    sink: Sink,
+    batch: builders.Batch,
+    format: union(enum) { csv: csv.Writer },
+
+    fn create(env: Env, arena: Allocator, plan: OutputPlan, cfg: *const cli.Config, s: *const Schema, source: []const u8) !Output {
+        const base = std.fs.path.basename(source);
+        const stem = base[0 .. std.mem.findScalarLast(u8, base, '.') orelse base.len];
+        const ext: []const u8 = switch (plan.to) {
+            .csv => ".csv",
+            .arrow => if (cfg.arrow_file) ".arrow" else ".arrows",
+            .parquet => unreachable,
+        };
+        const dir = std.mem.trimEnd(u8, plan.dir, "/");
+        try Io.Dir.cwd().createDirPath(env.io, dir);
+        const final_path = try std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ dir, stem, ext });
+        const tmp_path = try std.fmt.allocPrint(arena, "{s}/.{s}{s}.tmp", .{ dir, stem, ext });
+        var sink: Sink = try .open(env.io, env.gpa, tmp_path);
+        errdefer sink.close(env.io, env.gpa);
+        var batch: builders.Batch = try .init(env.gpa, s, encodingOf(cfg));
+        errdefer batch.deinit();
+        return .{
+            .final_path = final_path,
+            .tmp_path = tmp_path,
+            .sink = sink,
+            .batch = batch,
+            .format = switch (plan.to) {
+                .csv => .{ .csv = .{
+                    .out = undefined,
+                    .options = .{ .delimiter = cfg.out_delimiter, .newline = cfg.out_newline },
+                    .normalize_dates = cfg.normalize_dates,
+                } },
+                else => unreachable,
+            },
+        };
+    }
+
+    /// Writes what the batch holds, then empties it.
+    fn header(o: *Output, s: *const Schema, arena: Allocator) !void {
+        const names = try arena.alloc([]const u8, s.columns.len);
+        for (names, s.columns) |*n, c| n.* = c.name;
+        switch (o.format) {
+            .csv => |*w| {
+                w.out = &o.sink.writer.interface;
+                try w.header(names);
+            },
+        }
+    }
+
+    fn write(o: *Output) !void {
+        switch (o.format) {
+            .csv => |*w| {
+                w.out = &o.sink.writer.interface;
+                try w.batch(&o.batch);
+            },
+        }
+        o.batch.reset();
+    }
+
+    /// Flushes and closes the file, and renames it into place, or with
+    /// keep false deletes it.
+    fn finish(o: *Output, env: Env, keep: bool) !void {
+        defer o.batch.deinit();
+        if (keep) try o.sink.writer.interface.flush();
+        o.sink.close(env.io, env.gpa);
+        if (keep) {
+            try Io.Dir.cwd().rename(o.tmp_path, Io.Dir.cwd(), o.final_path, env.io);
+        } else Io.Dir.cwd().deleteFile(env.io, o.tmp_path) catch {};
+    }
 };
 
 /// The global nulls: the schema's, then --null's comma-separated ones.
@@ -114,6 +199,14 @@ pub fn validateFile(env: Env, plan: Plan, path: []const u8, arena: Allocator) !r
     defer if (reject) |*r| r.close(io, gpa);
     if (reject) |*r| v.reject = &r.writer.interface;
 
+    var output: ?Output = if (plan.output) |op| try .create(env, arena, op, cfg, plan.schema, path) else null;
+    var output_done = false;
+    defer if (output) |*o| if (!output_done) o.finish(env, false) catch {};
+    if (output) |*o| {
+        v.batch = &o.batch;
+        try o.header(plan.schema, arena);
+    }
+
     var s: records.Scanner = try .init(gpa, verdict.dialect, .{ .reference = .{
         .start = verdict.start,
         .keep_empty = cfg.keep_empty,
@@ -136,6 +229,7 @@ pub fn validateFile(env: Env, plan: Plan, path: []const u8, arena: Allocator) !r
             }
             try v.record(batch.records.items[i], fields, in.data(), in.base);
         }
+        if (output) |*o| try o.write();
         switch (state) {
             .full => {},
             .end => break,
@@ -152,6 +246,13 @@ pub fn validateFile(env: Env, plan: Plan, path: []const u8, arena: Allocator) !r
     out.rows = v.rows;
     out.rows_rejected = v.rejected;
     out.result = if (v.passed()) .pass else .fail;
+    if (output) |*o| {
+        // A failing file's good rows are still written, unless --strict.
+        const keep = out.result == .pass or !cfg.strict;
+        output_done = true;
+        try o.finish(env, keep);
+        if (keep) out.written = o.final_path;
+    }
     if (v.structural.items.len > 0) out.problem = try arena.dupe(u8, v.structural.items[0]);
     details.validator = &v;
     if (reject) |*r| {
@@ -194,9 +295,14 @@ pub const Sink = struct {
         var name_buf: [std.fs.max_path_bytes]u8 = undefined;
         const name = try sinkPath(&name_buf, dir, source, ext);
         try Io.Dir.cwd().createDirPath(io, dir);
+        return open(io, gpa, name);
+    }
+
+    /// The file at path, created, behind a 1 MiB buffer.
+    pub fn open(io: Io, gpa: Allocator, path: []const u8) !Sink {
         const buf = try gpa.alloc(u8, 1 << 20);
         errdefer gpa.free(buf);
-        const file = try Io.Dir.cwd().createFile(io, name, .{});
+        const file = try Io.Dir.cwd().createFile(io, path, .{});
         return .{ .file = file, .writer = file.writer(io, buf), .buf = buf };
     }
 
@@ -296,7 +402,7 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
         for (0..batch.len()) |i| {
             if (f.rows >= limit) break :read;
             if (batch.records.items[i].problem != null) continue;
-            try valuesOf(gpa, batch.recordFields(i), in.data(), in.base, verdict.dialect, &scratch, &values);
+            try records.values(gpa, batch.recordFields(i), in.data(), in.base, verdict.dialect, &scratch, &values);
             if (header_pending) {
                 header_pending = false;
                 try f.header(values.items, values.items.len);
@@ -317,34 +423,4 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
     out.rows = f.rows;
     out.result = .pass;
     return .{ .outcome = out, .columns = f.columns.items, .header = verdict.dialect.header };
-}
-
-/// A record's values with escapes undone, into values; scratch holds the
-/// unescaped ones and is sized first, so no slice into it moves.
-fn valuesOf(
-    gpa: Allocator,
-    fields: []const records.Field,
-    data: []const u8,
-    base: u64,
-    d: dialect.Dialect,
-    scratch: *std.ArrayList(u8),
-    values: *std.ArrayList([]const u8),
-) Allocator.Error!void {
-    values.clearRetainingCapacity();
-    var need: usize = 0;
-    for (fields) |f| if (f.flags.needs_unescape) {
-        need += f.len;
-    };
-    try scratch.resize(gpa, need);
-    var at: usize = 0;
-    for (fields) |f| {
-        const local: records.Field = .{ .start = f.start - base, .len = f.len, .flags = f.flags };
-        if (!f.flags.needs_unescape) {
-            try values.append(gpa, local.raw(data));
-            continue;
-        }
-        const v = local.value(data, d, scratch.items[at..][0..f.len]);
-        at += f.len;
-        try values.append(gpa, v);
-    }
 }

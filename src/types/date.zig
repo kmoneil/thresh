@@ -89,6 +89,22 @@ pub const Column = struct {
     }
 };
 
+/// The date as days since 1970-01-01, as written (its offset is ignored).
+pub fn days(t: dp.DateTime) i32 {
+    return @intCast(dp.DateTime.daysFromCivil(t.year, t.month, t.day));
+}
+
+/// Days since 1970-01-01 as a civil date.
+pub fn civil(d: i64) dp.DateTime.CivilDate {
+    return dp.DateTime.civilFromDays(d);
+}
+
+/// The instant as microseconds since 1970-01-01T00:00:00Z.
+pub fn micros(t: dp.DateTime) i64 {
+    const e = t.toEpoch();
+    return e.seconds * 1_000_000 + @divTrunc(@as(i64, e.nanosecond), 1000);
+}
+
 fn problemOf(e: dp.ParseError) Problem {
     return switch (e) {
         error.NoBaseTime => .relative,

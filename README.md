@@ -14,10 +14,10 @@ thresh run      <file>... --schema s.json --to arrow --out dir/
 
 Status: early. In: the parser (a SIMD structural index checked against a
 scalar reference parser), the sniffer, and validation of every type, dates
-and timestamps through dateparsa, and inference: `thresh sniff`, `thresh
-infer` and `thresh validate`, with per-file JSON reports, summary.json and
-reject files. `convert` and `run` parse their options and stop. `thresh
---help` lists every option.
+and timestamps through dateparsa, inference, and RFC 4180 CSV output:
+`thresh sniff`, `infer`, `validate`, and `convert` and `run --to csv`, with
+per-file JSON reports, summary.json and reject files. Arrow output is
+next. `thresh --help` lists every option.
 
 ## Build
 

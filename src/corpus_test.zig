@@ -414,3 +414,89 @@ test "infer then validate: every clean corpus file passes against its own inferr
         try testing.expect(kinds.get(k) > 0);
     }
 }
+
+test "convert --to csv: every corpus file comes out RFC 4180, re-sniffs as it, and holds the same fields" {
+    const io = testing.io;
+    const gpa = testing.allocator;
+    const corpus_dir = std.fs.path.dirname(build_options.corpus_index).?;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [256]u8 = undefined;
+    const out_dir = try std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}/out", .{tmp.sub_path});
+    var corpus: Corpus = try .open(io, gpa);
+    defer corpus.close(io, gpa);
+    var it = corpus.names();
+    while (it.next()) |name| {
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var fx = try corpus.load(io, gpa, name);
+        defer fx.deinit(gpa);
+        const e = fx.expected.value;
+        const latin1 = std.mem.eql(u8, e.encoding, "latin1");
+        const path = try std.fmt.allocPrint(a, "{s}/{s}", .{ corpus_dir, name });
+        var cfg: cli.Config = .{ .command = .convert, .encoding = if (latin1) .latin1 else .utf8, .to = .csv, .out = out_dir };
+        const nulls: []const []const u8 = &.{""};
+        const inferred = try worker.inferFile(.{ .io = io, .gpa = gpa }, &cfg, nulls, path, a);
+        const s: schema.Schema = .{ .columns = try infer.columnsOf(a, inferred.columns), .match = if (inferred.header) .name else .position };
+        const plan: worker.Plan = .{
+            .cfg = &cfg,
+            .schema = &s,
+            .nulls = nulls,
+            .threshold = 1.0,
+            .timing = false,
+            .output = .{ .to = .csv, .dir = out_dir },
+        };
+        const o = try worker.validateFile(.{ .io = io, .gpa = gpa }, plan, path, a);
+        try testing.expectEqual(report.Result.pass, o.result);
+        const written = try Io.Dir.cwd().readFileAlloc(io, o.written.?, a, .unlimited);
+
+        const v = try dialect.sniff(gpa, written, true, .{});
+        if (!std.meta.eql(v.dialect, Dialect{ .delimiter = ',', .quote = '"', .escape = .doubled, .newline = .lf, .header = true }) or v.confidence != .high) {
+            std.debug.print("{s}: the output sniffs as {f} ({t})\n", .{ name, v.dialect, v.confidence });
+            return error.TestUnexpectedResult;
+        }
+
+        // The output's records, header aside, against the input's.
+        var want = try recordsOf(a, fx.bytes, e.dialect(), if (e.bom) 3 else 0, latin1);
+        if (e.header) want = want[1..];
+        const got = (try recordsOf(a, written, .rfc4180, 0, false))[1..];
+        try testing.expectEqual(want.len, got.len);
+        for (want, got, 0..) |w, g, row| {
+            if (w.len != g.len) {
+                std.debug.print("{s}: record {d} has {d} fields, the output {d}\n", .{ name, row, w.len, g.len });
+                return error.TestUnexpectedResult;
+            }
+            for (w, g) |wv, gv| if (!std.mem.eql(u8, wv, gv)) {
+                std.debug.print("{s}: record {d}: \"{f}\" came out \"{f}\"\n", .{ name, row, std.zig.fmtString(wv[0..@min(wv.len, 60)]), std.zig.fmtString(gv[0..@min(gv.len, 60)]) });
+                return error.TestUnexpectedResult;
+            };
+        }
+    }
+}
+
+/// Every record of bytes as its values, escapes undone (and Latin-1
+/// transcoded), in arena.
+fn recordsOf(a: Allocator, bytes: []const u8, d: Dialect, start: usize, latin1: bool) ![]const []const []const u8 {
+    var p: reference.Parser = .init(bytes, d, .{ .start = start });
+    var fields: std.ArrayList(Field) = .empty;
+    var out: std.ArrayList([]const []const u8) = .empty;
+    while (try p.next(a, &fields)) |_| {
+        const rec = try a.alloc([]const u8, fields.items.len);
+        for (rec, fields.items) |*r, f| {
+            const scratch = try a.alloc(u8, f.len);
+            const v = f.value(bytes, d, scratch);
+            if (!latin1) {
+                r.* = try a.dupe(u8, v);
+                continue;
+            }
+            var utf8: std.ArrayList(u8) = .empty;
+            for (v) |c| {
+                if (c < 0x80) try utf8.append(a, c) else try utf8.appendSlice(a, &.{ 0xc0 | c >> 6, 0x80 | (c & 0x3f) });
+            }
+            r.* = utf8.items;
+        }
+        try out.append(a, rec);
+    }
+    return out.items;
+}

@@ -40,6 +40,8 @@ pub const Outcome = struct {
     result: Result,
     /// The first structural error, or why the file could not be read.
     problem: ?[]const u8 = null,
+    /// convert and run: the output file written.
+    written: ?[]const u8 = null,
     timing: Timing = .{},
 
     pub fn throughput(o: Outcome) f64 {

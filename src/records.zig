@@ -463,6 +463,36 @@ pub const Scanner = struct {
     }
 };
 
+/// A record's values with escapes undone, into out; scratch holds the
+/// unescaped ones and is sized first, so no slice into it moves. Fields
+/// hold absolute offsets; data starts at base.
+pub fn values(
+    gpa: Allocator,
+    fields: []const Field,
+    data: []const u8,
+    base: u64,
+    d: Dialect,
+    scratch: *std.ArrayList(u8),
+    out: *std.ArrayList([]const u8),
+) Allocator.Error!void {
+    out.clearRetainingCapacity();
+    var need: usize = 0;
+    for (fields) |f| {
+        if (f.flags.needs_unescape) need += f.len;
+    }
+    try scratch.resize(gpa, need);
+    var at: usize = 0;
+    for (fields) |f| {
+        const local: Field = .{ .start = f.start - base, .len = f.len, .flags = f.flags };
+        if (!f.flags.needs_unescape) {
+            try out.append(gpa, local.raw(data));
+            continue;
+        }
+        try out.append(gpa, local.value(data, d, scratch.items[at..][0..f.len]));
+        at += f.len;
+    }
+}
+
 /// Records grouped for the stages after parsing: at most max_rows records
 /// or max_bytes of field content, whichever comes first.
 pub const Batch = struct {

@@ -66,32 +66,62 @@ pub const Reason = enum {
     }
 };
 
-/// Why v does not fit col, or null when it does. Numbers, booleans and
+/// A cell's typed value, what the builders keep and the writers write.
+pub const Value = union(enum) {
+    bool: bool,
+    int: i64,
+    float: f64,
+    /// Scaled by 10^scale.
+    decimal: i128,
+    /// Microseconds since midnight.
+    time: i64,
+    /// Days since 1970-01-01, the date as written.
+    date: i32,
+    /// Microseconds since 1970-01-01T00:00:00Z: a naive time read as UTC.
+    timestamp: i64,
+    /// The value's index in the enum's values.
+    enumeration: u32,
+    /// The bytes as read; the builder transcodes them.
+    string: []const u8,
+    binary: []const u8,
+};
+
+pub const Read = union(enum) { ok: Value, bad: Reason };
+
+/// v's value as col's type, or why it does not fit. Numbers, booleans and
 /// times may have spaces or tabs around them; strings are taken as they are.
-pub fn check(col: *const schema.Column, v: []const u8, encoding: Encoding) ?Reason {
+pub fn read(col: *const schema.Column, v: []const u8, encoding: Encoding) Read {
     const t = std.mem.trim(u8, v, " \t");
     return switch (col.type) {
-        .bool => if (boolean.parse(t, col.true_values, col.false_values) == null) .not_bool else null,
-        .int64 => if (int.parse(t)) |_| null else |e| switch (e) {
+        .bool => if (boolean.parse(t, col.true_values, col.false_values)) |b| .{ .ok = .{ .bool = b } } else .{ .bad = .not_bool },
+        .int64 => if (int.parse(t)) |n| .{ .ok = .{ .int = n } } else |e| .{ .bad = switch (e) {
             error.NotInt => .not_int,
             error.Overflow => .int_overflow,
-        },
-        .float64 => if (float.parse(t) == null) .not_float else null,
-        .decimal => if (decimal.parse(t, col.precision, col.scale)) |_| null else |e| switch (e) {
+        } },
+        .float64 => if (float.parse(t)) |f| .{ .ok = .{ .float = f } } else .{ .bad = .not_float },
+        .decimal => if (decimal.parse(t, col.precision, col.scale)) |d| .{ .ok = .{ .decimal = d } } else |e| .{ .bad = switch (e) {
             error.NotDecimal => .not_decimal,
             error.OverPrecision => .decimal_precision,
             error.OverScale => .decimal_scale,
-        },
-        .time => if (time.parse(t) == null) .not_time else null,
-        .@"enum" => if (enumeration.index(v, col.values, col.case_insensitive) == null) .not_in_enum else null,
+        } },
+        .time => if (time.parse(t)) |us| .{ .ok = .{ .time = us } } else .{ .bad = .not_time },
+        .@"enum" => if (enumeration.index(v, col.values, col.case_insensitive)) |i| .{ .ok = .{ .enumeration = i } } else .{ .bad = .not_in_enum },
         .string => str: {
-            if (col.max_len) |m| if (v.len > m) break :str .too_long;
-            if (encoding == .utf8 and col.utf8 == .@"error" and !utf8.valid(v)) break :str .invalid_utf8;
-            break :str null;
+            if (col.max_len) |m| if (v.len > m) break :str .{ .bad = .too_long };
+            if (encoding == .utf8 and col.utf8 == .@"error" and !utf8.valid(v)) break :str .{ .bad = .invalid_utf8 };
+            break :str .{ .ok = .{ .string = v } };
         },
         // A column's dates need its date.Column, which the validator keeps.
         .date, .timestamp => unreachable,
-        .binary => null,
+        .binary => .{ .ok = .{ .binary = v } },
+    };
+}
+
+/// Why v does not fit col, or null when it does.
+pub fn check(col: *const schema.Column, v: []const u8, encoding: Encoding) ?Reason {
+    return switch (read(col, v, encoding)) {
+        .ok => null,
+        .bad => |r| r,
     };
 }
 
