@@ -68,12 +68,15 @@ jobs:
   # ReleaseSafe as well as Debug: a safety check the optimizer can see
   # past, or a value read before it is set, can pass in one and not the
   # other (an allocation failing inside a union literal did, once).
+  # Every platform a release ships for that a hosted runner has: Linux on
+  # x86-64 and arm64, macOS (arm64), Windows. A runner with no python3
+  # skips the corpus, examples and NOTICE checks (-Dcorpus=false).
   test:
     name: test (${{ matrix.os }}, ${{ matrix.optimize }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
         optimize: [Debug, ReleaseSafe]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -81,4 +84,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       - name: zig build test
-        run: zig build test -Doptimize=${{ matrix.optimize }} --summary all
+        shell: bash
+        run: |
+          extra=""
+          command -v python3 >/dev/null || extra="-Dcorpus=false"
+          zig build test -Doptimize=${{ matrix.optimize }} $extra --summary all
+
+  # The release build for every target, glibc and musl, x86-64 and arm64,
+  # cross-compiled from one runner, so a target no runner tests still builds.
+  cross:
+    name: release builds (every target)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - name: zig build --release, each target
+        run: |
+          for t in x86_64-linux-gnu aarch64-linux-gnu x86_64-linux-musl aarch64-linux-musl \
+                   x86_64-macos aarch64-macos x86_64-windows aarch64-windows; do
+            echo "== $t"
+            zig build --release -Dtarget=$t -p "out/$t"
+          done

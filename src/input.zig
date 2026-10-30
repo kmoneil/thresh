@@ -101,7 +101,8 @@ pub const Input = struct {
 
     pub fn close(in: *Input, io: Io, gpa: Allocator) void {
         switch (in.source) {
-            .mapped => |m| posix.munmap(m),
+            // Only where can_map; a platform without it never maps.
+            .mapped => |m| if (comptime can_map) posix.munmap(m) else unreachable,
             .buffered => |b| gpa.free(b.buf),
             .empty => {},
         }
