@@ -31,6 +31,10 @@ Every file is read back with Python's csv module under its dialect before
 it is written, and every field's bytes at (start, length), unescaped, must
 be the value csv reads. A disagreement is a bug here and stops the run.
 
+A UTF-16 file (encoding "utf16" in its .dialect.json) is written as a byte
+order mark and UTF-16LE, but its .fields offsets are into its text as
+UTF-8, which is what thresh reads it as and what the tests compare.
+
 The files cover delimiter x quote x newline for two field profiles: short
 (numbers, codes, dates, short names) and text (free text of 1 to 100 KB
 with embedded delimiters, quotes and line breaks). Header and encoding
@@ -145,6 +149,13 @@ class Writer:
         self.out = bytearray(b"\xef\xbb\xbf" if encoding == "utf8-bom" else b"")
         self.fields = []
         self.records = []
+
+    def file_bytes(self, raw):
+        """What goes on disk: raw, or for UTF-16 a byte order mark and
+        raw's text as UTF-16LE."""
+        if self.encoding == "utf16":
+            return b"\xff\xfe" + raw.decode("utf-8").encode("utf-16-le")
+        return raw
 
     def needs_quotes(self, v):
         d = self.d
@@ -778,6 +789,29 @@ def export(name):
             ("Run Key", STRING, "s", lambda i: str(rng.between(1, 9)) + digits(rng, 55)),
         ]
         return table(d, "minimal", spec, 2000)
+    if name == "exp-comma-crlf-utf16":
+        # A marketing platform's click export: UTF-16LE with a byte order
+        # mark, every field quoted, 12-hour timestamps with milliseconds and
+        # no zero before a one-digit month, long tracking URLs, and a subject
+        # line with characters beyond the BMP (surrogate pairs in UTF-16).
+        d = Dialect(",", '"', "\r\n", True)
+
+        def clicked():
+            hour = rng.between(1, 12)
+            return "%d/%02d/%04d %02d:%02d:%02d.%03d %s" % (
+                rng.between(1, 12), rng.between(1, 28), rng.between(2023, 2026), hour,
+                rng.below(60), rng.below(60), rng.below(1000), rng.choice(["AM", "PM"]))
+
+        spec = [
+            ("SendRef", INT, "n", lambda i: str(rng.between(100000, 999999))),
+            ("ListRef", INT, "n", lambda i: str(rng.between(1000, 9999))),
+            ("Recipient", STRING, "s", lambda i: "%s.%s@%s.example" % (rng.choice(PLACES), rng.choice(PLACES), rng.choice(PLACES))),
+            ("Clicked At", {"type": "timestamp", "format": "%m/%d/%Y %I:%M:%S.%f %p"}, "n", lambda i: clicked()),
+            ("Link", STRING, "s", lambda i: "https://www.example.com/%s/?src=mail&term=%s&id=%d%%20%d" % (rng.choice(PLACES), rng.choice(PLACES), rng.below(10**6), rng.below(100))),
+            ("Subject", STRING, "s", lambda i: some(rng, 1, 2, lambda: rng.choice(["Spring menu \U0001f337", "Café week ☕", "Last call \U0001f514", "Neue Preise für Sie"]))),
+            ("Unique", BOOL, "n", lambda i: rng.choice(["True", "False"])),
+        ]
+        return table(d, "all", spec, 400, encoding="utf16")
     raise KeyError(name)
 
 
@@ -793,6 +827,7 @@ EXPORTS = [
     "exp-pipe-crlf-tiny",
     "exp-comma-crlf-cp1252",
     "exp-tab-lf-ledger",
+    "exp-comma-crlf-utf16",
 ]
 
 
@@ -991,7 +1026,7 @@ def main(argv):
         bom = w.out.startswith(b"\xef\xbb\xbf")
         raw = w.check()
         w.check_unique(raw.decode("utf-8-sig" if w.codec == "utf-8" else w.codec), adv)
-        put(fname + ".csv", raw)
+        put(fname + ".csv", w.file_bytes(raw))
         put(
             fname + ".dialect.json",
             dumps(

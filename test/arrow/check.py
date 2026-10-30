@@ -79,7 +79,7 @@ def run(thresh, args):
         sys.exit("thresh %s: exit %d\n%s" % (" ".join(args), p.returncode, p.stderr))
 
 
-CODECS = {"utf8": "utf-8-sig", "latin1": "latin-1", "cp1252": "cp1252"}
+CODECS = {"utf8": "utf-8-sig", "latin1": "latin-1", "cp1252": "cp1252", "utf16": "utf-16"}
 
 
 def source_rows(path, dialect):
@@ -108,7 +108,8 @@ def check(thresh, corpus, name, out, mode):
         encoding = dialect["encoding"]
     except FileNotFoundError:
         dialect, encoding = None, "utf8"
-    common = [path, "--quiet", "--encoding", encoding]
+    # A UTF-16 file is told by its byte order mark, with no --encoding.
+    common = [path, "--quiet", "--encoding", "utf8" if encoding == "utf16" else encoding]
     if mode == "run":
         common += ["--schema", os.path.join(corpus, stem + ".schema.json")]
     d = os.path.join(out, mode)

@@ -390,12 +390,14 @@ fn sniffFile(env: Env, cfg: cli.Config, path: []const u8) !dialect.Verdict {
     var in: input.Input = try .open(env.io, env.gpa, path, .{ .no_mmap = cfg.no_mmap, .buffer = cfg.sample_bytes });
     defer in.close(env.io, env.gpa);
     while (!in.eof and in.data().len < max_sample) try in.refill(env.io, env.gpa, in.base);
-    return dialect.sniff(env.gpa, in.data(), in.eof, .{
+    var v = try dialect.sniff(env.gpa, in.data(), in.eof, .{
         .pins = cfg.pins,
         .sample_bytes = cfg.sample_bytes,
         .max_sample = max_sample,
-        .utf8 = cfg.encoding == .utf8,
+        .utf8 = cfg.encoding == .utf8 or in.utf16 != null,
     });
+    v.warnings.utf16 = in.utf16 != null;
+    return v;
 }
 
 fn describe(e: anyerror) []const u8 {

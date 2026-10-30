@@ -78,16 +78,24 @@ pub const Corpus = struct {
     }
 
     pub fn load(c: *const Corpus, io: Io, gpa: Allocator, name: []const u8) !Fixture {
-        const bytes = try c.dir.readFileAlloc(io, name, gpa, .unlimited);
+        var bytes = try c.dir.readFileAlloc(io, name, gpa, .unlimited);
         errdefer gpa.free(bytes);
         const json = try c.sibling(io, gpa, name, ".dialect.json");
         defer gpa.free(json);
-        return .{
-            .name = name,
-            .bytes = bytes,
-            // alloc_always: the strings must outlive json, freed below.
-            .expected = try std.json.parseFromSlice(Expected, gpa, json, .{ .allocate = .alloc_always }),
-        };
+        // alloc_always: the strings must outlive json, freed below.
+        const expected = try std.json.parseFromSlice(Expected, gpa, json, .{ .allocate = .alloc_always });
+        errdefer expected.deinit();
+        if (std.mem.eql(u8, expected.value.encoding, "utf16")) {
+            // The text thresh reads, decoded by std rather than by input.zig,
+            // whose transcoding the tests that open the file then check.
+            const units = try gpa.alloc(u16, (bytes.len - 2) / 2);
+            defer gpa.free(units);
+            for (units, 0..) |*u, i| u.* = std.mem.readInt(u16, bytes[2 + 2 * i ..][0..2], .little);
+            const utf8 = try std.unicode.utf16LeToUtf8Alloc(gpa, units);
+            gpa.free(bytes);
+            bytes = utf8;
+        }
+        return .{ .name = name, .bytes = bytes, .expected = expected };
     }
 
     /// NAME.csv's NAME<ext>.
@@ -490,8 +498,10 @@ test "convert --to csv: every corpus file comes out RFC 4180, re-sniffs as it, a
     }
 }
 
-/// A corpus file's encoding, as its .dialect.json names it.
+/// A corpus file's encoding, as its .dialect.json names it: a UTF-16 one
+/// is read with no --encoding, told by its byte order mark.
 fn encodingOf(e: Expected) cli.Encoding {
+    if (std.mem.eql(u8, e.encoding, "utf16")) return .utf8;
     return std.meta.stringToEnum(cli.Encoding, e.encoding).?;
 }
 

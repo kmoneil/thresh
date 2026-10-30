@@ -188,6 +188,11 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
     };
     defer in.close(io, gpa);
     out.bytes = in.size;
+    if (utf16Conflict(&in, cfg)) |p| {
+        out.problem = p;
+        try writeReport(env, plan, out, name, details);
+        return out;
+    }
 
     const max_sample = @max(cfg.sample_bytes, 16 << 20);
     while (!in.eof and in.data().len < max_sample) try in.refill(io, gpa, in.base);
@@ -208,6 +213,7 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
         },
     };
     details.verdict = verdict;
+    details.verdict.?.warnings.utf16 = in.utf16 != null;
     out.timing.sniff_ns = since(io, t0);
     if (verdict.confidence == .low and !cfg.pins.complete()) {
         out.problem = "the dialect is not settled (confidence low); pin it with --delimiter, --quote, --escape, --newline and --header";
@@ -295,6 +301,9 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
         if (keep) out.written = o.final_path;
     }
     if (v.structural.items.len > 0) out.problem = try arena.dupe(u8, v.structural.items[0]);
+    if (in.utf16) |u| if (u.replaced > 0) {
+        details.verdict.?.warnings.utf16_invalid = true;
+    };
     details.validator = &v;
     if (reject) |*r| {
         try r.writer.interface.flush();
@@ -306,6 +315,13 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
     }
     try writeReport(env, plan, out, name, details);
     return out;
+}
+
+/// A UTF-16 file is transcoded to UTF-8 as it is read, so an --encoding
+/// for its bytes would read the UTF-8 as something else.
+pub fn utf16Conflict(in: *const input.Input, cfg: *const cli.Config) ?[]const u8 {
+    if (in.utf16 == null or cfg.encoding == .utf8) return null;
+    return "the file is UTF-16 (it starts with a byte order mark) and is read as such; leave out --encoding";
 }
 
 fn encodingOf(cfg: *const cli.Config) @import("types.zig").Encoding {
@@ -372,7 +388,7 @@ pub fn describe(e: anyerror) []const u8 {
         error.IsDir => "is a directory",
         error.OutOfMemory => "out of memory",
         error.BrokenPipe => "the output was closed",
-        error.Utf16 => "UTF-16 input (a UTF-16 byte order mark) is not read in v1",
+        error.Utf16 => "UTF-16 data (a UTF-16 byte order mark) where UTF-8 was expected",
         error.Binary => "binary data (a NUL byte in the first 8 KiB)",
         else => @errorName(e),
     };
@@ -398,6 +414,10 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
     };
     defer in.close(io, gpa);
     out.bytes = in.size;
+    if (utf16Conflict(&in, cfg)) |p| {
+        out.problem = p;
+        return .{ .outcome = out };
+    }
     const max_sample = @max(cfg.sample_bytes, 16 << 20);
     while (!in.eof and in.data().len < max_sample) try in.refill(io, gpa, in.base);
     const verdict = dialect.sniff(gpa, in.data(), in.eof, .{

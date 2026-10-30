@@ -116,9 +116,14 @@ pub const Warnings = packed struct(u8) {
     /// Read as UTF-8, and the sample is not: a Windows or Latin-1 export,
     /// most likely, which --encoding cp1252 or latin1 reads.
     not_utf8: bool = false,
-    _: u4 = 0,
+    /// The file is UTF-16 (a byte order mark), read transcoded to UTF-8:
+    /// set by whoever opened it, as the sniffer sees only the UTF-8.
+    utf16: bool = false,
+    /// Some of its code units made no character and are U+FFFD.
+    utf16_invalid: bool = false,
+    _: u2 = 0,
 
-    pub const names = .{ "utf8_bom", "mixed_newlines", "quote_in_unquoted", "not_utf8" };
+    pub const names = .{ "utf8_bom", "mixed_newlines", "quote_in_unquoted", "not_utf8", "utf16", "utf16_invalid" };
 
     pub fn jsonStringify(w: Warnings, s: *std.json.Stringify) std.json.Stringify.Error!void {
         try s.beginArray();

@@ -31,7 +31,8 @@ pub const usage =
     \\      --null LIST        comma-separated strings read as null
     \\      --day-first        read ambiguous numeric dates as DD/MM
     \\      --encoding E       utf8 (the default), cp1252 (Windows-1252) or
-    \\                         latin1
+    \\                         latin1; a file with a UTF-16 byte order mark is
+    \\                         read as UTF-16, with no --encoding
     \\      --threshold F      minimum conforming fraction per column (default:
     \\                         the schema's, or 1.0)
     \\      --strict           extra columns, ragged rows and ambiguous dates fail
