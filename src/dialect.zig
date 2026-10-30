@@ -258,55 +258,13 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
         var any = false;
         runners = .{ null, null };
         for (delimiters.slice()) |delim| {
-            var best_for_delim: ?Scored = null;
-            var best_clean: ?Scored = null;
-            // The best reading under each quote character, '"' and '\''.
-            var best_by_quote: [2]?Scored = .{ null, null };
-            for (quotes) |quote| {
-                if (quote == delim) continue;
-                for ([_]Dialect.Escape{ .doubled, .backslash }) |escape| {
-                    if (pins.escape) |pe| if (pe != escape) continue;
-                    if (escape == .backslash) {
-                        const q = quote orelse continue;
-                        if (pins.escape == null and !hasBackslashQuote(sample, q)) continue;
-                    }
-                    const d: Dialect = .{
-                        .delimiter = delim,
-                        .quote = quote,
-                        .escape = escape,
-                        .newline = .lf,
-                        .header = false,
-                        .comment = pins.comment,
-                    };
-                    const c = try score(gpa, sample[start..], whole, d, options, &parser_fields, &counts);
-                    if (best_for_delim == null or c.score > best_for_delim.?.score + 1e-9) best_for_delim = c;
-                    if (c.clean_quoted and (best_clean == null or c.score > best_clean.?.score + 1e-9)) best_clean = c;
-                    if (quoteIndex(quote)) |k| if (best_by_quote[k] == null or c.score > best_by_quote[k].?.score + 1e-9) {
-                        best_by_quote[k] = c;
-                    };
-                }
+            const readings = readingsOf(delim, quotes, pins, sample);
+            if (readings.len == 0) continue;
+            var scored: [max_readings]Scored = undefined;
+            for (readings.slice(), scored[0..readings.len]) |d, *s| {
+                s.* = try score(gpa, sample[start..], whole, d, options, &parser_fields, &counts);
             }
-            // A quote whose parse is clean beats reading its characters as
-            // data: a file whose every row quotes two fields holding the
-            // delimiter splits into a consistent, wider shape without them,
-            // and the wider shape scores higher.
-            if (best_clean) |bc| if (best_for_delim) |b| if (bc.consistency >= b.consistency) {
-                best_for_delim = bc;
-            };
-            // A reading that leaves fields wrapped in a quote character as
-            // data, when the reading that honours it parses most records:
-            // the quote is the file's, and the records it breaks are its
-            // errors (a quote inside a quoted field, not doubled), not a
-            // sign it has none.
-            if (best_for_delim) |b| for (best_by_quote, 0..) |cand, k| {
-                const q = cand orelse continue;
-                if (b.dialect.quote == q.dialect.quote) continue;
-                if (b.bare[k] * 2 >= b.records and q.consistency >= 0.8) {
-                    best_for_delim = q;
-                    break;
-                }
-            };
-            const c = best_for_delim orelse continue;
+            const c = pick(scored[0..readings.len]);
             if (!any or c.score > best.score + 1e-9) {
                 if (any) pushRunner(&runners, .{ .delimiter = best.dialect.delimiter, .score = best.score });
                 best = c;
@@ -429,6 +387,80 @@ fn hasBackslashQuote(sample: []const u8, q: u8) bool {
     _ = it.next();
     while (it.next()) |after| if (after.len > 0 and after[0] == q) return true;
     return false;
+}
+
+/// The most readings one delimiter has: each quote under each escape.
+const max_readings = prior_quotes.len * 2;
+
+/// One delimiter's readings, in the order they are scored.
+const Readings = struct {
+    buf: [max_readings]Dialect = undefined,
+    len: usize = 0,
+
+    fn slice(r: *const Readings) []const Dialect {
+        return r.buf[0..r.len];
+    }
+};
+
+/// The readings of delim worth scoring: each of quotes but the delimiter
+/// itself, under each escape the pins allow; backslash escaping only with
+/// a quote, and unless pinned, only where the sample has a backslash
+/// before one.
+fn readingsOf(delim: u8, quotes: []const ?u8, pins: Pins, sample: []const u8) Readings {
+    var out: Readings = .{};
+    for (quotes) |quote| {
+        if (quote == delim) continue;
+        for ([_]Dialect.Escape{ .doubled, .backslash }) |escape| {
+            if (pins.escape) |pe| if (pe != escape) continue;
+            if (escape == .backslash) {
+                const q = quote orelse continue;
+                if (pins.escape == null and !hasBackslashQuote(sample, q)) continue;
+            }
+            out.buf[out.len] = .{
+                .delimiter = delim,
+                .quote = quote,
+                .escape = escape,
+                .newline = .lf,
+                .header = false,
+                .comment = pins.comment,
+            };
+            out.len += 1;
+        }
+    }
+    return out;
+}
+
+/// The reading a delimiter is ranked by, of its readings scored in order:
+/// the first with the best score, unless a quote has a better claim.
+fn pick(scored: []const Scored) Scored {
+    var best = scored[0];
+    var clean: ?Scored = null;
+    // The best reading under each quote character, '"' and '\''.
+    var by_quote: [2]?Scored = .{ null, null };
+    for (scored) |c| {
+        if (c.score > best.score + 1e-9) best = c;
+        if (c.clean_quoted and (clean == null or c.score > clean.?.score + 1e-9)) clean = c;
+        if (quoteIndex(c.dialect.quote)) |k| if (by_quote[k] == null or c.score > by_quote[k].?.score + 1e-9) {
+            by_quote[k] = c;
+        };
+    }
+    // A quote whose parse is clean beats reading its characters as data:
+    // a file whose every row quotes two fields holding the delimiter
+    // splits into a consistent, wider shape without them, and the wider
+    // shape scores higher.
+    if (clean) |c| if (c.consistency >= best.consistency) {
+        best = c;
+    };
+    // A reading that leaves fields wrapped in a quote character as data,
+    // when the reading that honours it parses most records: the quote is
+    // the file's, and the records it breaks are its errors (a quote inside
+    // a quoted field, not doubled), not a sign it has none.
+    for (by_quote, 0..) |cand, k| {
+        const q = cand orelse continue;
+        if (best.dialect.quote == q.dialect.quote) continue;
+        if (best.bare[k] * 2 >= best.records and q.consistency >= 0.8) return q;
+    }
+    return best;
 }
 
 const Scored = struct {
