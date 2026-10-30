@@ -284,7 +284,7 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
         // (its parse stops at the window's end) and lets a wrong one win
         // with many short records. Each parse stops at options.records
         // records, so a bigger window costs little unless a record is big.
-        const clear = best.records >= options.records and confidenceOf(best, runners, options.schema) == .high;
+        const clear = best.records >= options.records and confidenceOf(best, runners, options) == .high;
         if (clear or whole or len == data.len or window >= options.max_sample) break;
         window = @min(window * 2, @max(options.max_sample, options.sample_bytes));
     }
@@ -301,7 +301,7 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
         .no => false,
         .auto => try isHeader(gpa, sample, d, options, &parser_fields),
     };
-    const confidence = confidenceOf(best, runners, options.schema);
+    const confidence = confidenceOf(best, runners, options);
     return .{
         .dialect = d,
         .confidence = confidence,
@@ -321,12 +321,15 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
 /// When a schema's column count is the winner's and it leads by as much,
 /// at least medium however ragged the rows: the schema is the strongest
 /// evidence there is, and the ragged rows are then the file's errors to
-/// report, not a dialect left unsettled.
-fn confidenceOf(best: Scored, runners: [2]?Verdict.Runner, schema: ?[]const []const u8) Confidence {
+/// report, not a dialect left unsettled. So too when --delimiter is
+/// pinned: a file with unquoted delimiters in a value can be read with
+/// that one flag, its wide rows reported as ragged.
+fn confidenceOf(best: Scored, runners: [2]?Verdict.Runner, options: SniffOptions) Confidence {
     const margin = if (runners[0]) |r| best.score - r.score else std.math.inf(f64);
     if (best.consistency >= 0.98 and margin >= 0.2) return .high;
     if (best.consistency >= 0.9) return .medium;
-    if (schema) |cols| if (cols.len == best.mode and margin >= 0.2) return .medium;
+    if (options.pins.delimiter != null and best.mode >= 2) return .medium;
+    if (options.schema) |cols| if (cols.len == best.mode and margin >= 0.2) return .medium;
     return .low;
 }
 
@@ -408,6 +411,11 @@ const Scored = struct {
 /// quote still open where the sample stops, plus 1.0 when mode is the
 /// schema's column count. A record the dialect reads as broken (a bad or
 /// unterminated quote) counts against consistency whatever its fields.
+///
+/// Less 1.0, too, when the first record is one field and the mode more:
+/// the delimiter is not in the header, nor in the first row of a file
+/// without one. Without it ln(1 + mode) lets a byte inside values win, as
+/// `_` does over `,` in a file of codes like AB_CD_EF.
 fn score(
     gpa: Allocator,
     sample: []const u8,
@@ -440,6 +448,7 @@ fn score(
     }
     const n = counts.items.len;
     if (n == 0) return .{ .dialect = d, .score = -1, .consistency = 0, .mode = 0, .records = 0 };
+    const first_width = counts.items[0];
     std.mem.sort(u32, counts.items, {}, std.sort.asc(u32));
     var mode: u32 = 0;
     var mode_n: usize = 0;
@@ -457,6 +466,7 @@ fn score(
     const consistency = @as(f64, @floatFromInt(mode_n)) / @as(f64, @floatFromInt(n));
     var s = consistency * @log(1 + @as(f64, @floatFromInt(mode)));
     if (mode == 1) s -= 0.5;
+    if (mode >= 2 and first_width == 1) s -= 1.0;
     if (unbalanced) s -= 0.3;
     if (options.schema) |cols| if (mode == cols.len) {
         s += 1.0;
@@ -665,6 +675,25 @@ test "a clean quote beats a wider shape that reads its characters as data" {
     try std.testing.expectEqual(@as(?u8, '"'), v.dialect.quote);
     try std.testing.expectEqual(@as(usize, 4), v.fields);
     try std.testing.expect(v.dialect.header);
+}
+
+test "a delimiter the header lacks loses to one it has" {
+    // Codes split on _ into more columns, nearly as consistently.
+    const codes = "id,code,name\n0,CD_AB_EF_AB_GH,blue\n1,GH_GH_CD_AB_GH,red\n2,AB_CD_EF_GH_AB,red\n3,EF_EF_AB_CD_GH,blue\n";
+    const v = try sniffed(codes, .{});
+    try std.testing.expectEqual(@as(u8, ','), v.dialect.delimiter);
+    try std.testing.expect(v.dialect.header);
+    try std.testing.expectEqual(Confidence.high, v.confidence);
+    // Unquoted commas in a text column: the commas are still the
+    // delimiter, the wide rows the file's errors, and the verdict not sure.
+    const ragged = "sku,desc,qty\nA_B_C_D_1,red, large,3\nA_B_C_D_2,blue,4\nA_B_C_D_3,green, small, round,5\nA_B_C_D_4,pink,6\n";
+    const r = try sniffed(ragged, .{});
+    try std.testing.expectEqual(@as(u8, ','), r.dialect.delimiter);
+    try std.testing.expectEqual(Confidence.low, r.confidence);
+    // Told the delimiter, it is settled enough to read and report.
+    const pinned = try sniffed(ragged, .{ .pins = .{ .delimiter = ',' } });
+    try std.testing.expectEqual(Confidence.medium, pinned.confidence);
+    try std.testing.expect(pinned.dialect.header);
 }
 
 test "ragged records are low confidence, not a wrong high" {
