@@ -12,6 +12,10 @@
 # hex. An input is what the target's Smith read: a four-byte little-endian
 # length and the bytes, then the choice bytes. Add it to the seeds in
 # src/fuzz_test.zig before fixing what it found.
+#
+# The fuzzer turns between every target in the test binary, but Zig
+# 0.17's report names only the first ("the scanner agrees ..."): its Runs
+# and Coverage lines are all of them together.
 set -eu
 
 limit=${1:-1M}
