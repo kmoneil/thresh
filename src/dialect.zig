@@ -593,9 +593,16 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
         }
         if (named * 2 >= first.len and named > 0) return true;
     }
-    for (first) |f| {
+    // Row 1's values, to know it again below: two exports joined repeat it.
+    var names: std.ArrayList(u8) = .empty;
+    defer names.deinit(gpa);
+    const ends = try gpa.alloc(usize, first.len);
+    defer gpa.free(ends);
+    for (first, ends) |f, *e| {
         const v = try value(gpa, &scratch, sample, d, f);
         if (v.len == 0 or looksTyped(v)) return false;
+        try names.appendSlice(gpa, std.mem.trim(u8, v, " \t"));
+        e.* = names.items.len;
     }
     // Per column: still typed (every non-empty value so far), and seen one.
     const typed = try gpa.alloc(bool, first.len);
@@ -609,6 +616,13 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
         const rec = try p.next(gpa, fields) orelse break;
         if (rec.end == sample.len and sample[sample.len - 1] != '\n' and sample[sample.len - 1] != '\r') break;
         if (fields.items.len != first.len) continue;
+        // Row 1 again is not a column's evidence either way.
+        const again = for (fields.items, ends, 0..) |f, end, col| {
+            const start = if (col == 0) 0 else ends[col - 1];
+            const v = std.mem.trim(u8, try value(gpa, &scratch, sample, d, f), " \t");
+            if (!std.ascii.eqlIgnoreCase(v, names.items[start..end])) break false;
+        } else true;
+        if (again) continue;
         for (fields.items, 0..) |f, col| {
             const v = try value(gpa, &scratch, sample, d, f);
             if (v.len == 0) continue;
@@ -733,6 +747,11 @@ test "a clean quote beats a wider shape that reads its characters as data" {
     const v = try sniffed(data, .{});
     try std.testing.expectEqual(@as(?u8, '"'), v.dialect.quote);
     try std.testing.expectEqual(@as(usize, 4), v.fields);
+    try std.testing.expect(v.dialect.header);
+}
+
+test "a header repeated below, as joined files have, is still a header" {
+    const v = try sniffed("id,qty\n1,2\nid,qty\n3,4\n ID , Qty\n5,6\n", .{});
     try std.testing.expect(v.dialect.header);
 }
 

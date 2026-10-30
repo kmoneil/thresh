@@ -477,7 +477,7 @@ test "convert --to csv: every corpus file comes out RFC 4180, re-sniffs as it, a
         // text, but a value the inferred schema calls a column's null (an
         // empty date, "  /  /    ") written empty, as every null is.
         var want = try recordsOf(a, fx.bytes, e.dialect(), if (e.bom) 3 else 0, encoding);
-        if (e.header) want = want[1..];
+        if (e.header) want = try withoutHeader(a, want);
         const got = (try recordsOf(a, written, .rfc4180, 0, .utf8))[1..];
         try testing.expectEqual(want.len, got.len);
         for (want, got, 0..) |w, g, row| {
@@ -496,6 +496,19 @@ test "convert --to csv: every corpus file comes out RFC 4180, re-sniffs as it, a
             }
         }
     }
+}
+
+/// The records after the header, less any that are the header again
+/// (joined files), which thresh skips.
+fn withoutHeader(a: Allocator, all: []const []const []const u8) ![]const []const []const u8 {
+    var out: std.ArrayList([]const []const u8) = .empty;
+    for (all[1..]) |rec| {
+        const again = rec.len == all[0].len and for (rec, all[0]) |v, h| {
+            if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, v, " \t"), std.mem.trim(u8, h, " \t"))) break false;
+        } else true;
+        if (!again) try out.append(a, rec);
+    }
+    return out.items;
 }
 
 /// A corpus file's encoding, as its .dialect.json names it: a UTF-16 one

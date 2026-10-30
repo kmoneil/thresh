@@ -812,6 +812,29 @@ def export(name):
             ("Unique", BOOL, "n", lambda i: rng.choice(["True", "False"])),
         ]
         return table(d, "all", spec, 400, encoding="utf16")
+    if name == "exp-comma-lf-joined":
+        # Three exports joined into one file, each with its header: the
+        # header comes twice more below, the second time in other case and
+        # spacing, and those lines are skipped, not data (card t27).
+        d = Dialect(",", '"', "\n", True)
+        spec = [
+            ("region", STRING, "s", lambda i: rng.choice(["north", "south", "east"])),
+            ("store", INT, "n", lambda i: str(rng.between(100, 999))),
+            ("day", US_DATE, "n", lambda i: us_date(rng)),
+            ("sales", {"type": "decimal", "precision": 18, "scale": 2}, "n", lambda i: "%d.%02d" % (rng.below(10**5), rng.below(100))),
+        ]
+        w = Writer(d, "utf8", "minimal")
+        names = [n for n, _, _, _ in spec]
+        kinds = [k for _, _, k, _ in spec]
+        w.record(names, "h" * len(spec))
+        for part in range(3):
+            if part == 1:
+                w.record(names, "h" * len(spec))
+            elif part == 2:
+                w.record([" %s " % n.upper() for n in names], "h" * len(spec))
+            for i in range(300):
+                w.record([f(i) for _, _, _, f in spec], kinds)
+        return w, [dict({"name": n}, **c) for n, c, _, _ in spec]
     raise KeyError(name)
 
 
@@ -828,6 +851,7 @@ EXPORTS = [
     "exp-comma-crlf-cp1252",
     "exp-tab-lf-ledger",
     "exp-comma-crlf-utf16",
+    "exp-comma-lf-joined",
 ]
 
 

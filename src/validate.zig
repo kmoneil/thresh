@@ -74,6 +74,11 @@ pub const Validator = struct {
     row_errors: std.EnumArray(Reason, u64) = .initFill(0),
     structural: std.ArrayList([]const u8) = .empty,
     extra_columns: bool = false,
+    /// The file had a header, and records that are it again (two exports
+    /// joined): skipped, and the first lines they are on.
+    header_seen: bool = false,
+    repeated_headers: u64 = 0,
+    repeated_lines: std.ArrayList(u64) = .empty,
     /// Quote characters read as data inside unquoted fields, and records
     /// ended by a line break other than the dialect's.
     stray_quotes: u64 = 0,
@@ -134,6 +139,7 @@ pub const Validator = struct {
         v.gpa.free(v.raw);
         v.gpa.free(v.cells);
         v.rejected_sample.deinit(v.gpa);
+        v.repeated_lines.deinit(v.gpa);
         v.structural.deinit(v.gpa);
         v.scratch.deinit(v.gpa);
         v.errors.deinit(v.gpa);
@@ -159,6 +165,7 @@ pub const Validator = struct {
             for (names, h) |*n, f| n.* = try a.dupe(u8, try v.valueOf(f, data, base));
             v.names = names;
             v.width = h.len;
+            v.header_seen = true;
         } else v.width = width;
 
         if (by_name) {
@@ -193,6 +200,12 @@ pub const Validator = struct {
 
     /// One data record: its row errors, then each column's cell.
     pub fn record(v: *Validator, rec: Record, fields: []const Field, data: []const u8, base: u64) (Allocator.Error || Io.Writer.Error)!void {
+        // The header again: not a row, and said so.
+        if (v.header_seen and fields.len == v.names.len and try v.isHeader(fields, data, base)) {
+            v.repeated_headers += 1;
+            if (v.repeated_lines.items.len < max_sample_rows) try v.repeated_lines.append(v.gpa, rec.line);
+            return;
+        }
         v.rows += 1;
         v.stray_quotes += rec.stray_quotes;
         if (rec.foreign_newline) v.foreign_newlines += 1;
@@ -308,6 +321,16 @@ pub const Validator = struct {
         try w.writeByte('\n');
     }
 
+    /// Whether fields are the header's names again, trimmed and in any
+    /// case. The first field decides most records.
+    fn isHeader(v: *Validator, fields: []const Field, data: []const u8, base: u64) Allocator.Error!bool {
+        for (fields, v.names) |f, n| {
+            const value = try v.valueOf(f, data, base);
+            if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, value, " \t"), std.mem.trim(u8, n, " \t"))) return false;
+        }
+        return true;
+    }
+
     /// The file passes: nothing structural, no --strict failure, and every
     /// column conforms at least as often as the threshold asks.
     pub fn passed(v: *const Validator) bool {
@@ -318,6 +341,8 @@ pub const Validator = struct {
 };
 
 /// The fraction of rows a column's cells conform in: nulls it allows count.
+const max_sample_rows = 10;
+
 fn endsLine(c: u8) bool {
     return c == '\n' or c == '\r';
 }
@@ -403,6 +428,18 @@ test "rows: ragged and broken rows count against every column" {
     defer p.deinit();
     try testing.expectEqual(@as(u64, 0), p.rejected);
     try testing.expectEqual(@as(u64, 1), p.stats[2].nulls);
+}
+
+test "a header again mid-file is skipped and counted, not a row" {
+    var rejects: Io.Writer.Allocating = .init(testing.allocator);
+    defer rejects.deinit();
+    var v = try run("id,amount,status\n1,1.50,open\nID, Amount ,status\n2,2.00,closed\n", &orders, .{}, &rejects);
+    defer v.deinit();
+    try testing.expectEqual(@as(u64, 2), v.rows);
+    try testing.expectEqual(@as(u64, 1), v.repeated_headers);
+    try testing.expectEqualSlices(u64, &.{3}, v.repeated_lines.items);
+    try testing.expectEqual(@as(u64, 0), v.rejected);
+    try testing.expect(v.passed());
 }
 
 test "structure: a file that stops mid-record says so" {

@@ -94,7 +94,11 @@ def source_rows(path, dialect):
         kw.update(quotechar=dialect["quote"], doublequote=True)
     with open(path, encoding=CODECS[dialect["encoding"]], newline="") as f:
         rows = [r for r in csv.reader(f, **kw) if r]
-    return rows[1:] if dialect["header"] else rows
+    if not dialect["header"]:
+        return rows
+    # The header again (joined files) is not data, and thresh skips it.
+    names = [n.strip(" \t").lower() for n in rows[0]]
+    return [r for r in rows[1:] if [v.strip(" \t").lower() for v in r] != names]
 
 
 def check(thresh, corpus, name, out, mode):

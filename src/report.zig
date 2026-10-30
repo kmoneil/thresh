@@ -156,8 +156,15 @@ pub fn writeFileReport(w: *Io.Writer, o: Outcome, d: Details) Stringify.Error!vo
     inline for (dialect.Warnings.names) |name| {
         if (@field(warnings, name)) try s.write(name);
     }
-    if (d.validator) |v| if (v.extra_columns) try s.write("extra_columns");
+    if (d.validator) |v| {
+        if (v.extra_columns) try s.write("extra_columns");
+        if (v.repeated_headers > 0) try s.write("header_repeated");
+    }
     try s.endArray();
+    if (d.validator) |v| if (v.repeated_headers > 0) {
+        try s.objectField("repeated_header_rows");
+        try s.write(v.repeated_lines.items);
+    };
     if (d.timing) {
         try s.objectField("timing_ms");
         try s.beginObject();

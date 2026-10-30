@@ -300,7 +300,11 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
         try o.finish(env, keep);
         if (keep) out.written = o.final_path;
     }
-    if (v.structural.items.len > 0) out.problem = try arena.dupe(u8, v.structural.items[0]);
+    if (v.structural.items.len > 0) {
+        out.problem = try arena.dupe(u8, v.structural.items[0]);
+    } else if (v.repeated_headers > 0) {
+        out.problem = try repeatedHeader(arena, v.repeated_lines.items[0], v.repeated_headers);
+    }
     if (in.utf16) |u| if (u.replaced > 0) {
         details.verdict.?.warnings.utf16_invalid = true;
     };
@@ -394,11 +398,20 @@ pub fn describe(e: anyerror) []const u8 {
     };
 }
 
+/// What a file's repeated header says, for its line and infer's stderr.
+pub fn repeatedHeader(arena: Allocator, line: u64, count: u64) Allocator.Error![]const u8 {
+    if (count == 1) return std.fmt.allocPrint(arena, "the header repeats at row {d}: files joined? It is skipped", .{line});
+    return std.fmt.allocPrint(arena, "the header repeats at row {d} and {d} more: files joined? They are skipped", .{ line, count - 1 });
+}
+
 /// One file's pass 1: its outcome and its columns as inference left them.
 pub const Inferred = struct {
     outcome: report.Outcome,
     columns: []const infer.ColumnState = &.{},
     header: bool = false,
+    /// Records that were the header again, skipped, and the first's line.
+    repeated_headers: u64 = 0,
+    repeated_line: u64 = 0,
 };
 
 /// Infers the file at path's columns, reading all of it, or the first
@@ -458,6 +471,9 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
     defer values.deinit(gpa);
     var header_pending = verdict.dialect.header;
     if (!header_pending) try f.header(null, verdict.fields);
+    var header_names: []const []const u8 = &.{};
+    var repeated: u64 = 0;
+    var repeated_line: u64 = 0;
     const limit = cfg.sample_rows orelse std.math.maxInt(u64);
     read: while (f.rows < limit) {
         batch.clear();
@@ -469,8 +485,18 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
             if (header_pending) {
                 header_pending = false;
                 try f.header(values.items, values.items.len);
+                const names = try arena.alloc([]const u8, values.items.len);
+                for (names, values.items) |*n, h| n.* = try arena.dupe(u8, std.mem.trim(u8, h, " \t"));
+                header_names = names;
                 continue;
             }
+            const rec = batch.records.items[i];
+            if (header_names.len > 0 and sameNames(values.items, header_names)) {
+                if (repeated == 0) repeated_line = rec.line;
+                repeated += 1;
+                continue;
+            }
+            f.line = rec.line;
             try f.record(values.items);
         }
         if (interrupt.requested()) return error.Interrupted;
@@ -492,5 +518,12 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
         return .{ .outcome = out };
     };
     out.result = .pass;
-    return .{ .outcome = out, .columns = f.columns.items, .header = verdict.dialect.header };
+    return .{ .outcome = out, .columns = f.columns.items, .header = verdict.dialect.header, .repeated_headers = repeated, .repeated_line = repeated_line };
+}
+
+/// Whether a record's values are the header's names, trimmed and in any case.
+fn sameNames(values: []const []const u8, names: []const []const u8) bool {
+    if (values.len != names.len) return false;
+    for (values, names) |v, n| if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, v, " \t"), n)) return false;
+    return true;
 }

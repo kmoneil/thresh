@@ -173,7 +173,11 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
         }
         if (!r.header) all_headers = false;
         if (!cfg.quiet) try err.print("infer {s}  {d} rows  {d} columns\n", .{ path, o.rows, r.columns.len });
-        for (r.columns) |c| {
+        if (r.repeated_headers > 0 and !cfg.quiet)
+            try err.print("thresh: {s}: {s}\n", .{ path, try worker.repeatedHeader(a, r.repeated_line, r.repeated_headers) });
+        const columns = try a.dupe(infer.ColumnState, r.columns);
+        for (columns) |*c| try restOf(err, cfg, path, c);
+        for (columns) |c| {
             for (merged.items) |*m| {
                 if (!std.ascii.eqlIgnoreCase(m.name, c.name)) continue;
                 const before = m.kind;
@@ -193,6 +197,9 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
         .nulls = ctx.nulls,
         .match = if (all_headers) .name else .position,
         .sampled = if (cfg.sample_rows != null) true else null,
+        // The threshold the types were inferred to: what validate needs
+        // to pass this file again.
+        .threshold = cfg.threshold,
     };
     if (!cfg.quiet) try warnThin(err, merged.items, s.columns);
     if (cfg.out) |path| {
@@ -204,6 +211,24 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
         try fw.interface.flush();
     } else try schema.writeJson(s, out);
     return code;
+}
+
+/// What a column's rest says: under --threshold, that it took the rest's
+/// type, those values its rejected ones; without, when few values moved
+/// it, which type the rest fit and the --threshold that would take it.
+fn restOf(err: *Io.Writer, cfg: *const cli.Config, path: []const u8, c: *infer.ColumnState) !void {
+    const rest = infer.restType(c.*) orelse return;
+    const rows = c.values + c.nulls;
+    const misfits = c.misfits;
+    const row = c.misfit_row;
+    if (cfg.threshold) |t| if (infer.tolerate(c, t)) {
+        if (!cfg.quiet) try err.print("thresh: {s}: column '{s}' inferred {t} with {d} of {d} values refusing it (row {d} first), as --threshold allows: validate rejects them\n", .{ path, c.name, rest, misfits, rows, row });
+        return;
+    };
+    if (cfg.quiet or !infer.fewMisfits(c.*)) return;
+    // The threshold that takes the rest's type, to four places.
+    const fit = @floor((1.0 - @as(f64, @floatFromInt(misfits)) / @as(f64, @floatFromInt(rows))) * 10_000) / 10_000;
+    try err.print("thresh: {s}: column '{s}' is {t} because of {d} of {d} values (row {d} first); the rest are {t}: --threshold {d} infers {t} and rejects them\n", .{ path, c.name, infer.typeOf(c.*), misfits, rows, row, rest, fit, rest });
 }
 
 /// Names the typed columns read from too few values to trust, the first
@@ -243,9 +268,13 @@ fn convertInferred(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.W
             const path = c.cfg.files[i];
             const inferred = try worker.inferFile(w.env, c.cfg, c.nulls, path, a);
             if (inferred.outcome.result == .@"error") return inferred.outcome;
+            const columns = try a.dupe(infer.ColumnState, inferred.columns);
+            if (c.cfg.threshold) |t| for (columns) |*col| {
+                _ = infer.tolerate(col, t);
+            };
             const s = try a.create(schema.Schema);
             s.* = .{
-                .columns = try infer.columnsOf(a, inferred.columns),
+                .columns = try infer.columnsOf(a, columns),
                 .nulls = c.nulls,
                 .match = if (inferred.header) .name else .position,
             };

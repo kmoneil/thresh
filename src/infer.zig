@@ -28,6 +28,15 @@
 //! spelling one of the column's nulls in the schema; any other column takes
 //! it as a value, which only a string can.
 //!
+//! Exact is not always what a file means: a few rows of another kind (a
+//! second header where two exports were joined) send a column of eight
+//! million numbers to string. So when a value sends a typed column to
+//! string, the column as it stood is kept beside it, reading every value
+//! after as a column does, but counting, not taking, the ones that would
+//! send it to string too. When few did, infer says which type the rest
+//! fit; under --threshold the column takes that type, those values its
+//! rejected ones.
+//!
 //! The schema is written for the next file, not only this one, so two
 //! types are written wider than the lattice left them: a decimal gets at
 //! least 18 digits of precision (the scale stays the one seen), and a bool
@@ -112,7 +121,20 @@ pub const ColumnState = struct {
     /// The spellings of an empty date the column has held, at most two (a
     /// date's and a timestamp's): its nulls if it ends one, values if not.
     blanks: [2]?[]const u8 = .{ null, null },
+    /// The column as it stood before the value that sent it to string,
+    /// reading every value since and counting, not taking, the ones only a
+    /// string takes; null once there are more than max_misfits of them.
+    rest: ?*ColumnState = null,
+    /// The values rest refused, the first being the one that sent the
+    /// column to string, and that one's row.
+    misfits: u64 = 0,
+    misfit_row: u64 = 0,
+    /// Values a --threshold let the column refuse: its conformance.
+    tolerated: u64 = 0,
 };
+
+/// The most values the rest of a column may refuse and still be followed.
+const max_misfits = 100_000;
 
 pub const Options = struct {
     /// Strings read as null: "" and --null's.
@@ -127,6 +149,9 @@ pub const Inferrer = struct {
     options: Options,
     columns: std.ArrayList(ColumnState) = .empty,
     rows: u64 = 0,
+    /// The source line of the record being read, which the caller sets for
+    /// the rows it names; 0 names the data row instead.
+    line: u64 = 0,
     format_buf: [128]u8 = undefined,
 
     pub fn init(arena: Allocator, options: Options) Inferrer {
@@ -171,14 +196,39 @@ pub const Inferrer = struct {
             c.nulls += 1;
             return;
         }
+        if (c.rest) |r| try f.follow(c, r, v);
         if ((c.kind == .null or c.kind.temporal()) and blankDate(v) and try keepBlank(f.arena, c, v)) return;
         c.values += 1;
         c.max_len = @max(c.max_len, v.len);
         try f.sample(c, v);
         if (c.kind == .string) return f.noteString(c, v);
         const t = std.mem.trim(u8, v, " \t");
+        const before = Lattice.of(c);
         c.kind = f.narrow(c, t);
+        if (c.kind == .string and before.kind != .null) {
+            // Sent to string: keep the column as it stood, to follow the rest.
+            const r = c.rest orelse try f.arena.create(ColumnState);
+            r.* = c.*;
+            before.restore(r);
+            r.rest = null;
+            c.rest = r;
+            c.misfits = 1;
+            c.misfit_row = if (f.line != 0) f.line else f.rows;
+        }
         if (c.kind == .string) f.noteString(c, v);
+    }
+
+    /// Reads v into r, c's rest, moving it down as a column moves (an
+    /// exponent takes a decimal to float64), or counts it refused when only
+    /// a string would take it.
+    fn follow(f: *Inferrer, c: *ColumnState, r: *ColumnState, v: []const u8) Allocator.Error!void {
+        if ((r.kind == .null or r.kind.temporal()) and blankDate(v) and try keepBlank(f.arena, r, v)) return;
+        const before = Lattice.of(r);
+        r.kind = f.narrow(r, std.mem.trim(u8, v, " \t"));
+        if (r.kind != .string) return;
+        before.restore(r);
+        c.misfits += 1;
+        if (c.misfits > max_misfits) c.rest = null;
     }
 
     fn noteString(f: *const Inferrer, c: *ColumnState, v: []const u8) void {
@@ -285,6 +335,65 @@ fn keepBlank(arena: Allocator, c: *ColumnState, v: []const u8) Allocator.Error!b
     return false;
 }
 
+/// The fields narrow may change: a column's place in the lattice.
+const Lattice = struct {
+    kind: Kind,
+    bool_words: bool,
+    int_digits: u8,
+    scale: u8,
+    format: ?[]const u8,
+    format_mixed: bool,
+
+    fn of(c: *const ColumnState) Lattice {
+        return .{ .kind = c.kind, .bool_words = c.bool_words, .int_digits = c.int_digits, .scale = c.scale, .format = c.format, .format_mixed = c.format_mixed };
+    }
+
+    fn restore(l: Lattice, c: *ColumnState) void {
+        c.kind = l.kind;
+        c.bool_words = l.bool_words;
+        c.int_digits = l.int_digits;
+        c.scale = l.scale;
+        c.format = l.format;
+        c.format_mixed = l.format_mixed;
+    }
+};
+
+/// Whether few of c's values, against all it holds, moved it from a type
+/// the rest fit, written otherwise: at most 10, or under one in ten
+/// thousand, and never more than one in a hundred, so the ordinary
+/// narrowing of a column's first values (1, then 42) is not called that.
+pub fn fewMisfits(c: ColumnState) bool {
+    if (!restDiffers(c)) return false;
+    const rows = c.values + c.nulls;
+    return c.misfits <= @max(10, rows / 10_000) and c.misfits * 100 <= rows;
+}
+
+/// Whether c has a rest whose type the schema writes differently.
+fn restDiffers(c: ColumnState) bool {
+    const r = c.rest orelse return false;
+    return typeOf(r.*) != typeOf(c);
+}
+
+/// The type c's rest fits, as the schema would write it.
+pub fn restType(c: ColumnState) ?schema.Type {
+    const r = c.rest orelse return null;
+    return typeOf(r.*);
+}
+
+/// Gives c the type its rest fits when the values that refused it are at
+/// most (1 - threshold) of the column, counting them as its rejected ones.
+pub fn tolerate(c: *ColumnState, threshold: f64) bool {
+    if (!restDiffers(c.*)) return false;
+    const r = c.rest.?;
+    const rows: f64 = @floatFromInt(c.values + c.nulls);
+    if (@as(f64, @floatFromInt(c.misfits)) > (1.0 - threshold) * rows) return false;
+    Lattice.of(r).restore(c);
+    c.blanks = r.blanks;
+    c.tolerated = c.misfits;
+    c.rest = null;
+    return true;
+}
+
 fn isBoolDigit(v: []const u8) bool {
     return std.mem.eql(u8, v, "0") or std.mem.eql(u8, v, "1");
 }
@@ -372,6 +481,43 @@ fn integerDigits(v: []const u8) ?usize {
     return digits.len - (std.mem.findNone(u8, digits, "0") orelse digits.len);
 }
 
+/// The kind a column is written as: its lattice point, with empty dates
+/// and 0-and-1 bools settled.
+fn finalKind(s: ColumnState) Kind {
+    var blank_time = false;
+    var blank = false;
+    for (s.blanks) |x| if (x) |v| {
+        blank = true;
+        blank_time = blank_time or std.mem.findScalar(u8, v, ':') != null;
+    };
+    var kind: Kind = if (!blank) s.kind else switch (s.kind) {
+        // Nothing but empty dates: a date column, a timestamp's if they
+        // have a time's colons.
+        .null => if (blank_time) .timestamp else .date,
+        .date, .timestamp, .string => s.kind,
+        // Numbers and empty dates: only a string takes both.
+        else => .string,
+    };
+    // 0s and 1s alone: a count or a flag that may yet hold a 2.
+    if (kind == .bool and !s.bool_words) kind = .int64;
+    return kind;
+}
+
+/// The type the schema writes for s.
+pub fn typeOf(s: ColumnState) schema.Type {
+    return switch (finalKind(s)) {
+        // A column of nothing but nulls: a string, the type that takes
+        // anything a later file has.
+        .null, .string => .string,
+        .bool => .bool,
+        .int64 => .int64,
+        .decimal => .decimal,
+        .float64 => .float64,
+        .date => .date,
+        .timestamp => .timestamp,
+    };
+}
+
 /// The columns as a schema's, for infer's output: allocated in arena.
 pub fn columnsOf(arena: Allocator, states: []const ColumnState) Allocator.Error![]schema.Column {
     const out = try arena.alloc(schema.Column, states.len);
@@ -379,36 +525,14 @@ pub fn columnsOf(arena: Allocator, states: []const ColumnState) Allocator.Error!
         var samples: std.ArrayList([]const u8) = .empty;
         for (s.samples) |x| if (x) |v| try samples.append(arena, v);
         var blanks: std.ArrayList([]const u8) = .empty;
-        var blank_time = false;
-        for (s.blanks) |x| if (x) |v| {
-            try blanks.append(arena, v);
-            blank_time = blank_time or std.mem.findScalar(u8, v, ':') != null;
-        };
-        var kind: Kind = if (blanks.items.len == 0) s.kind else switch (s.kind) {
-            // Nothing but empty dates: a date column, a timestamp's if
-            // they have a time's colons.
-            .null => if (blank_time) .timestamp else .date,
-            .date, .timestamp, .string => s.kind,
-            // Numbers and empty dates: only a string takes both.
-            else => .string,
-        };
-        // 0s and 1s alone: a count or a flag that may yet hold a 2.
-        if (kind == .bool and !s.bool_words) kind = .int64;
+        for (s.blanks) |x| if (x) |v| try blanks.append(arena, v);
+        const kind = finalKind(s);
+        const rows: f64 = @floatFromInt(@max(1, s.values + s.nulls));
         o.* = .{
             .name = s.name,
-            .type = switch (kind) {
-                // A column of nothing but nulls: a string, the type that
-                // takes anything a later file has.
-                .null, .string => .string,
-                .bool => .bool,
-                .int64 => .int64,
-                .decimal => .decimal,
-                .float64 => .float64,
-                .date => .date,
-                .timestamp => .timestamp,
-            },
+            .type = typeOf(s),
             .inferred = true,
-            .conformance = 1.0,
+            .conformance = 1.0 - @as(f64, @floatFromInt(s.tolerated)) / rows,
             .samples = try samples.toOwnedSlice(arena),
             .widened_by = s.widened_by,
         };
@@ -437,6 +561,9 @@ pub fn merge(a: *ColumnState, b: ColumnState, file: []const u8) void {
     const before = a.kind;
     a.nulls += b.nulls;
     a.values += b.values;
+    a.tolerated += b.tolerated;
+    // Which type the rest fits is a file's question, asked before a merge.
+    a.rest = null;
     a.max_len = @max(a.max_len, b.max_len);
     a.invalid_utf8 = a.invalid_utf8 or b.invalid_utf8;
     for (b.samples) |s| if (s) |v| for (&a.samples) |*slot| {
@@ -634,6 +761,51 @@ test "the inferred columns are a schema validate reads" {
     try testing.expectEqual(schema.Type.decimal, cols[1].type);
     try testing.expectEqual(@as(u8, 18), cols[1].precision);
     try testing.expectEqualStrings("%Y-%m-%d", cols[2].format.?);
+}
+
+test "a few values of another kind: the type the rest fit, and --threshold" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f: Inferrer = .init(a, .{});
+    try f.header(&.{ "qty", "day", "text" }, 3);
+    for (0..2000) |i| {
+        f.line = i + 2;
+        if (i == 1500) {
+            // A second header, where two exports were joined.
+            try f.record(&.{ "Qty.[Qty]", "Day.[Day]", "Text" });
+            continue;
+        }
+        var buf: [16]u8 = undefined;
+        try f.record(&.{ try std.fmt.bufPrint(&buf, "{d}", .{i + 2}), "01/02/2025", if (i % 2 == 0) "12" else "word" });
+    }
+    const qty = f.columns.items[0];
+    try testing.expectEqual(Kind.string, qty.kind);
+    try testing.expect(fewMisfits(qty));
+    try testing.expectEqual(@as(u64, 1), qty.misfits);
+    try testing.expectEqual(@as(u64, 1502), qty.misfit_row);
+    try testing.expectEqual(schema.Type.int64, restType(qty).?);
+    try testing.expectEqual(schema.Type.date, restType(f.columns.items[1]).?);
+    // Ordinary narrowing after it is the rest's own: an exponent takes a
+    // decimal column to float64, and is not one of the few.
+    var g: Inferrer = .init(a, .{});
+    try g.header(&.{"x"}, 1);
+    for (0..500) |i| try g.record(&.{if (i == 100) "X.[X]" else if (i == 300) "1.5E-05" else "2.25"});
+    try testing.expectEqual(@as(u64, 1), g.columns.items[0].misfits);
+    try testing.expectEqual(schema.Type.float64, restType(g.columns.items[0]).?);
+    // Text half of the time is not a few.
+    try testing.expect(!fewMisfits(f.columns.items[2]));
+
+    // --threshold 0.999 takes the rest's type and counts the row against it.
+    var tol = qty;
+    try testing.expect(tolerate(&tol, 0.999));
+    const cols = try columnsOf(a, &.{tol});
+    try testing.expectEqual(schema.Type.int64, cols[0].type);
+    try testing.expectApproxEqAbs(@as(f64, 1999.0 / 2000.0), cols[0].conformance.?, 1e-12);
+    // A stricter one does not.
+    var strict = qty;
+    try testing.expect(!tolerate(&strict, 0.9999));
+    try testing.expectEqual(schema.Type.string, (try columnsOf(a, &.{strict}))[0].type);
 }
 
 test "the schema is written for the next file: decimals widened, 0 and 1 as int64" {
