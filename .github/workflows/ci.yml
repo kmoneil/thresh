@@ -65,16 +65,20 @@ jobs:
       - name: tools/bench_gate.sh
         run: tools/bench_gate.sh "origin/${{ github.base_ref }}"
 
+  # ReleaseSafe as well as Debug: a safety check the optimizer can see
+  # past, or a value read before it is set, can pass in one and not the
+  # other (an allocation failing inside a union literal did, once).
   test:
-    name: test (${{ matrix.os }})
+    name: test (${{ matrix.os }}, ${{ matrix.optimize }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        optimize: [Debug, ReleaseSafe]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       - name: zig build test
-        run: zig build test --summary all
+        run: zig build test -Doptimize=${{ matrix.optimize }} --summary all
