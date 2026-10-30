@@ -128,13 +128,17 @@ const Output = struct {
     }
 
     /// Flushes and closes the file, and renames it into place, or with
-    /// keep false deletes it.
+    /// keep false deletes it. Releases everything, and leaves no
+    /// temporary, whether or not it succeeds, so it is called once.
     fn finish(o: *Output, env: Env, keep: bool) !void {
         defer o.batch.deinit();
         defer switch (o.format) {
             .arrow => |*w| w.deinit(),
             .csv => {},
         };
+        // Deleted after it is closed (the defer below runs first).
+        errdefer Io.Dir.cwd().deleteFile(env.io, o.tmp_path) catch {};
+        defer o.sink.close(env.io, env.gpa);
         if (keep) switch (o.format) {
             .arrow => |*w| {
                 w.out = &o.sink.writer.interface;
@@ -301,6 +305,7 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
     if (output) |*o| {
         // A failing file's good rows are still written, unless --strict.
         const keep = out.result == .pass or !cfg.strict;
+        // Done whether or not finish succeeds: it releases the output either way.
         output_done = true;
         try o.finish(env, keep);
         if (keep) out.written = o.final_path;
@@ -531,4 +536,68 @@ fn sameNames(values: []const []const u8, names: []const []const u8) bool {
     if (values.len != names.len) return false;
     for (values, names) |v, n| if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, v, " \t"), n)) return false;
     return true;
+}
+
+const testing = std.testing;
+
+/// Whether dir/sub_path holds a temporary output (a name ending .tmp).
+fn hasTemporary(io: Io, dir: Io.Dir, sub_path: []const u8) !bool {
+    var d = try dir.openDir(io, sub_path, .{ .iterate = true });
+    defer d.close(io);
+    var it = d.iterate();
+    while (try it.next(io)) |e| if (std.mem.endsWith(u8, e.name, ".tmp")) return true;
+    return false;
+}
+
+const test_schema: Schema = .{ .columns = &.{ .{ .name = "id", .type = .int64 }, .{ .name = "name", .type = .string } } };
+
+test "an output that cannot be renamed into place leaves no temporary" {
+    const io = testing.io;
+    const gpa = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.writeFile(io, .{ .sub_path = "orders.csv", .data = "id,name\n1,apple\n" });
+    // Where the output goes is a directory, and not an empty one.
+    try tmp.dir.createDirPath(io, "out/orders.csv/x");
+    const out_dir = try std.fmt.allocPrint(a, "{s}/out", .{root});
+    var cfg: cli.Config = .{ .command = .convert, .to = .csv, .out = out_dir };
+    const plan: Plan = .{
+        .cfg = &cfg,
+        .schema = &test_schema,
+        .nulls = &.{""},
+        .threshold = 1.0,
+        .timing = false,
+        .output = .{ .to = .csv, .dir = out_dir },
+    };
+    const path = try std.fmt.allocPrint(a, "{s}/orders.csv", .{root});
+    try testing.expectError(error.IsDir, validateFile(.{ .io = io, .gpa = gpa }, plan, path, a));
+    try testing.expect(!try hasTemporary(io, tmp.dir, "out"));
+}
+
+test "an output whose last write fails is closed and leaves no temporary" {
+    const io = testing.io;
+    const gpa = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const out_dir = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/out", .{tmp.sub_path});
+    var cfg: cli.Config = .{ .command = .convert, .to = .csv, .out = out_dir };
+    const env: Env = .{ .io = io, .gpa = gpa };
+    var o: Output = try .create(env, a, .{ .to = .csv, .dir = out_dir }, &cfg, &test_schema, "orders.csv");
+    try o.header(&test_schema, a);
+    // The file under the buffered header turns read-only, as a full disk
+    // would fail it: the flush in finish is refused. testing.allocator
+    // reports the Sink's buffer if finish does not free it.
+    o.sink.file.close(io);
+    o.sink.file = try Io.Dir.cwd().openFile(io, o.tmp_path, .{});
+    o.sink.writer.file = o.sink.file;
+    try testing.expectError(error.WriteFailed, o.finish(env, true));
+    try testing.expect(o.sink.closed);
+    try testing.expect(!try hasTemporary(io, tmp.dir, "out"));
 }
