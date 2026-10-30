@@ -163,6 +163,9 @@ pub const Scanner = struct {
         positions: usize = 1 << 20,
         /// Records the reference parser reads after one the index could not.
         scalar_run: u32 = 32,
+        /// An index buffer to use rather than allocate: a worker's, reused
+        /// from file to file. Its length is the positions the index holds.
+        positions_buffer: ?[]u32 = null,
     };
 
     /// The largest window: past it, a record goes to the reference parser.
@@ -179,12 +182,12 @@ pub const Scanner = struct {
             .eof = true,
             .cur = options.reference.start,
             .simd = indexable(dialect),
-            .positions = try gpa.alloc(u32, options.positions),
+            .positions = options.positions_buffer orelse try gpa.alloc(u32, options.positions),
         };
     }
 
     pub fn deinit(s: *Scanner) void {
-        s.gpa.free(s.positions);
+        if (s.options.positions_buffer == null) s.gpa.free(s.positions);
         s.special.deinit(s.gpa);
         s.scratch.deinit(s.gpa);
     }

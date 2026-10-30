@@ -16,6 +16,8 @@ const schema = @import("schema.zig");
 const report = @import("report.zig");
 const worker = @import("worker.zig");
 const infer = @import("infer.zig");
+const pool = @import("pool.zig");
+const interrupt = @import("interrupt.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -29,6 +31,8 @@ pub const Exit = enum(u8) {
     /// A file could not be read, or its dialect could not be settled.
     unreadable = 2,
     usage = 3,
+    /// Ctrl-C, as shells number it (128 + SIGINT).
+    interrupted = 130,
 
     /// The worse of two outcomes.
     fn worst(a: Exit, b: Exit) Exit {
@@ -130,27 +134,45 @@ fn loadSchema(env: Env, cfg: *const cli.Config, err: *Io.Writer) !?schema.Owned 
     };
 }
 
-/// infer: each file's columns, merged by name into one schema (the lowest
-/// type any file reached), written to --out or stdout. A line per file on
-/// stderr, and one per column a later file widened.
+/// infer: each file's columns (in parallel, pass 1), merged by name into
+/// one schema (the lowest type any file reached), written to --out or
+/// stdout. A line per file on stderr, and one per column a later file
+/// widened, in the order the files were given.
 fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
     const a = env.arena;
     const default_nulls: schema.Schema = .{ .columns = &.{} };
-    const nulls = try worker.nullsOf(a, &default_nulls, cfg.nulls);
+    const Ctx = struct {
+        cfg: *const cli.Config,
+        nulls: []const []const u8,
+        results: []worker.Inferred,
+
+        fn run(ctx: *anyopaque, w: *pool.Worker, i: usize) anyerror!report.Outcome {
+            const c: *@This() = @ptrCast(@alignCast(ctx));
+            // The columns outlive the file: the worker's keep arena.
+            c.results[i] = try worker.inferFile(w.env, c.cfg, c.nulls, c.cfg.files[i], w.keep);
+            return c.results[i].outcome;
+        }
+    };
+    var ctx: Ctx = .{
+        .cfg = cfg,
+        .nulls = try worker.nullsOf(a, &default_nulls, cfg.nulls),
+        .results = try a.alloc(worker.Inferred, cfg.files.len),
+    };
+    for (ctx.results, cfg.files) |*r, f| r.* = .{ .outcome = .{ .file = f, .result = .@"error", .problem = "not reached" } };
+    const outcomes = try runPool(env, cfg, .{ .ctx = &ctx, .files = cfg.files, .run = Ctx.run }, out, err, true);
+    if (interrupt.requested()) return interrupted(err);
+
     var merged: std.ArrayList(infer.ColumnState) = .empty;
     var all_headers = true;
     var code: Exit = .ok;
-    var rows: u64 = 0;
-    for (cfg.files) |path| {
-        const r = try worker.inferFile(.{ .io = env.io, .gpa = env.gpa }, cfg, nulls, path, a);
-        if (r.outcome.result == .@"error") {
+    for (ctx.results, outcomes, cfg.files) |r, o, path| {
+        if (o.result == .@"error") {
             code = code.worst(.unreadable);
-            if (!cfg.quiet) try err.print("error {s}  {s}\n", .{ path, r.outcome.problem orelse "" });
+            if (!cfg.quiet) try err.print("error {s}  {s}\n", .{ path, o.problem orelse "" });
             continue;
         }
-        rows += r.outcome.rows;
         if (!r.header) all_headers = false;
-        if (!cfg.quiet) try err.print("infer {s}  {d} rows  {d} columns\n", .{ path, r.outcome.rows, r.columns.len });
+        if (!cfg.quiet) try err.print("infer {s}  {d} rows  {d} columns\n", .{ path, o.rows, r.columns.len });
         for (r.columns) |c| {
             for (merged.items) |*m| {
                 if (!std.ascii.eqlIgnoreCase(m.name, c.name)) continue;
@@ -168,7 +190,7 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
     }
     const s: schema.Schema = .{
         .columns = try infer.columnsOf(a, merged.items),
-        .nulls = nulls,
+        .nulls = ctx.nulls,
         .match = if (all_headers) .name else .position,
         .sampled = if (cfg.sample_rows != null) true else null,
     };
@@ -194,79 +216,122 @@ fn outputOf(cfg: *const cli.Config) ?worker.OutputPlan {
 /// (pass 1), then the file read again and written through validation
 /// (pass 2), the page cache making the second read cheap.
 fn convertInferred(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
-    const a = env.arena;
     const no_schema: schema.Schema = .{ .columns = &.{} };
-    const nulls = try worker.nullsOf(a, &no_schema, cfg.nulls);
-    var outcomes: std.ArrayList(report.Outcome) = .empty;
-    var code: Exit = .ok;
-    for (cfg.files) |path| {
-        const inferred = try worker.inferFile(.{ .io = env.io, .gpa = env.gpa }, cfg, nulls, path, a);
-        var o = inferred.outcome;
-        if (o.result != .@"error") {
+    const Ctx = struct {
+        cfg: *const cli.Config,
+        nulls: []const []const u8,
+        names: []const []const u8,
+
+        fn run(ctx: *anyopaque, w: *pool.Worker, i: usize) anyerror!report.Outcome {
+            const c: *@This() = @ptrCast(@alignCast(ctx));
+            const a = w.scratch.allocator();
+            const path = c.cfg.files[i];
+            const inferred = try worker.inferFile(w.env, c.cfg, c.nulls, path, a);
+            if (inferred.outcome.result == .@"error") return inferred.outcome;
             const s = try a.create(schema.Schema);
             s.* = .{
                 .columns = try infer.columnsOf(a, inferred.columns),
-                .nulls = nulls,
+                .nulls = c.nulls,
                 .match = if (inferred.header) .name else .position,
             };
             const plan: worker.Plan = .{
-                .cfg = cfg,
+                .cfg = c.cfg,
                 .schema = s,
-                .nulls = nulls,
-                .threshold = cfg.threshold orelse 1.0,
-                .output = outputOf(cfg),
+                .nulls = c.nulls,
+                .threshold = c.cfg.threshold orelse 1.0,
+                .output = outputOf(c.cfg),
             };
-            o = try worker.validateFile(.{ .io = env.io, .gpa = env.gpa }, plan, path, a);
+            return worker.validateNamed(w.env, plan, path, c.names[i], a);
         }
-        try outcomes.append(a, o);
-        code = code.worst(@fromBackingInt(o.result.exitCode()));
-        if (cfg.json) {
-            try report.writeJsonLine(out, o);
-        } else if (!cfg.quiet) {
-            try report.writeLine(err, o);
-        }
-    }
-    if (cfg.report_dir) |dir| {
-        var sink: worker.Sink = try .create(env.io, env.gpa, dir, "summary", ".json");
-        defer sink.close(env.io, env.gpa);
-        try report.writeSummary(&sink.writer.interface, outcomes.items, @backingInt(code));
-        try sink.writer.interface.flush();
-    }
-    return code;
+    };
+    var ctx: Ctx = .{
+        .cfg = cfg,
+        .nulls = try worker.nullsOf(env.arena, &no_schema, cfg.nulls),
+        .names = try pool.uniqueNames(env.arena, cfg.files),
+    };
+    const outcomes = try runPool(env, cfg, .{ .ctx = &ctx, .files = cfg.files, .run = Ctx.run }, out, err, false);
+    return finishRun(env, cfg, outcomes, err);
 }
 
-/// validate: each file against the schema, a line apiece on stderr (or a
-/// JSON object on stdout under --json), reports and reject files as asked.
+/// validate, and run and convert with a schema: each file against it,
+/// in parallel, a line apiece on stderr as each finishes (or a JSON object
+/// on stdout under --json), reports, reject files and output as asked.
 fn validateFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
     var owned = (try loadSchema(env, cfg, err)) orelse return .usage;
     defer owned.deinit();
     const s = &owned.schema;
-    const plan: worker.Plan = .{
-        .cfg = cfg,
-        .schema = s,
-        .nulls = try worker.nullsOf(env.arena, s, cfg.nulls),
-        .threshold = cfg.threshold orelse s.threshold orelse 1.0,
-        .output = outputOf(cfg),
-    };
-    var outcomes: std.ArrayList(report.Outcome) = .empty;
-    var code: Exit = .ok;
-    for (cfg.files) |path| {
-        const o = try worker.validateFile(.{ .io = env.io, .gpa = env.gpa }, plan, path, env.arena);
-        try outcomes.append(env.arena, o);
-        code = code.worst(@fromBackingInt(o.result.exitCode()));
-        if (cfg.json) {
-            try report.writeJsonLine(out, o);
-        } else if (!cfg.quiet) {
-            try report.writeLine(err, o);
+    const Ctx = struct {
+        plan: worker.Plan,
+        names: []const []const u8,
+
+        fn run(ctx: *anyopaque, w: *pool.Worker, i: usize) anyerror!report.Outcome {
+            const c: *@This() = @ptrCast(@alignCast(ctx));
+            return worker.validateNamed(w.env, c.plan, c.plan.cfg.files[i], c.names[i], w.scratch.allocator());
         }
-    }
+    };
+    var ctx: Ctx = .{
+        .plan = .{
+            .cfg = cfg,
+            .schema = s,
+            .nulls = try worker.nullsOf(env.arena, s, cfg.nulls),
+            .threshold = cfg.threshold orelse s.threshold orelse 1.0,
+            .output = outputOf(cfg),
+        },
+        .names = try pool.uniqueNames(env.arena, cfg.files),
+    };
+    const outcomes = try runPool(env, cfg, .{ .ctx = &ctx, .files = cfg.files, .run = Ctx.run }, out, err, false);
+    return finishRun(env, cfg, outcomes, err);
+}
+
+/// Runs task over the files on --jobs workers, with Ctrl-C routed to the
+/// workers and, with --progress, a progress display. silent: the task's
+/// command prints its own lines afterwards.
+fn runPool(env: Env, cfg: *const cli.Config, task: pool.Task, out: *Io.Writer, err: *Io.Writer, silent: bool) ![]report.Outcome {
+    interrupt.install();
+    const outcomes = try env.arena.alloc(report.Outcome, cfg.files.len);
+    var lines: pool.Lines = .{
+        .err = err,
+        .out = out,
+        .json = cfg.json and !silent,
+        // The progress display has stderr; a line per file would tear it.
+        .quiet = silent or cfg.quiet or cfg.progress,
+    };
+    const progress: std.Progress.Node = if (cfg.progress)
+        std.Progress.start(env.io, .{ .root_name = "thresh", .estimated_total_items = cfg.files.len })
+    else
+        .none;
+    defer progress.end();
+    const cpus = std.Thread.getCpuCount() catch 1;
+    try pool.run(env.io, env.gpa, task, outcomes, &lines, .{
+        .jobs = cfg.jobs orelse cpus,
+        .progress = progress,
+        .keep = env.arena,
+    });
+    return outcomes;
+}
+
+/// summary.json with --report, and the run's exit status.
+fn finishRun(env: Env, cfg: *const cli.Config, outcomes: []const report.Outcome, err: *Io.Writer) !Exit {
+    if (interrupt.requested()) return interrupted(err);
+    var code: Exit = .ok;
+    for (outcomes) |o| code = code.worst(@fromBackingInt(o.result.exitCode()));
     if (cfg.report_dir) |dir| {
         var sink: worker.Sink = try .create(env.io, env.gpa, dir, "summary", ".json");
         defer sink.close(env.io, env.gpa);
-        try report.writeSummary(&sink.writer.interface, outcomes.items, @backingInt(code));
+        try report.writeSummary(&sink.writer.interface, outcomes, @backingInt(code));
         try sink.writer.interface.flush();
     }
+    if (cfg.progress and !cfg.quiet) {
+        var counts: std.EnumArray(report.Result, usize) = .initFill(0);
+        for (outcomes) |o| counts.getPtr(o.result).* += 1;
+        try err.print("thresh: {d} files: {d} passed, {d} failed, {d} errors\n", .{ outcomes.len, counts.get(.pass), counts.get(.fail), counts.get(.@"error") });
+    }
     return code;
+}
+
+fn interrupted(err: *Io.Writer) !Exit {
+    try err.writeAll("thresh: interrupted; files not finished left no output\n");
+    return .interrupted;
 }
 
 /// Each file's dialect, a line apiece: text, or JSON under --json.
@@ -347,6 +412,8 @@ test {
     _ = report;
     _ = worker;
     _ = infer;
+    _ = pool;
+    _ = interrupt;
     _ = @import("types/date.zig");
 }
 

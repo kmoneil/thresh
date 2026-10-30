@@ -17,8 +17,9 @@ scalar reference parser), the sniffer, and validation of every type, dates
 and timestamps through dateparsa, inference, and output as RFC 4180 CSV or
 Arrow IPC (stream, or file format with `--arrow-file`): `thresh sniff`,
 `infer`, `validate`, `convert` and `run`, with per-file JSON reports,
-summary.json and reject files. Files are processed one after another;
-running them in parallel is next. `thresh --help` lists every option.
+summary.json and reject files, one file per worker across `--jobs`
+workers (default: one per CPU). Ctrl-C stops the run with no partial
+output file. `thresh --help` lists every option.
 
 Arrow output becomes Parquet in one line until thresh writes it:
 `duckdb -c "INSTALL arrow FROM community; LOAD arrow; COPY (FROM
@@ -39,6 +40,7 @@ zig build fmt-check       # zig fmt --check
 zig build vet             # zigvet, built from the pinned dependency
 zig build corpus          # the fixture corpus, into zig-out/corpus (python3)
 zig build bench           # MB/s per parsing stage, ReleaseFast (-- --size BYTES)
+zig build scale -Doptimize=ReleaseFast  # 10,000 files, MB/s by --jobs, Ctrl-C
 zig build run -- sniff a.csv
 ```
 

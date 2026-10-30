@@ -121,6 +121,15 @@ pub fn build(b: *std.Build) void {
     arrow_check.has_side_effects = true;
     b.step("arrow-check", "Read thresh's Arrow output back with pyarrow (needs python3 with pyarrow)").dependOn(&arrow_check.step);
 
+    // The parallel driver at scale: 10,000 files in one run, throughput by
+    // --jobs, and a Ctrl-C mid-run. Run it optimized:
+    // `zig build scale -Doptimize=ReleaseFast`.
+    const scale = b.addSystemCommand(&.{ "python3", "-I" });
+    scale.addFileArg(b.path("test/scale/run.py"));
+    scale.addArtifactArg(exe);
+    scale.has_side_effects = true;
+    b.step("scale", "10,000 files, throughput by --jobs, and Ctrl-C (python3; use -Doptimize=ReleaseFast)").dependOn(&scale.step);
+
     const lint_paths = [_][]const u8{ "build.zig", "src", "bench" };
     var fmt_paths: [lint_paths.len]std.Build.LazyPath = undefined;
     for (lint_paths, &fmt_paths) |p, *lp| lp.* = b.path(p);

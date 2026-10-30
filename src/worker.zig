@@ -17,10 +17,13 @@ const infer = @import("infer.zig");
 const builders = @import("builders.zig");
 const csv = @import("write/csv.zig");
 const arrow = @import("write/arrow.zig");
+const interrupt = @import("interrupt.zig");
 
 pub const Env = struct {
     io: Io,
     gpa: Allocator,
+    /// A worker's index buffer, reused from file to file.
+    positions: ?[]u32 = null,
 };
 
 /// The run-wide settings a file's validation takes from the command line
@@ -165,6 +168,12 @@ fn since(io: Io, t: Io.Timestamp) u64 {
 /// rejected rows (with --reject), and returns what came of it. An error is
 /// one about the run (memory, an unwritable report), not about the file.
 pub fn validateFile(env: Env, plan: Plan, path: []const u8, arena: Allocator) !report.Outcome {
+    return validateNamed(env, plan, path, std.fs.path.basename(path), arena);
+}
+
+/// validateFile, with name the base of its report, reject and output
+/// files' names (unique within a run when inputs share a base name).
+pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, arena: Allocator) !report.Outcome {
     const io = env.io;
     const gpa = env.gpa;
     const cfg = plan.cfg;
@@ -174,7 +183,7 @@ pub fn validateFile(env: Env, plan: Plan, path: []const u8, arena: Allocator) !r
     const t0 = now(io);
     var in = input.Input.open(io, gpa, path, .{ .no_mmap = cfg.no_mmap }) catch |e| {
         out.problem = describe(e);
-        try writeReport(env, plan, out, details);
+        try writeReport(env, plan, out, name, details);
         return out;
     };
     defer in.close(io, gpa);
@@ -193,7 +202,7 @@ pub fn validateFile(env: Env, plan: Plan, path: []const u8, arena: Allocator) !r
         error.OutOfMemory => return e,
         else => {
             out.problem = describe(e);
-            try writeReport(env, plan, out, details);
+            try writeReport(env, plan, out, name, details);
             return out;
         },
     };
@@ -201,7 +210,7 @@ pub fn validateFile(env: Env, plan: Plan, path: []const u8, arena: Allocator) !r
     out.timing.sniff_ns = since(io, t0);
     if (verdict.confidence == .low and !cfg.pins.complete()) {
         out.problem = "the dialect is not settled (confidence low); pin it with --delimiter, --quote, --escape, --newline and --header";
-        try writeReport(env, plan, out, details);
+        try writeReport(env, plan, out, name, details);
         return out;
     }
 
@@ -220,11 +229,16 @@ pub fn validateFile(env: Env, plan: Plan, path: []const u8, arena: Allocator) !r
     });
     defer v.deinit();
 
-    var reject: ?Sink = if (cfg.reject_dir) |dir| try .create(io, gpa, dir, path, ".rejects.csv") else null;
+    var reject: ?Sink = if (cfg.reject_dir) |dir| try .create(io, gpa, dir, name, ".rejects.csv") else null;
     defer if (reject) |*r| r.close(io, gpa);
+    // Interrupted or failed: no partial reject file left behind either.
+    errdefer if (reject) |*r| {
+        r.close(io, gpa);
+        removeSink(io, cfg.reject_dir.?, name, ".rejects.csv") catch {};
+    };
     if (reject) |*r| v.reject = &r.writer.interface;
 
-    var output: ?Output = if (plan.output) |op| try .create(env, arena, op, cfg, plan.schema, path) else null;
+    var output: ?Output = if (plan.output) |op| try .create(env, arena, op, cfg, plan.schema, name) else null;
     var output_done = false;
     defer if (output) |*o| if (!output_done) o.finish(env, false) catch {};
     if (output) |*o| {
@@ -232,10 +246,10 @@ pub fn validateFile(env: Env, plan: Plan, path: []const u8, arena: Allocator) !r
         try o.header(plan.schema, arena);
     }
 
-    var s: records.Scanner = try .init(gpa, verdict.dialect, .{ .reference = .{
-        .start = verdict.start,
-        .keep_empty = cfg.keep_empty,
-    } });
+    var s: records.Scanner = try .init(gpa, verdict.dialect, .{
+        .reference = .{ .start = verdict.start, .keep_empty = cfg.keep_empty },
+        .positions_buffer = env.positions,
+    });
     defer s.deinit();
     s.feed(in.data(), in.base, in.eof);
     var batch: records.Batch = .{};
@@ -254,6 +268,7 @@ pub fn validateFile(env: Env, plan: Plan, path: []const u8, arena: Allocator) !r
             }
             try v.record(batch.records.items[i], fields, in.data(), in.base);
         }
+        if (interrupt.requested()) return error.Interrupted;
         if (output) |*o| try o.write();
         switch (state) {
             .full => {},
@@ -285,10 +300,10 @@ pub fn validateFile(env: Env, plan: Plan, path: []const u8, arena: Allocator) !r
         if (v.rejected == 0) {
             r.close(io, gpa);
             reject = null;
-            try removeSink(io, cfg.reject_dir.?, path, ".rejects.csv");
+            try removeSink(io, cfg.reject_dir.?, name, ".rejects.csv");
         }
     }
-    try writeReport(env, plan, out, details);
+    try writeReport(env, plan, out, name, details);
     return out;
 }
 
@@ -299,9 +314,9 @@ fn encodingOf(cfg: *const cli.Config) @import("types.zig").Encoding {
     };
 }
 
-fn writeReport(env: Env, plan: Plan, out: report.Outcome, details: report.Details) !void {
+fn writeReport(env: Env, plan: Plan, out: report.Outcome, name: []const u8, details: report.Details) !void {
     const dir = plan.cfg.report_dir orelse return;
-    var sink: Sink = try .create(env.io, env.gpa, dir, out.file, ".report.json");
+    var sink: Sink = try .create(env.io, env.gpa, dir, name, ".report.json");
     defer sink.close(env.io, env.gpa);
     try report.writeFileReport(&sink.writer.interface, out, details);
     try sink.writer.interface.flush();
@@ -406,10 +421,10 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
         .encoding = encodingOf(cfg),
         .day_first = cfg.day_first,
     });
-    var s: records.Scanner = try .init(gpa, verdict.dialect, .{ .reference = .{
-        .start = verdict.start,
-        .keep_empty = cfg.keep_empty,
-    } });
+    var s: records.Scanner = try .init(gpa, verdict.dialect, .{
+        .reference = .{ .start = verdict.start, .keep_empty = cfg.keep_empty },
+        .positions_buffer = env.positions,
+    });
     defer s.deinit();
     s.feed(in.data(), in.base, in.eof);
     var batch: records.Batch = .{};
@@ -435,6 +450,7 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
             }
             try f.record(values.items);
         }
+        if (interrupt.requested()) return error.Interrupted;
         switch (state) {
             .full => {},
             .end => break,
