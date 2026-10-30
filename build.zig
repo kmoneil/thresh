@@ -111,6 +111,16 @@ pub fn build(b: *std.Build) void {
     b.step("bench", "Measure each stage's throughput (-- --size BYTES --runs N --profile P)").dependOn(&run_bench.step);
     b.step("bench-install", "Install the benchmark binary").dependOn(&b.addInstallArtifact(bench_exe, .{}).step);
 
+    // The Arrow writer read back by pyarrow (and DuckDB when installed),
+    // value for value against the CSV path. Needs python3 with pyarrow:
+    // `uv run --with pyarrow --with duckdb zig build arrow-check`.
+    const arrow_check = b.addSystemCommand(&.{ "python3", "-I" });
+    arrow_check.addFileArg(b.path("test/arrow/check.py"));
+    arrow_check.addArtifactArg(exe);
+    arrow_check.addDirectoryArg(corpus_dir);
+    arrow_check.has_side_effects = true;
+    b.step("arrow-check", "Read thresh's Arrow output back with pyarrow (needs python3 with pyarrow)").dependOn(&arrow_check.step);
+
     const lint_paths = [_][]const u8{ "build.zig", "src", "bench" };
     var fmt_paths: [lint_paths.len]std.Build.LazyPath = undefined;
     for (lint_paths, &fmt_paths) |p, *lp| lp.* = b.path(p);
@@ -241,11 +251,11 @@ const cli_checks = [_]struct {
         .stderr = "infer test/cli/orders.csv  2 rows  3 columns\n",
     },
     .{
-        .args = &.{ "convert", "test/cli/orders.csv", "--to", "csv", "--out", ".zig-cache/cli-out", "--json" },
+        .args = &.{ "convert", "test/cli/orders.csv", "--to", "csv", "--out", ".zig-cache/cli-out/convert", "--json" },
         .stdout = "{\"file\":\"test/cli/orders.csv\",\"result\":\"pass\",\"rows\":2,\"rows_rejected\":0,\"problem\":null}\n",
     },
     .{
-        .args = &.{ "run", "test/cli/orders.csv", "--columns", "id:int64,amount:int64", "--to", "csv", "--out", ".zig-cache/cli-out", "--strict", "--quiet" },
+        .args = &.{ "run", "test/cli/orders.csv", "--columns", "id:int64,amount:int64", "--to", "csv", "--out", ".zig-cache/cli-out/run", "--strict", "--quiet" },
         .code = 1,
     },
     .{ .args = &.{"--help"}, .stdout = null },

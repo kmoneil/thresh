@@ -1,0 +1,10 @@
+{
+  "columns": [
+    { "name": "id", "type": "int64", "nullable": false },
+    { "name": "at", "type": "time" },
+    { "name": "payload", "type": "binary" },
+    { "name": "status", "type": "enum", "values": ["open", "closed"] },
+    { "name": "price", "type": "decimal", "precision": 5, "scale": 2 },
+    { "name": "note", "type": "string" }
+  ]
+}

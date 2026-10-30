@@ -14,10 +14,18 @@ thresh run      <file>... --schema s.json --to arrow --out dir/
 
 Status: early. In: the parser (a SIMD structural index checked against a
 scalar reference parser), the sniffer, and validation of every type, dates
-and timestamps through dateparsa, inference, and RFC 4180 CSV output:
-`thresh sniff`, `infer`, `validate`, and `convert` and `run --to csv`, with
-per-file JSON reports, summary.json and reject files. Arrow output is
-next. `thresh --help` lists every option.
+and timestamps through dateparsa, inference, and output as RFC 4180 CSV or
+Arrow IPC (stream, or file format with `--arrow-file`): `thresh sniff`,
+`infer`, `validate`, `convert` and `run`, with per-file JSON reports,
+summary.json and reject files. Files are processed one after another;
+running them in parallel is next. `thresh --help` lists every option.
+
+Arrow output becomes Parquet in one line until thresh writes it:
+`duckdb -c "INSTALL arrow FROM community; LOAD arrow; COPY (FROM
+read_arrow('x.arrows')) TO 'x.parquet'"`, or `pyarrow.ipc.open_stream`.
+`zig build arrow-check` reads every corpus file's Arrow output back with
+pyarrow and DuckDB (`uv run --with pyarrow --with duckdb --with pytz zig
+build arrow-check`).
 
 ## Build
 

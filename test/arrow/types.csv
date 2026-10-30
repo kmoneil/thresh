@@ -1,0 +1,5 @@
+id,at,payload,status,price,note
+1,13:05:30.5,AQID,open,12.50,plain
+2,,,,,
+3,00:00,x y z,closed,-0.01,"comma, quote "" and
+newline"

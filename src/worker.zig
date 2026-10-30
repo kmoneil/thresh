@@ -16,6 +16,7 @@ const report = @import("report.zig");
 const infer = @import("infer.zig");
 const builders = @import("builders.zig");
 const csv = @import("write/csv.zig");
+const arrow = @import("write/arrow.zig");
 
 pub const Env = struct {
     io: Io,
@@ -49,7 +50,7 @@ const Output = struct {
     tmp_path: []const u8,
     sink: Sink,
     batch: builders.Batch,
-    format: union(enum) { csv: csv.Writer },
+    format: union(enum) { csv: csv.Writer, arrow: arrow.Writer },
 
     fn create(env: Env, arena: Allocator, plan: OutputPlan, cfg: *const cli.Config, s: *const Schema, source: []const u8) !Output {
         const base = std.fs.path.basename(source);
@@ -62,7 +63,10 @@ const Output = struct {
         const dir = std.mem.trimEnd(u8, plan.dir, "/");
         try Io.Dir.cwd().createDirPath(env.io, dir);
         const final_path = try std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ dir, stem, ext });
-        const tmp_path = try std.fmt.allocPrint(arena, "{s}/.{s}{s}.tmp", .{ dir, stem, ext });
+        // Random, so two runs writing the same name do not share one.
+        var nonce: [8]u8 = undefined;
+        env.io.random(&nonce);
+        const tmp_path = try std.fmt.allocPrint(arena, "{s}/.{s}{s}.{x}.tmp", .{ dir, stem, ext, &nonce });
         var sink: Sink = try .open(env.io, env.gpa, tmp_path);
         errdefer sink.close(env.io, env.gpa);
         var batch: builders.Batch = try .init(env.gpa, s, encodingOf(cfg));
@@ -78,7 +82,8 @@ const Output = struct {
                     .options = .{ .delimiter = cfg.out_delimiter, .newline = cfg.out_newline },
                     .normalize_dates = cfg.normalize_dates,
                 } },
-                else => unreachable,
+                .arrow => .{ .arrow = .init(env.gpa, undefined, s, .{ .file = cfg.arrow_file }) },
+                .parquet => unreachable,
             },
         };
     }
@@ -92,12 +97,21 @@ const Output = struct {
                 w.out = &o.sink.writer.interface;
                 try w.header(names);
             },
+            .arrow => |*w| {
+                w.out = &o.sink.writer.interface;
+                try w.header();
+            },
         }
     }
 
     fn write(o: *Output) !void {
         switch (o.format) {
             .csv => |*w| {
+                w.out = &o.sink.writer.interface;
+                try w.batch(&o.batch);
+            },
+            // An empty batch is no record batch.
+            .arrow => |*w| if (o.batch.rows > 0) {
                 w.out = &o.sink.writer.interface;
                 try w.batch(&o.batch);
             },
@@ -109,6 +123,17 @@ const Output = struct {
     /// keep false deletes it.
     fn finish(o: *Output, env: Env, keep: bool) !void {
         defer o.batch.deinit();
+        defer switch (o.format) {
+            .arrow => |*w| w.deinit(),
+            .csv => {},
+        };
+        if (keep) switch (o.format) {
+            .arrow => |*w| {
+                w.out = &o.sink.writer.interface;
+                try w.end();
+            },
+            .csv => {},
+        };
         if (keep) try o.sink.writer.interface.flush();
         o.sink.close(env.io, env.gpa);
         if (keep) {
