@@ -3,7 +3,8 @@
 
 const std = @import("std");
 const Io = std.Io;
-const Dialect = @import("dialect.zig").Dialect;
+const dialect = @import("dialect.zig");
+const Dialect = dialect.Dialect;
 
 pub const usage =
     \\usage: thresh <command> <file>... [options]
@@ -68,30 +69,12 @@ pub const Format = enum { csv, arrow, parquet };
 
 pub const Encoding = enum { utf8, latin1 };
 
-pub const HeaderMode = enum { auto, yes, no };
+pub const HeaderMode = dialect.HeaderMode;
 
 /// What a short or long row becomes.
 pub const Ragged = enum { reject, pad, truncate };
 
-/// Dialect dimensions given on the command line. Null leaves one to the
-/// sniffer.
-pub const Pins = struct {
-    delimiter: ?u8 = null,
-    quote: ?Quote = null,
-    escape: ?Dialect.Escape = null,
-    newline: ?Dialect.Newline = null,
-    header: HeaderMode = .auto,
-    comment: ?u8 = null,
-
-    pub const Quote = union(enum) { none, byte: u8 };
-
-    /// Every dimension the sniffer would otherwise settle is pinned, so a
-    /// low-confidence verdict does not stop the file.
-    pub fn complete(p: Pins) bool {
-        return p.delimiter != null and p.quote != null and p.escape != null and
-            p.newline != null and p.header != .auto;
-    }
-};
+pub const Pins = dialect.Pins;
 
 pub const Config = struct {
     command: Command,

@@ -1,11 +1,12 @@
 //! A delimited file's dialect: how its fields and records are separated and
-//! quoted, and whether its first record is a header.
-//!
-//! The sniffer that settles one from a sample is milestone 4; until then
-//! `sniff` answers RFC 4180 for every input.
+//! quoted, and whether its first record is a header; and the sniffer that
+//! settles one from a sample.
 
 const std = @import("std");
 const Io = std.Io;
+const Allocator = std.mem.Allocator;
+const reference = @import("reference.zig");
+const Field = @import("records.zig").Field;
 
 pub const Dialect = struct {
     delimiter: u8,
@@ -69,6 +70,28 @@ pub const Dialect = struct {
     }
 };
 
+pub const HeaderMode = enum { auto, yes, no };
+
+/// Dialect dimensions given on the command line. Null leaves one to the
+/// sniffer.
+pub const Pins = struct {
+    delimiter: ?u8 = null,
+    quote: ?Quote = null,
+    escape: ?Dialect.Escape = null,
+    newline: ?Dialect.Newline = null,
+    header: HeaderMode = .auto,
+    comment: ?u8 = null,
+
+    pub const Quote = union(enum) { none, byte: u8 };
+
+    /// Every dimension the sniffer would otherwise settle is pinned, so a
+    /// low-confidence verdict does not stop the file.
+    pub fn complete(p: Pins) bool {
+        return p.delimiter != null and p.quote != null and p.escape != null and
+            p.newline != null and p.header != .auto;
+    }
+};
+
 /// A byte as `--delimiter` reads it back: itself when printable, `\t` for a
 /// tab, `\xHH` otherwise (space is printable, so `--delimiter ' '`).
 fn writeByte(w: *Io.Writer, c: u8) Io.Writer.Error!void {
@@ -79,11 +102,450 @@ fn writeByte(w: *Io.Writer, c: u8) Io.Writer.Error!void {
     }
 }
 
-/// The dialect of a sample. A stub until milestone 4: RFC 4180, with no
-/// header, for anything.
-pub fn sniff(sample: []const u8) Dialect {
-    _ = sample;
-    return .rfc4180;
+/// How sure the sniffer is: high when nearly every record has the winning
+/// shape and the best other delimiter is well behind, medium when most do.
+pub const Confidence = enum { high, medium, low };
+
+/// What the pre-checks and the winning parse noticed; none stops the file.
+pub const Warnings = packed struct(u8) {
+    utf8_bom: bool = false,
+    /// Records end in more than one kind of line break.
+    mixed_newlines: bool = false,
+    /// A quote character inside an unquoted field, read as data.
+    quote_in_unquoted: bool = false,
+    _: u5 = 0,
+
+    pub fn jsonStringify(w: Warnings, s: *std.json.Stringify) std.json.Stringify.Error!void {
+        try s.beginArray();
+        inline for (.{ "utf8_bom", "mixed_newlines", "quote_in_unquoted" }) |name| {
+            if (@field(w, name)) try s.write(name);
+        }
+        try s.endArray();
+    }
+};
+
+pub const SniffOptions = struct {
+    pins: Pins = .{},
+    /// The first window; it doubles while the winner has seen fewer than
+    /// `records` complete records, up to max_sample.
+    sample_bytes: usize = 64 << 10,
+    max_sample: usize = 16 << 20,
+    records: usize = 32,
+    /// The schema's columns, when there is one: its count is the strongest
+    /// evidence there is, and its names say whether row 1 is a header.
+    schema: ?[]const []const u8 = null,
+};
+
+pub const Verdict = struct {
+    dialect: Dialect,
+    confidence: Confidence,
+    score: f64,
+    /// The fraction of the winner's records with its most common field count.
+    consistency: f64,
+    /// Fields in most of its records.
+    fields: usize,
+    /// Complete records the winner read.
+    records: usize,
+    /// Bytes the last window held.
+    sample_len: usize,
+    /// Where records start: 3 past a UTF-8 BOM.
+    start: usize,
+    warnings: Warnings,
+    /// The best candidates with other delimiters, best first.
+    runners_up: [2]?Runner = .{ null, null },
+
+    pub const Runner = struct { delimiter: u8, score: f64 };
+
+    /// The report's dialect object: the dialect, how sure, and why.
+    pub fn jsonStringify(v: Verdict, s: *std.json.Stringify) std.json.Stringify.Error!void {
+        const d = v.dialect;
+        try s.beginObject();
+        try s.objectField("delimiter");
+        try s.write(@as([]const u8, &.{d.delimiter}));
+        try s.objectField("quote");
+        if (d.quote) |q| try s.write(@as([]const u8, &.{q})) else try s.write(null);
+        try s.objectField("escape");
+        try s.write(@tagName(d.escape));
+        try s.objectField("newline");
+        try s.write(@tagName(d.newline));
+        try s.objectField("header");
+        try s.write(d.header);
+        if (d.comment) |c| {
+            try s.objectField("comment");
+            try s.write(@as([]const u8, &.{c}));
+        }
+        try s.objectField("confidence");
+        try s.write(@tagName(v.confidence));
+        try s.objectField("score");
+        try s.print("{d:.2}", .{v.score});
+        try s.objectField("runners_up");
+        try s.beginArray();
+        for (v.runners_up) |r| if (r) |runner| {
+            try s.beginObject();
+            try s.objectField("delimiter");
+            try s.write(@as([]const u8, &.{runner.delimiter}));
+            try s.objectField("score");
+            try s.print("{d:.2}", .{runner.score});
+            try s.endObject();
+        };
+        try s.endArray();
+        try s.endObject();
+    }
+};
+
+pub const SniffError = error{
+    /// A UTF-16 byte order mark: not read in v1.
+    Utf16,
+    /// A NUL byte in the first 8 KiB, and no UTF-16 BOM to explain it.
+    Binary,
+} || Allocator.Error;
+
+/// The delimiters tried first, in the order a tie goes.
+const prior_delimiters = [_]u8{ ',', '\t', '|', ';', ':', '~', 0x01, 0x1f, ' ' };
+const prior_quotes = [_]?u8{ '"', '\'', null };
+
+/// The dialect of data, its first bytes or (complete) all of a file. Every
+/// candidate is parsed, not counted: the one whose records most often have
+/// the same number of fields wins. This is DuckDB's approach, which free
+/// text full of delimiters does not fool the way character counts are.
+pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOptions) SniffError!Verdict {
+    var warnings: Warnings = .{};
+    var start: usize = 0;
+    if (std.mem.startsWith(u8, data, "\xef\xbb\xbf")) {
+        start = 3;
+        warnings.utf8_bom = true;
+    } else if (std.mem.startsWith(u8, data, "\xff\xfe") or std.mem.startsWith(u8, data, "\xfe\xff")) {
+        return error.Utf16;
+    }
+    if (std.mem.findScalar(u8, data[0..@min(data.len, 8192)], 0) != null) return error.Binary;
+
+    var parser_fields: std.ArrayList(Field) = .empty;
+    defer parser_fields.deinit(gpa);
+    var counts: std.ArrayList(u32) = .empty;
+    defer counts.deinit(gpa);
+    const pins = options.pins;
+    const delimiters = candidateDelimiters(data[start..@min(data.len, options.sample_bytes)], pins);
+
+    var window = @max(options.sample_bytes, 1);
+    var best: Scored = undefined;
+    var runners: [2]?Verdict.Runner = undefined;
+    while (true) {
+        const len = @min(window, data.len);
+        const sample = data[0..len];
+        const whole = complete and len == data.len;
+        var any = false;
+        runners = .{ null, null };
+        for (delimiters.slice()) |delim| {
+            var best_for_delim: ?Scored = null;
+            for (prior_quotes) |quote| {
+                if (pins.quote) |pq| switch (pq) {
+                    .none => if (quote != null) continue,
+                    .byte => |b| if (quote != b) continue,
+                };
+                if (quote == delim) continue;
+                for ([_]Dialect.Escape{ .doubled, .backslash }) |escape| {
+                    if (pins.escape) |pe| if (pe != escape) continue;
+                    if (escape == .backslash) {
+                        const q = quote orelse continue;
+                        if (pins.escape == null and !hasBackslashQuote(sample, q)) continue;
+                    }
+                    const d: Dialect = .{
+                        .delimiter = delim,
+                        .quote = quote,
+                        .escape = escape,
+                        .newline = .lf,
+                        .header = false,
+                        .comment = pins.comment,
+                    };
+                    const c = try score(gpa, sample[start..], whole, d, options, &parser_fields, &counts);
+                    if (best_for_delim == null or c.score > best_for_delim.?.score + 1e-9) best_for_delim = c;
+                }
+            }
+            const c = best_for_delim orelse continue;
+            if (!any or c.score > best.score + 1e-9) {
+                if (any) pushRunner(&runners, .{ .delimiter = best.dialect.delimiter, .score = best.score });
+                best = c;
+                any = true;
+            } else pushRunner(&runners, .{ .delimiter = delim, .score = c.score });
+        }
+        std.debug.assert(any);
+        // The spec grows the window only while the winner has seen too few
+        // records; this also grows it while the winner is not a clear one,
+        // since a record bigger than the window loses its dialect the count
+        // (its parse stops at the window's end) and lets a wrong one win
+        // with many short records. Each parse stops at options.records
+        // records, so a bigger window costs little unless a record is big.
+        const clear = best.records >= options.records and confidenceOf(best, runners) == .high;
+        if (clear or whole or len == data.len or window >= options.max_sample) break;
+        window = @min(window * 2, @max(options.max_sample, options.sample_bytes));
+    }
+
+    var d = best.dialect;
+    const len = @min(window, data.len);
+    const sample = data[start..len];
+    const shape = try lines(gpa, sample, d, &parser_fields);
+    d.newline = pins.newline orelse shape.newline;
+    if (shape.mixed) warnings.mixed_newlines = true;
+    if (shape.stray_quotes) warnings.quote_in_unquoted = true;
+    d.header = switch (pins.header) {
+        .yes => true,
+        .no => false,
+        .auto => try isHeader(gpa, sample, d, options, &parser_fields),
+    };
+    const confidence = confidenceOf(best, runners);
+    return .{
+        .dialect = d,
+        .confidence = confidence,
+        .score = best.score,
+        .consistency = best.consistency,
+        .fields = best.mode,
+        .records = best.records,
+        .sample_len = len,
+        .start = start,
+        .warnings = warnings,
+        .runners_up = runners,
+    };
+}
+
+/// High when nearly every record has the winner's shape and the best other
+/// delimiter scores 0.2 or more below it; medium when most records do.
+fn confidenceOf(best: Scored, runners: [2]?Verdict.Runner) Confidence {
+    const margin = if (runners[0]) |r| best.score - r.score else std.math.inf(f64);
+    if (best.consistency >= 0.98 and margin >= 0.2) return .high;
+    if (best.consistency >= 0.9) return .medium;
+    return .low;
+}
+
+/// Keeps the two best runners-up, best first.
+fn pushRunner(runners: *[2]?Verdict.Runner, r: Verdict.Runner) void {
+    if (runners[0] == null or r.score > runners[0].?.score) {
+        runners[1] = runners[0];
+        runners[0] = r;
+    } else if (runners[1] == null or r.score > runners[1].?.score) {
+        runners[1] = r;
+    }
+}
+
+/// The candidates' delimiters, in prior order.
+const Delimiters = struct {
+    buf: [prior_delimiters.len + 2]u8 = undefined,
+    len: usize = 0,
+
+    fn append(d: *Delimiters, c: u8) void {
+        d.buf[d.len] = c;
+        d.len += 1;
+    }
+
+    fn slice(d: *const Delimiters) []const u8 {
+        return d.buf[0..d.len];
+    }
+};
+
+/// The pinned delimiter alone, or the prior ones and then up to two other
+/// punctuation bytes the sample has more than two of a line.
+fn candidateDelimiters(sample: []const u8, pins: Pins) Delimiters {
+    var out: Delimiters = .{};
+    if (pins.delimiter) |d| {
+        out.append(d);
+        return out;
+    }
+    for (prior_delimiters) |d| out.append(d);
+    var freq: [128]u32 = @splat(0);
+    var line_count: u32 = 1;
+    for (sample) |c| {
+        if (c == '\n') line_count += 1;
+        if (c < 128) freq[c] += 1;
+    }
+    for (0..2) |_| {
+        var top: ?u8 = null;
+        for (freq, 0..) |n, i| {
+            const c: u8 = @intCast(i);
+            if (!std.ascii.isPrint(c) or std.ascii.isAlphanumeric(c)) continue;
+            if (c == '"' or c == '\'' or c == '\\' or std.mem.findScalar(u8, out.slice(), c) != null) continue;
+            if (n <= 2 * line_count) continue;
+            if (top == null or n > freq[top.?]) top = c;
+        }
+        out.append(top orelse break);
+    }
+    return out;
+}
+
+fn hasBackslashQuote(sample: []const u8, q: u8) bool {
+    var it = std.mem.splitScalar(u8, sample, '\\');
+    _ = it.next();
+    while (it.next()) |after| if (after.len > 0 and after[0] == q) return true;
+    return false;
+}
+
+const Scored = struct {
+    dialect: Dialect,
+    score: f64,
+    consistency: f64,
+    mode: usize,
+    records: usize,
+};
+
+/// One candidate's score over its first options.records complete records:
+/// consistency x ln(1 + mode), less 0.5 for a single column and 0.3 for a
+/// quote still open where the sample stops, plus 1.0 when mode is the
+/// schema's column count. A record the dialect reads as broken (a bad or
+/// unterminated quote) counts against consistency whatever its fields.
+fn score(
+    gpa: Allocator,
+    sample: []const u8,
+    whole: bool,
+    d: Dialect,
+    options: SniffOptions,
+    fields: *std.ArrayList(Field),
+    counts: *std.ArrayList(u32),
+) Allocator.Error!Scored {
+    counts.clearRetainingCapacity();
+    var p: reference.Parser = .init(sample, d, .{});
+    var unbalanced = false;
+    while (counts.items.len < options.records) {
+        const rec = try p.next(gpa, fields) orelse break;
+        if (!whole and rec.end == sample.len) {
+            const last = sample[sample.len - 1];
+            const ended = rec.problem == null and (last == '\n' or last == '\r');
+            if (!ended) {
+                unbalanced = rec.problem == .unterminated_quote;
+                break;
+            }
+        }
+        if (rec.problem == .unterminated_quote) unbalanced = true;
+        // A broken record is no field count at all: 0 never wins the mode.
+        try counts.append(gpa, if (rec.problem != null) 0 else @intCast(fields.items.len));
+    }
+    const n = counts.items.len;
+    if (n == 0) return .{ .dialect = d, .score = -1, .consistency = 0, .mode = 0, .records = 0 };
+    std.mem.sort(u32, counts.items, {}, std.sort.asc(u32));
+    var mode: u32 = 0;
+    var mode_n: usize = 0;
+    var i: usize = 0;
+    while (i < n) {
+        var j = i;
+        while (j < n and counts.items[j] == counts.items[i]) j += 1;
+        // Ties go to the larger count; 0 (broken records) never wins.
+        if (counts.items[i] != 0 and j - i >= mode_n) {
+            mode = counts.items[i];
+            mode_n = j - i;
+        }
+        i = j;
+    }
+    const consistency = @as(f64, @floatFromInt(mode_n)) / @as(f64, @floatFromInt(n));
+    var s = consistency * @log(1 + @as(f64, @floatFromInt(mode)));
+    if (mode == 1) s -= 0.5;
+    if (unbalanced) s -= 0.3;
+    if (options.schema) |cols| if (mode == cols.len) {
+        s += 1.0;
+    };
+    return .{ .dialect = d, .score = s, .consistency = consistency, .mode = mode, .records = n };
+}
+
+const Shape = struct { newline: Dialect.Newline, mixed: bool, stray_quotes: bool };
+
+/// The kind of the first record's line break, and whether a later one is
+/// another kind or a field held a stray quote, over the scored records.
+fn lines(gpa: Allocator, sample: []const u8, d: Dialect, fields: *std.ArrayList(Field)) Allocator.Error!Shape {
+    var shape: Shape = .{ .newline = .lf, .mixed = false, .stray_quotes = false };
+    var first: ?Dialect.Newline = null;
+    var p: reference.Parser = .init(sample, d, .{});
+    var n: usize = 0;
+    while (n < 1000) : (n += 1) {
+        const rec = try p.next(gpa, fields) orelse break;
+        if (rec.stray_quotes > 0) shape.stray_quotes = true;
+        const end: usize = @intCast(rec.end);
+        if (end == 0) break;
+        const kind: Dialect.Newline = switch (sample[end - 1]) {
+            '\n' => if (end >= 2 and sample[end - 2] == '\r') .crlf else .lf,
+            '\r' => .cr,
+            else => break,
+        };
+        if (first) |f| {
+            if (f != kind) shape.mixed = true;
+        } else first = kind;
+    }
+    shape.newline = first orelse .lf;
+    return shape;
+}
+
+/// Whether the first record names the columns. With a schema, it does when
+/// its fields are the schema's names, trimmed and in any case. Without, it
+/// does when every field in it is a non-empty string and some column below
+/// it holds only values of another type.
+fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOptions, fields: *std.ArrayList(Field)) Allocator.Error!bool {
+    var p: reference.Parser = .init(sample, d, .{});
+    _ = try p.next(gpa, fields) orelse return false;
+    var scratch: std.ArrayList(u8) = .empty;
+    defer scratch.deinit(gpa);
+    const first = try fields.toOwnedSlice(gpa);
+    defer gpa.free(first);
+    if (options.schema) |names| {
+        if (names.len != first.len) return false;
+        for (first, names) |f, name| {
+            const v = try value(gpa, &scratch, sample, d, f);
+            if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, v, " \t"), std.mem.trim(u8, name, " \t"))) return false;
+        }
+        return true;
+    }
+    for (first) |f| {
+        const v = try value(gpa, &scratch, sample, d, f);
+        if (v.len == 0 or looksTyped(v)) return false;
+    }
+    // Per column: still typed (every non-empty value so far), and seen one.
+    const typed = try gpa.alloc(bool, first.len);
+    defer gpa.free(typed);
+    const seen = try gpa.alloc(bool, first.len);
+    defer gpa.free(seen);
+    @memset(typed, true);
+    @memset(seen, false);
+    var rows: usize = 0;
+    while (rows < 100) : (rows += 1) {
+        const rec = try p.next(gpa, fields) orelse break;
+        if (rec.end == sample.len and sample[sample.len - 1] != '\n' and sample[sample.len - 1] != '\r') break;
+        if (fields.items.len != first.len) continue;
+        for (fields.items, 0..) |f, col| {
+            const v = try value(gpa, &scratch, sample, d, f);
+            if (v.len == 0) continue;
+            seen[col] = true;
+            if (!looksTyped(v)) typed[col] = false;
+        }
+    }
+    for (typed, seen) |t, s| if (t and s) return true;
+    return false;
+}
+
+fn value(gpa: Allocator, scratch: *std.ArrayList(u8), sample: []const u8, d: Dialect, f: Field) Allocator.Error![]const u8 {
+    try scratch.resize(gpa, f.len);
+    return f.value(sample, d, scratch.items);
+}
+
+/// A value that is not a plain string: an integer, a decimal or float, a
+/// boolean, or a date or time written in digits and separators.
+fn looksTyped(v: []const u8) bool {
+    if (std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "false")) return true;
+    var i: usize = 0;
+    if (v[0] == '-' or v[0] == '+') i = 1;
+    var digits: usize = 0;
+    var dots: usize = 0;
+    var seps: usize = 0;
+    var exp = false;
+    while (i < v.len) : (i += 1) {
+        switch (v[i]) {
+            '0'...'9' => digits += 1,
+            '.' => dots += 1,
+            'e', 'E' => {
+                if (exp or digits == 0) return false;
+                exp = true;
+                if (i + 1 < v.len and (v[i + 1] == '-' or v[i + 1] == '+')) i += 1;
+            },
+            '-', '/', ':', ' ', 'T' => seps += 1,
+            else => return false,
+        }
+    }
+    if (digits == 0) return false;
+    if (seps > 0) return !exp and digits >= 4 and std.ascii.isDigit(v[0]) and std.ascii.isDigit(v[v.len - 1]);
+    return dots <= 1;
 }
 
 test "format writes each dimension" {
@@ -124,4 +586,67 @@ test "jsonStringify matches the report's dialect object" {
     try std.testing.expectEqualStrings(
         \\{"delimiter":"|","quote":null,"escape":"doubled","newline":"lf","header":false}
     , w.buffered());
+}
+
+fn sniffed(data: []const u8, options: SniffOptions) !Verdict {
+    return sniff(std.testing.allocator, data, true, options);
+}
+
+test "sniff settles a plain CSV with a header" {
+    const v = try sniffed("id,name,amount\n1,apple,1.50\n2,\"pear, green\",2.25\n", .{});
+    try std.testing.expectEqual(Dialect{ .delimiter = ',', .quote = '"', .escape = .doubled, .newline = .lf, .header = true }, v.dialect);
+    try std.testing.expectEqual(Confidence.high, v.confidence);
+    try std.testing.expectEqual(@as(usize, 3), v.fields);
+}
+
+test "sniff reads a BOM, and refuses UTF-16 and binary data" {
+    const v = try sniffed("\xef\xbb\xbfa;b\n1;2\n3;4\n", .{});
+    try std.testing.expect(v.warnings.utf8_bom);
+    try std.testing.expectEqual(@as(usize, 3), v.start);
+    try std.testing.expectEqual(@as(u8, ';'), v.dialect.delimiter);
+    try std.testing.expectError(error.Utf16, sniffed("\xff\xfea\x00,\x00", .{}));
+    try std.testing.expectError(error.Binary, sniffed("a,b\n\x00\x01,c\n", .{}));
+}
+
+test "sniff keeps a pinned dimension and settles the rest" {
+    const data = "a|b|c\r\n1|2|3\r\n";
+    const v = try sniffed(data, .{ .pins = .{ .quote = .none, .header = .no } });
+    try std.testing.expectEqual(@as(u8, '|'), v.dialect.delimiter);
+    try std.testing.expectEqual(@as(?u8, null), v.dialect.quote);
+    try std.testing.expectEqual(Dialect.Newline.crlf, v.dialect.newline);
+    try std.testing.expect(!v.dialect.header);
+}
+
+test "sniff picks backslash escaping when the escaped quotes need it" {
+    const data = "id,text\n1,\"say \\\"hi, there\\\" now\"\n2,\"plain\"\n3,\"a \\\"b, c\\\" d\"\n";
+    const v = try sniffed(data, .{});
+    try std.testing.expectEqual(Dialect.Escape.backslash, v.dialect.escape);
+}
+
+test "ragged records are low confidence, not a wrong high" {
+    const v = try sniffed("a,b\nc\nd,e,f\ng h,i\nj,k,l,m\n", .{});
+    try std.testing.expect(v.confidence != .high);
+}
+
+test "a schema's names make row 1 a header, and its count settles the delimiter" {
+    const names: []const []const u8 = &.{ "ID", " Name ", "amount" };
+    const v = try sniffed("id,name,amount\nx,y,z\nu,v,w\n", .{ .schema = names });
+    try std.testing.expect(v.dialect.header);
+    // Without the schema, all strings: nothing says row 1 is a header.
+    try std.testing.expect(!(try sniffed("id,name,amount\nx,y,z\nu,v,w\n", .{})).dialect.header);
+}
+
+test "looksTyped" {
+    for ([_][]const u8{ "12", "-3", "1.5", "+0.25", "1e-05", "2.5E3", "true", "FALSE", "2026-10-29", "2026-10-29 12:30:00", "10/29/2026", "12:30" }) |v| {
+        if (!looksTyped(v)) {
+            std.debug.print("{s} should look typed\n", .{v});
+            return error.TestUnexpectedResult;
+        }
+    }
+    for ([_][]const u8{ "id", "e5", "1.2.3", "-", "12,50", "N/A", "2026 sales", "1-" }) |v| {
+        if (looksTyped(v)) {
+            std.debug.print("{s} should not look typed\n", .{v});
+            return error.TestUnexpectedResult;
+        }
+    }
 }

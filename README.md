@@ -12,10 +12,10 @@ thresh convert  <file>... --to csv|arrow        writes output; infers types if n
 thresh run      <file>... --schema s.json --to arrow --out dir/
 ```
 
-Status: early. The parser is in (a SIMD structural index checked against a
-scalar reference parser); `sniff` answers RFC 4180 for every file until the
-sniffer lands, and the other commands parse their options and stop.
-`thresh --help` lists every option.
+Status: early. The parser (a SIMD structural index checked against a
+scalar reference parser) and the sniffer are in: `thresh sniff` reports
+each file's dialect, header verdict and confidence. The other commands
+parse their options and stop. `thresh --help` lists every option.
 
 ## Build
 

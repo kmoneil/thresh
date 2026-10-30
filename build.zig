@@ -126,15 +126,24 @@ const cli_checks = [_]struct {
 }{
     .{
         .args = &.{ "sniff", "test/cli/orders.csv" },
-        .stdout = "test/cli/orders.csv: delimiter=, quote=\" escape=doubled newline=lf header=no\n",
+        .stdout = "test/cli/orders.csv: delimiter=, quote=\" escape=doubled newline=lf header=yes confidence=high\n",
+    },
+    .{
+        .args = &.{ "sniff", "test/cli/orders.csv", "--no-mmap", "--sample-bytes", "8" },
+        .stdout = "test/cli/orders.csv: delimiter=, quote=\" escape=doubled newline=lf header=yes confidence=high\n",
     },
     .{
         .args = &.{ "sniff", "test/cli/orders.csv", "--json" },
-        .stdout = "{\"file\":\"test/cli/orders.csv\",\"dialect\":{\"delimiter\":\",\",\"quote\":\"\\\"\",\"escape\":\"doubled\",\"newline\":\"lf\",\"header\":false}}\n",
+        .stdout = "{\"file\":\"test/cli/orders.csv\",\"dialect\":{\"delimiter\":\",\",\"quote\":\"\\\"\",\"escape\":\"doubled\",\"newline\":\"lf\",\"header\":true," ++
+            "\"confidence\":\"high\",\"score\":1.39,\"runners_up\":[{\"delimiter\":\"\\t\",\"score\":0.19},{\"delimiter\":\"|\",\"score\":0.19}]},\"warnings\":[]}\n",
+    },
+    .{
+        .args = &.{ "sniff", "test/cli/orders.csv", "--delimiter", ";", "--header", "no" },
+        .stdout = "test/cli/orders.csv: delimiter=; quote=\" escape=doubled newline=lf header=no confidence=high warnings=quote_in_unquoted\n",
     },
     .{
         .args = &.{ "sniff", "test/cli/missing.csv", "test/cli/orders.csv" },
-        .stdout = "test/cli/orders.csv: delimiter=, quote=\" escape=doubled newline=lf header=no\n",
+        .stdout = "test/cli/orders.csv: delimiter=, quote=\" escape=doubled newline=lf header=yes confidence=high\n",
         .stderr = "thresh: test/cli/missing.csv: no such file\n",
         .code = 2,
     },

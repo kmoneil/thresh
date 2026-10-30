@@ -11,6 +11,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const cli = @import("cli.zig");
 const dialect = @import("dialect.zig");
+const input = @import("input.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -99,34 +100,50 @@ fn execute(env: Env, args: []const []const u8, out: *Io.Writer, err: *Io.Writer)
 
 /// Each file's dialect, a line apiece: text, or JSON under --json.
 fn sniff(env: Env, cfg: cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
-    const sample = try env.gpa.alloc(u8, cfg.sample_bytes);
-    defer env.gpa.free(sample);
     var code: Exit = .ok;
     for (cfg.files) |path| {
-        const n = readSample(env.io, path, sample) catch |e| {
+        const v = sniffFile(env, cfg, path) catch |e| {
             try err.print("thresh: {s}: {s}\n", .{ path, describe(e) });
             code = code.worst(.unreadable);
             continue;
         };
-        const d = dialect.sniff(sample[0..n]);
         if (cfg.json) {
-            try std.json.Stringify.value(.{ .file = path, .dialect = d }, .{}, out);
+            try std.json.Stringify.value(.{ .file = path, .dialect = v, .warnings = v.warnings }, .{}, out);
             try out.writeByte('\n');
         } else {
-            try out.print("{s}: {f}\n", .{ path, d });
+            try out.print("{s}: {f} confidence={t}", .{ path, v.dialect, v.confidence });
+            if (@as(u8, @bitCast(v.warnings)) != 0) {
+                try out.writeAll(" warnings=");
+                var first = true;
+                inline for (.{ "utf8_bom", "mixed_newlines", "quote_in_unquoted" }) |name| {
+                    if (@field(v.warnings, name)) {
+                        if (!first) try out.writeByte(',');
+                        try out.writeAll(name);
+                        first = false;
+                    }
+                }
+            }
+            try out.writeByte('\n');
+        }
+        if (v.confidence == .low and !cfg.pins.complete()) {
+            try err.print("thresh: {s}: the dialect is not settled (confidence low, score {d:.2}); pin it with --delimiter, --quote, --escape, --newline and --header\n", .{ path, v.score });
+            code = code.worst(.unreadable);
         }
     }
     return code;
 }
 
-/// Reads up to buf.len bytes from the start of the file at path.
-fn readSample(io: Io, path: []const u8, buf: []u8) !usize {
-    const file = try Io.Dir.cwd().openFile(io, path, .{});
-    defer file.close(io);
-    var r = file.reader(io, &.{});
-    return r.interface.readSliceShort(buf) catch |e| switch (e) {
-        error.ReadFailed => return r.err.?,
-    };
+/// The file's dialect, from as much of its start as the sniffer may want.
+fn sniffFile(env: Env, cfg: cli.Config, path: []const u8) !dialect.Verdict {
+    const max_sample = @max(cfg.sample_bytes, 16 << 20);
+    var in: input.Input = try .open(env.io, env.gpa, path, .{ .no_mmap = cfg.no_mmap, .buffer = cfg.sample_bytes });
+    defer in.close(env.io, env.gpa);
+    while (!in.eof and in.data().len < max_sample) try in.refill(env.io, env.gpa, in.base);
+    return dialect.sniff(env.gpa, in.data(), in.eof, .{
+        .pins = cfg.pins,
+        .sample_bytes = cfg.sample_bytes,
+        .max_sample = max_sample,
+    });
 }
 
 fn describe(e: anyerror) []const u8 {
@@ -136,6 +153,8 @@ fn describe(e: anyerror) []const u8 {
         error.IsDir => "is a directory",
         error.OutOfMemory => "out of memory",
         error.BrokenPipe => "the output was closed",
+        error.Utf16 => "UTF-16 input (a UTF-16 byte order mark) is not read in v1",
+        error.Binary => "binary data (a NUL byte in the first 8 KiB)",
         else => @errorName(e),
     };
 }

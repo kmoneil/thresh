@@ -4,7 +4,8 @@
 
 const std = @import("std");
 const build_options = @import("build_options");
-const Dialect = @import("dialect.zig").Dialect;
+const dialect = @import("dialect.zig");
+const Dialect = dialect.Dialect;
 const reference = @import("reference.zig");
 const records = @import("records.zig");
 const Field = records.Field;
@@ -210,3 +211,29 @@ const FieldCheck = struct {
         return c.count;
     }
 };
+
+test "the sniffer settles every corpus file's dialect" {
+    const io = testing.io;
+    const gpa = testing.allocator;
+    var corpus: Corpus = try .open(io, gpa);
+    defer corpus.close(io, gpa);
+    var it = corpus.names();
+    var wrong: usize = 0;
+    while (it.next()) |name| {
+        var fx = try corpus.load(io, gpa, name);
+        defer fx.deinit(gpa);
+        const e = fx.expected.value;
+        const v = try dialect.sniff(gpa, fx.bytes, true, .{});
+        const want = e.dialect();
+        const right = std.meta.eql(want, v.dialect) and v.warnings.utf8_bom == e.bom and v.start == @as(usize, if (e.bom) 3 else 0);
+        // Every ordinary file, right and sure of it. The adversarial files
+        // may stump it, as long as it says so.
+        if (right and (e.adversarial or v.confidence == .high)) continue;
+        if (e.adversarial and v.confidence == .low) continue;
+        wrong += 1;
+        std.debug.print("{s}: want {f}, sniffed {f} (confidence {t}, score {d:.2}, consistency {d:.2}, {d} records)\n", .{
+            name, want, v.dialect, v.confidence, v.score, v.consistency, v.records,
+        });
+    }
+    try testing.expectEqual(@as(usize, 0), wrong);
+}
