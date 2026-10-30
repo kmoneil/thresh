@@ -152,6 +152,12 @@ pub const Inferrer = struct {
     /// The source line of the record being read, which the caller sets for
     /// the rows it names; 0 names the data row instead.
     line: u64 = 0,
+    /// The file has a header, which says how many columns it has.
+    named: bool = false,
+    /// Records wider than the header, left out, and the first one's line:
+    /// ragged rows, which validate rejects, not columns.
+    wide_rows: u64 = 0,
+    wide_line: u64 = 0,
     format_buf: [128]u8 = undefined,
 
     pub fn init(arena: Allocator, options: Options) Inferrer {
@@ -162,6 +168,7 @@ pub const Inferrer = struct {
     /// numbered), or column1, column2... for width columns without one.
     pub fn header(f: *Inferrer, names: ?[]const []const u8, width: usize) Allocator.Error!void {
         const n = if (names) |ns| ns.len else width;
+        if (names != null) f.named = true;
         // The names taken, so a repeated one is told apart.
         var taken: schema.NameMap(void) = .empty;
         defer taken.deinit(f.arena);
@@ -177,9 +184,16 @@ pub const Inferrer = struct {
         }
     }
 
-    /// One record's values, in the header's order; a record wider than the
-    /// header adds columns.
+    /// One record's values, in the header's order. A record wider than a
+    /// header is counted and left out, as validate rejects it; one wider
+    /// than the columns of a file without a header adds columns, since
+    /// nothing else says how many it has.
     pub fn record(f: *Inferrer, values: []const []const u8) Allocator.Error!void {
+        if (f.named and values.len > f.columns.items.len) {
+            if (f.wide_rows == 0) f.wide_line = f.line;
+            f.wide_rows += 1;
+            return;
+        }
         f.rows += 1;
         while (f.columns.items.len < values.len) {
             try f.columns.append(f.arena, .{ .name = try std.fmt.allocPrint(f.arena, "column{d}", .{f.columns.items.len + 1}) });
@@ -649,6 +663,30 @@ test "the lattice moves down and only down" {
     try testing.expectEqual(Kind.string, (try inferOne(a, &.{ "12", "N/A" })).kind);
     try testing.expectEqual(Kind.string, (try inferOne(a, &.{ "12", "2024-01-02" })).kind);
     try testing.expectEqual(Kind.null, (try inferOne(a, &.{ "", "" })).kind);
+}
+
+test "a row wider than the header is left out and counted, not a column" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f: Inferrer = .init(a, .{});
+    try f.header(&.{ "id", "label" }, 2);
+    try f.record(&.{ "1", "ab" });
+    f.line = 3;
+    try f.record(&.{ "2", "ab", " cd" });
+    f.line = 0;
+    try f.record(&.{ "3", "ef" });
+    try testing.expectEqual(@as(usize, 2), f.columns.items.len);
+    try testing.expectEqual(@as(u64, 2), f.rows);
+    try testing.expectEqual(@as(u64, 1), f.wide_rows);
+    try testing.expectEqual(@as(u64, 3), f.wide_line);
+    try testing.expectEqual(Kind.int64, f.columns.items[0].kind);
+    // Without a header, the widest row says how many columns there are.
+    var g: Inferrer = .init(a, .{});
+    try g.header(null, 2);
+    try g.record(&.{ "1", "ab", "x" });
+    try testing.expectEqual(@as(usize, 3), g.columns.items.len);
+    try testing.expectEqual(@as(u64, 0), g.wide_rows);
 }
 
 test "digits too many for a decimal keep their column a string, not a float" {

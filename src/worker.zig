@@ -432,6 +432,9 @@ pub const Inferred = struct {
     repeated_line: u64 = 0,
     /// UTF-16 code units that made no character, read as U+FFFD.
     utf16_replaced: u64 = 0,
+    /// Rows wider than the header, left out, and the first one's line.
+    wide_rows: u64 = 0,
+    wide_line: u64 = 0,
 };
 
 /// Infers the file at path's columns, reading all of it, or the first
@@ -523,6 +526,8 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
         .repeated_headers = repeated,
         .repeated_line = repeated_line,
         .utf16_replaced = if (in.utf16) |u| u.replaced else 0,
+        .wide_rows = f.wide_rows,
+        .wide_line = f.wide_line,
     };
 }
 

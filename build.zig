@@ -40,6 +40,7 @@ pub fn build(b: *std.Build) void {
         r.addFileInput(b.path("test/cli/orders.csv"));
         r.addFileInput(b.path("test/cli/orders.txt"));
         r.addFileInput(b.path("test/cli/orders16.csv"));
+        r.addFileInput(b.path("test/cli/wide.csv"));
         if (check.stdout) |s| r.expectStdOutEqual(s);
         if (check.stderr) |s| r.expectStdErrEqual(s);
         r.expectExitCode(check.code);
@@ -306,6 +307,13 @@ const cli_checks = [_]struct {
         ,
         .stderr = "infer test/cli/orders.csv  2 rows  3 columns\n" ++
             "thresh: id, amount: typed from fewer than 10 values; check them before reusing the schema\n",
+    },
+    .{
+        // A row wider than the header is a ragged row, not a column.
+        .args = &.{ "infer", "test/cli/wide.csv" },
+        .stdout = null,
+        .stderr = "infer test/cli/wide.csv  39 rows  3 columns\n" ++
+            "thresh: test/cli/wide.csv: 1 row wider than the header left out, the first on line 21: ragged rows, which validate rejects\n",
     },
     .{
         .args = &.{ "convert", "test/cli/orders.csv", "--to", "csv", "--out", ".zig-cache/cli-out/convert", "--json" },

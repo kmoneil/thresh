@@ -177,6 +177,8 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
         if (!cfg.quiet) try err.print("infer {s}  {d} rows  {d} columns\n", .{ path, o.rows, r.columns.len });
         if (r.repeated_headers > 0 and !cfg.quiet)
             try err.print("thresh: {s}: {s}\n", .{ path, try worker.repeatedHeader(a, r.repeated_line, r.repeated_headers) });
+        if (r.wide_rows > 0 and !cfg.quiet)
+            try err.print("thresh: {s}: {d} row{s} wider than the header left out, the first on line {d}: ragged rows, which validate rejects\n", .{ path, r.wide_rows, if (r.wide_rows == 1) "" else "s", r.wide_line });
         if (r.utf16_replaced > 0 and !cfg.quiet)
             try err.print("thresh: {s}: {d} UTF-16 code unit{s} made no character, read as U+FFFD\n", .{ path, r.utf16_replaced, if (r.utf16_replaced == 1) "" else "s" });
         const columns = try a.dupe(infer.ColumnState, r.columns);
