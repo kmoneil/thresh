@@ -202,6 +202,17 @@ pub const Validator = struct {
             .bad_quote => .bad_quote,
             .field_too_long => .field_too_long,
         } else null;
+        // The last record, with no line break after it, short of fields or
+        // inside a quote: the file stops mid-record, most likely cut off in
+        // a copy or a transfer. Its row is rejected (or padded) as any
+        // other, and the file fails, since it is not all there.
+        if (rec.end > base and !endsLine(data[@intCast(rec.end - 1 - base)])) {
+            if (rec.problem == .unterminated_quote) {
+                try v.fail("the file ends mid-record, inside a quoted field and with no line break: was it cut off?", .{});
+            } else if (rec.problem == null and fields.len < v.width) {
+                try v.fail("the file ends mid-record: its last line has no line break and {d} of {d} fields; was it cut off?", .{ fields.len, v.width });
+            }
+        }
         if (row_error == null and fields.len != v.width) {
             const ok = switch (v.options.ragged) {
                 .reject => false,
@@ -307,6 +318,10 @@ pub const Validator = struct {
 };
 
 /// The fraction of rows a column's cells conform in: nulls it allows count.
+fn endsLine(c: u8) bool {
+    return c == '\n' or c == '\r';
+}
+
 pub fn conformance(s: ColumnStats, rows: u64) f64 {
     if (rows == 0) return 1.0;
     return 1.0 - @as(f64, @floatFromInt(s.mismatches)) / @as(f64, @floatFromInt(rows));
@@ -388,6 +403,33 @@ test "rows: ragged and broken rows count against every column" {
     defer p.deinit();
     try testing.expectEqual(@as(u64, 0), p.rejected);
     try testing.expectEqual(@as(u64, 1), p.stats[2].nulls);
+}
+
+test "structure: a file that stops mid-record says so" {
+    var rejects: Io.Writer.Allocating = .init(testing.allocator);
+    defer rejects.deinit();
+    var cut = try run("id,amount,status\n1,1.50,open\n2,3", &orders, .{}, &rejects);
+    defer cut.deinit();
+    try testing.expectEqual(@as(usize, 1), cut.structural.items.len);
+    try testing.expectEqualStrings("the file ends mid-record: its last line has no line break and 2 of 3 fields; was it cut off?", cut.structural.items[0]);
+    try testing.expectEqual(@as(u64, 1), cut.row_errors.get(.ragged));
+    // Padding takes the row, but the file is still not all there.
+    var padded = try run("id,amount,status\n1,1.50,open\n2,3", &orders, .{ .ragged = .pad }, &rejects);
+    defer padded.deinit();
+    try testing.expectEqual(@as(u64, 0), padded.rejected);
+    try testing.expect(!padded.passed());
+    var quoted = try run("id,amount,status\n1,1.50,\"op", &orders, .{}, &rejects);
+    defer quoted.deinit();
+    try testing.expectEqualStrings("the file ends mid-record, inside a quoted field and with no line break: was it cut off?", quoted.structural.items[0]);
+    // A whole last record with no line break is only that.
+    var whole = try run("id,amount,status\n1,1.50,open", &orders, .{}, &rejects);
+    defer whole.deinit();
+    try testing.expectEqual(@as(usize, 0), whole.structural.items.len);
+    try testing.expect(whole.passed());
+    // A short row that ends its line is a ragged row, nothing more.
+    var short = try run("id,amount,status\n1,1.50\n", &orders, .{}, &rejects);
+    defer short.deinit();
+    try testing.expectEqual(@as(usize, 0), short.structural.items.len);
 }
 
 test "structure: a missing column fails the file, an extra one only under --strict" {
