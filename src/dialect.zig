@@ -134,12 +134,16 @@ pub const Warnings = packed struct(u8) {
     }
 };
 
+/// The most of a file's start the sniffer reads, unless --sample-bytes
+/// asks for more: what its window may grow to.
+pub const max_sample_bytes = 16 << 20;
+
 pub const SniffOptions = struct {
     pins: Pins = .{},
     /// The first window; it doubles while the winner has seen fewer than
     /// `records` complete records, up to max_sample.
     sample_bytes: usize = 64 << 10,
-    max_sample: usize = 16 << 20,
+    max_sample: usize = max_sample_bytes,
     records: usize = 32,
     /// The schema's columns, when there is one: its count is the strongest
     /// evidence there is, and its names say whether row 1 is a header.

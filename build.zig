@@ -39,6 +39,7 @@ pub fn build(b: *std.Build) void {
         r.addArgs(check.args);
         r.addFileInput(b.path("test/cli/orders.csv"));
         r.addFileInput(b.path("test/cli/orders.txt"));
+        r.addFileInput(b.path("test/cli/orders16.csv"));
         if (check.stdout) |s| r.expectStdOutEqual(s);
         if (check.stderr) |s| r.expectStdErrEqual(s);
         r.expectExitCode(check.code);
@@ -210,6 +211,17 @@ const cli_checks = [_]struct {
         .stdout = "test/cli/orders.csv: delimiter=, quote=~ escape=doubled newline=lf header=yes confidence=low\n",
         .stderr = "thresh: test/cli/orders.csv: the dialect is not settled (confidence low, score 0.92); pin it with --delimiter, --quote, --escape, --newline and --header\n",
         .code = 2,
+    },
+    .{
+        // UTF-16 is transcoded as it is read: sniff refuses an --encoding
+        // for it as validate does, and says what it read.
+        .args = &.{ "sniff", "test/cli/orders16.csv", "--encoding", "latin1" },
+        .stderr = "thresh: test/cli/orders16.csv: the file is UTF-16 (it starts with a byte order mark) and is read as such; leave out --encoding\n",
+        .code = 2,
+    },
+    .{
+        .args = &.{ "sniff", "test/cli/orders16.csv" },
+        .stdout = "test/cli/orders16.csv: delimiter=, quote=\" escape=doubled newline=lf header=yes confidence=high warnings=utf16\n",
     },
     .{
         .args = &.{ "sniff", "test/cli/orders.csv", "--quote", "none", "--escape", "backslash" },

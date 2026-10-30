@@ -175,6 +175,8 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
         if (!cfg.quiet) try err.print("infer {s}  {d} rows  {d} columns\n", .{ path, o.rows, r.columns.len });
         if (r.repeated_headers > 0 and !cfg.quiet)
             try err.print("thresh: {s}: {s}\n", .{ path, try worker.repeatedHeader(a, r.repeated_line, r.repeated_headers) });
+        if (r.utf16_replaced > 0 and !cfg.quiet)
+            try err.print("thresh: {s}: {d} UTF-16 code unit{s} made no character, read as U+FFFD\n", .{ path, r.utf16_replaced, if (r.utf16_replaced == 1) "" else "s" });
         const columns = try a.dupe(infer.ColumnState, r.columns);
         for (columns) |*c| try restOf(err, cfg, path, c);
         for (columns) |c| {
@@ -382,11 +384,14 @@ fn interrupted(err: *Io.Writer) !Exit {
 fn sniff(env: Env, cfg: cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
     var code: Exit = .ok;
     for (cfg.files) |path| {
-        const v = sniffFile(env, cfg, path) catch |e| {
-            try err.print("thresh: {s}: {s}\n", .{ path, worker.describe(e) });
+        var o: report.Outcome = .{ .file = path, .result = .@"error" };
+        var sniffed = (try worker.openSniffed(.{ .io = env.io, .gpa = env.gpa }, &cfg, path, null, &o)) orelse {
+            try err.print("thresh: {s}: {s}\n", .{ path, o.problem.? });
             code = code.worst(.unreadable);
             continue;
         };
+        sniffed.in.close(env.io, env.gpa);
+        const v = sniffed.verdict;
         if (cfg.json) {
             try std.json.Stringify.value(.{ .file = path, .dialect = v, .warnings = v.warnings }, .{}, out);
             try out.writeByte('\n');
@@ -411,22 +416,6 @@ fn sniff(env: Env, cfg: cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
         }
     }
     return code;
-}
-
-/// The file's dialect, from as much of its start as the sniffer may want.
-fn sniffFile(env: Env, cfg: cli.Config, path: []const u8) !dialect.Verdict {
-    const max_sample = @max(cfg.sample_bytes, 16 << 20);
-    var in: input.Input = try .open(env.io, env.gpa, path, .{ .no_mmap = cfg.no_mmap, .buffer = cfg.sample_bytes });
-    defer in.close(env.io, env.gpa);
-    while (!in.eof and in.data().len < max_sample) try in.refill(env.io, env.gpa, in.base);
-    var v = try dialect.sniff(env.gpa, in.data(), in.eof, .{
-        .pins = cfg.pins,
-        .sample_bytes = cfg.sample_bytes,
-        .max_sample = max_sample,
-        .utf8 = cfg.encoding == .utf8 or in.utf16 != null,
-    });
-    v.warnings.utf16 = in.utf16 != null;
-    return v;
 }
 
 test {

@@ -179,41 +179,16 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
     var out: report.Outcome = .{ .file = path, .result = .@"error" };
     var details: report.Details = .{ .schema = plan.schema, .encoding = cfg.encoding, .timing = plan.timing };
 
-    const t0 = now(io);
-    var in = input.Input.open(io, gpa, path, .{ .no_mmap = cfg.no_mmap }) catch |e| {
-        out.problem = describe(e);
-        try writeReport(env, plan, out, name, details);
-        return out;
-    };
-    defer in.close(io, gpa);
-    out.bytes = in.size;
-    if (utf16Conflict(&in, cfg)) |p| {
-        out.problem = p;
-        try writeReport(env, plan, out, name, details);
-        return out;
-    }
-
-    const max_sample = @max(cfg.sample_bytes, 16 << 20);
-    while (!in.eof and in.data().len < max_sample) try in.refill(io, gpa, in.base);
     const names = try arena.alloc([]const u8, plan.schema.columns.len);
     for (names, plan.schema.columns) |*n, c| n.* = c.name;
-    const verdict = dialect.sniff(gpa, in.data(), in.eof, .{
-        .pins = cfg.pins,
-        .sample_bytes = cfg.sample_bytes,
-        .max_sample = max_sample,
-        .utf8 = cfg.encoding == .utf8,
-        .schema = names,
-    }) catch |e| switch (e) {
-        error.OutOfMemory => return e,
-        else => {
-            out.problem = describe(e);
-            try writeReport(env, plan, out, name, details);
-            return out;
-        },
+    var sniffed = (try openSniffed(env, cfg, path, names, &out)) orelse {
+        try writeReport(env, plan, out, name, details);
+        return out;
     };
+    defer sniffed.in.close(io, gpa);
+    const in = &sniffed.in;
+    const verdict = sniffed.verdict;
     details.verdict = verdict;
-    details.verdict.?.warnings.utf16 = in.utf16 != null;
-    out.timing.sniff_ns = since(io, t0);
     if (verdict.confidence == .low and !cfg.pins.complete()) {
         out.problem = "the dialect is not settled (confidence low); pin it with --delimiter, --quote, --escape, --newline and --header";
         try writeReport(env, plan, out, name, details);
@@ -328,7 +303,7 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
 
 /// A UTF-16 file is transcoded to UTF-8 as it is read, so an --encoding
 /// for its bytes would read the UTF-8 as something else.
-pub fn utf16Conflict(in: *const input.Input, cfg: *const cli.Config) ?[]const u8 {
+fn utf16Conflict(in: *const input.Input, cfg: *const cli.Config) ?[]const u8 {
     if (in.utf16 == null or cfg.encoding == .utf8) return null;
     return "the file is UTF-16 (it starts with a byte order mark) and is read as such; leave out --encoding";
 }
@@ -402,6 +377,52 @@ pub fn repeatedHeader(arena: Allocator, line: u64, count: u64) Allocator.Error![
 }
 
 /// One file's pass 1: its outcome and its columns as inference left them.
+/// A file open, and its dialect.
+pub const Sniffed = struct {
+    in: input.Input,
+    verdict: dialect.Verdict,
+};
+
+/// Opens path and sniffs as much of its start as the sniffer may want:
+/// the one way sniff, infer and validate read a file's dialect. A problem
+/// with the file (it cannot be opened, is UTF-16 under --encoding, or
+/// gives the sniffer nothing to score) goes in out.problem and gives null.
+/// out.bytes and out.timing.sniff_ns are set as far as it gets. Low
+/// confidence is the caller's to judge. The caller closes the Input.
+pub fn openSniffed(env: Env, cfg: *const cli.Config, path: []const u8, schema_names: ?[]const []const u8, out: *report.Outcome) !?Sniffed {
+    const t0 = now(env.io);
+    defer out.timing.sniff_ns = since(env.io, t0);
+    var in = input.Input.open(env.io, env.gpa, path, .{ .no_mmap = cfg.no_mmap }) catch |e| {
+        out.problem = describe(e);
+        return null;
+    };
+    var kept = false;
+    defer if (!kept) in.close(env.io, env.gpa);
+    out.bytes = in.size;
+    if (utf16Conflict(&in, cfg)) |p| {
+        out.problem = p;
+        return null;
+    }
+    const max_sample = @max(cfg.sample_bytes, dialect.max_sample_bytes);
+    while (!in.eof and in.data().len < max_sample) try in.refill(env.io, env.gpa, in.base);
+    var verdict = dialect.sniff(env.gpa, in.data(), in.eof, .{
+        .pins = cfg.pins,
+        .sample_bytes = cfg.sample_bytes,
+        .max_sample = max_sample,
+        .utf8 = cfg.encoding == .utf8,
+        .schema = schema_names,
+    }) catch |e| switch (e) {
+        error.OutOfMemory => return e,
+        else => {
+            out.problem = describe(e);
+            return null;
+        },
+    };
+    verdict.warnings.utf16 = in.utf16 != null;
+    kept = true;
+    return .{ .in = in, .verdict = verdict };
+}
+
 pub const Inferred = struct {
     outcome: report.Outcome,
     columns: []const infer.ColumnState = &.{},
@@ -409,6 +430,8 @@ pub const Inferred = struct {
     /// Records that were the header again, skipped, and the first's line.
     repeated_headers: u64 = 0,
     repeated_line: u64 = 0,
+    /// UTF-16 code units that made no character, read as U+FFFD.
+    utf16_replaced: u64 = 0,
 };
 
 /// Infers the file at path's columns, reading all of it, or the first
@@ -417,32 +440,10 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
     const io = env.io;
     const gpa = env.gpa;
     var out: report.Outcome = .{ .file = path, .result = .@"error" };
-    const t0 = now(io);
-    var in = input.Input.open(io, gpa, path, .{ .no_mmap = cfg.no_mmap }) catch |e| {
-        out.problem = describe(e);
-        return .{ .outcome = out };
-    };
-    defer in.close(io, gpa);
-    out.bytes = in.size;
-    if (utf16Conflict(&in, cfg)) |p| {
-        out.problem = p;
-        return .{ .outcome = out };
-    }
-    const max_sample = @max(cfg.sample_bytes, 16 << 20);
-    while (!in.eof and in.data().len < max_sample) try in.refill(io, gpa, in.base);
-    const verdict = dialect.sniff(gpa, in.data(), in.eof, .{
-        .pins = cfg.pins,
-        .sample_bytes = cfg.sample_bytes,
-        .max_sample = max_sample,
-        .utf8 = cfg.encoding == .utf8,
-    }) catch |e| switch (e) {
-        error.OutOfMemory => return e,
-        else => {
-            out.problem = describe(e);
-            return .{ .outcome = out };
-        },
-    };
-    out.timing.sniff_ns = since(io, t0);
+    var sniffed = (try openSniffed(env, cfg, path, null, &out)) orelse return .{ .outcome = out };
+    defer sniffed.in.close(io, gpa);
+    const in = &sniffed.in;
+    const verdict = sniffed.verdict;
     if (verdict.confidence == .low and !cfg.pins.complete()) {
         out.problem = "the dialect is not settled (confidence low); pin it with --delimiter, --quote, --escape, --newline and --header";
         return .{ .outcome = out };
@@ -515,7 +516,14 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
         return .{ .outcome = out };
     };
     out.result = .pass;
-    return .{ .outcome = out, .columns = f.columns.items, .header = verdict.dialect.header, .repeated_headers = repeated, .repeated_line = repeated_line };
+    return .{
+        .outcome = out,
+        .columns = f.columns.items,
+        .header = verdict.dialect.header,
+        .repeated_headers = repeated,
+        .repeated_line = repeated_line,
+        .utf16_replaced = if (in.utf16) |u| u.replaced else 0,
+    };
 }
 
 /// Whether a record's values are the header's names, trimmed and in any case.
