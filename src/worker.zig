@@ -13,6 +13,7 @@ const schema_mod = @import("schema.zig");
 const Schema = schema_mod.Schema;
 const validate = @import("validate.zig");
 const report = @import("report.zig");
+const infer = @import("infer.zig");
 
 pub const Env = struct {
     io: Io,
@@ -227,4 +228,123 @@ pub fn describe(e: anyerror) []const u8 {
         error.Binary => "binary data (a NUL byte in the first 8 KiB)",
         else => @errorName(e),
     };
+}
+
+/// One file's pass 1: its outcome and its columns as inference left them.
+pub const Inferred = struct {
+    outcome: report.Outcome,
+    columns: []const infer.ColumnState = &.{},
+    header: bool = false,
+};
+
+/// Infers the file at path's columns, reading all of it, or the first
+/// --sample rows. arena holds the result.
+pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, path: []const u8, arena: Allocator) !Inferred {
+    const io = env.io;
+    const gpa = env.gpa;
+    var out: report.Outcome = .{ .file = path, .result = .@"error" };
+    const t0 = now(io);
+    var in = input.Input.open(io, gpa, path, .{ .no_mmap = cfg.no_mmap }) catch |e| {
+        out.problem = describe(e);
+        return .{ .outcome = out };
+    };
+    defer in.close(io, gpa);
+    out.bytes = in.size;
+    const max_sample = @max(cfg.sample_bytes, 16 << 20);
+    while (!in.eof and in.data().len < max_sample) try in.refill(io, gpa, in.base);
+    const verdict = dialect.sniff(gpa, in.data(), in.eof, .{
+        .pins = cfg.pins,
+        .sample_bytes = cfg.sample_bytes,
+        .max_sample = max_sample,
+    }) catch |e| switch (e) {
+        error.OutOfMemory => return e,
+        else => {
+            out.problem = describe(e);
+            return .{ .outcome = out };
+        },
+    };
+    out.timing.sniff_ns = since(io, t0);
+    if (verdict.confidence == .low and !cfg.pins.complete()) {
+        out.problem = "the dialect is not settled (confidence low); pin it with --delimiter, --quote, --escape, --newline and --header";
+        return .{ .outcome = out };
+    }
+
+    const t1 = now(io);
+    var f: infer.Inferrer = .init(arena, .{
+        .nulls = nulls,
+        .encoding = encodingOf(cfg),
+        .day_first = cfg.day_first,
+    });
+    var s: records.Scanner = try .init(gpa, verdict.dialect, .{ .reference = .{
+        .start = verdict.start,
+        .keep_empty = cfg.keep_empty,
+    } });
+    defer s.deinit();
+    s.feed(in.data(), in.base, in.eof);
+    var batch: records.Batch = .{};
+    defer batch.deinit(gpa);
+    var scratch: std.ArrayList(u8) = .empty;
+    defer scratch.deinit(gpa);
+    var values: std.ArrayList([]const u8) = .empty;
+    defer values.deinit(gpa);
+    var header_pending = verdict.dialect.header;
+    if (!header_pending) try f.header(null, verdict.fields);
+    const limit = cfg.sample_rows orelse std.math.maxInt(u64);
+    read: while (f.rows < limit) {
+        batch.clear();
+        const state = try batch.fill(gpa, &s, .{});
+        for (0..batch.len()) |i| {
+            if (f.rows >= limit) break :read;
+            if (batch.records.items[i].problem != null) continue;
+            try valuesOf(gpa, batch.recordFields(i), in.data(), in.base, verdict.dialect, &scratch, &values);
+            if (header_pending) {
+                header_pending = false;
+                try f.header(values.items, values.items.len);
+                continue;
+            }
+            try f.record(values.items);
+        }
+        switch (state) {
+            .full => {},
+            .end => break,
+            .need_more => {
+                try in.refill(io, gpa, s.keepFrom());
+                s.feed(in.data(), in.base, in.eof);
+            },
+        }
+    }
+    out.timing.parse_ns = since(io, t1);
+    out.rows = f.rows;
+    out.result = .pass;
+    return .{ .outcome = out, .columns = f.columns.items, .header = verdict.dialect.header };
+}
+
+/// A record's values with escapes undone, into values; scratch holds the
+/// unescaped ones and is sized first, so no slice into it moves.
+fn valuesOf(
+    gpa: Allocator,
+    fields: []const records.Field,
+    data: []const u8,
+    base: u64,
+    d: dialect.Dialect,
+    scratch: *std.ArrayList(u8),
+    values: *std.ArrayList([]const u8),
+) Allocator.Error!void {
+    values.clearRetainingCapacity();
+    var need: usize = 0;
+    for (fields) |f| if (f.flags.needs_unescape) {
+        need += f.len;
+    };
+    try scratch.resize(gpa, need);
+    var at: usize = 0;
+    for (fields) |f| {
+        const local: records.Field = .{ .start = f.start - base, .len = f.len, .flags = f.flags };
+        if (!f.flags.needs_unescape) {
+            try values.append(gpa, local.raw(data));
+            continue;
+        }
+        const v = local.value(data, d, scratch.items[at..][0..f.len]);
+        at += f.len;
+        try values.append(gpa, v);
+    }
 }

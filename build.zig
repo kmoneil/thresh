@@ -193,6 +193,53 @@ const cli_checks = [_]struct {
         .stderr = "thresh: test/cli/missing.json: no such file\n",
         .code = 3,
     },
+    .{
+        .args = &.{ "infer", "test/cli/orders.csv" },
+        .stdout =
+        \\{
+        \\  "columns": [
+        \\    {
+        \\      "name": "id",
+        \\      "type": "int64",
+        \\      "conformance": 1,
+        \\      "samples": [
+        \\        "1",
+        \\        "2"
+        \\      ],
+        \\      "inferred": true
+        \\    },
+        \\    {
+        \\      "name": "name",
+        \\      "type": "string",
+        \\      "conformance": 1,
+        \\      "samples": [
+        \\        "apple",
+        \\        "pear, green"
+        \\      ],
+        \\      "inferred": true
+        \\    },
+        \\    {
+        \\      "name": "amount",
+        \\      "type": "decimal",
+        \\      "precision": 3,
+        \\      "scale": 2,
+        \\      "conformance": 1,
+        \\      "samples": [
+        \\        "1.50",
+        \\        "2.25"
+        \\      ],
+        \\      "inferred": true
+        \\    }
+        \\  ],
+        \\  "nulls": [
+        \\    ""
+        \\  ],
+        \\  "match": "name"
+        \\}
+        \\
+        ,
+        .stderr = "infer test/cli/orders.csv  2 rows  3 columns\n",
+    },
     .{ .args = &.{"--help"}, .stdout = null },
     .{ .args = &.{"--version"}, .stdout = "thresh " ++ zon.version ++ "\n" },
 };

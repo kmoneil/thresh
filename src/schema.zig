@@ -58,6 +58,60 @@ pub const Column = struct {
     inferred: ?bool = null,
     conformance: ?f64 = null,
     samples: ?[]const []const u8 = null,
+    /// The file that took the column's type down the lattice, when infer
+    /// merged several.
+    widened_by: ?[]const u8 = null,
+
+    /// The column as JSON: its name and type, and only the fields that
+    /// say something, so a written schema reads like a hand-written one.
+    pub fn jsonStringify(c: Column, s: *std.json.Stringify) std.json.Stringify.Error!void {
+        try s.beginObject();
+        try s.objectField("name");
+        try s.write(c.name);
+        try s.objectField("type");
+        try s.write(@tagName(c.type));
+        if (!c.nullable) {
+            try s.objectField("nullable");
+            try s.write(false);
+        }
+        if (c.nulls.len > 0) {
+            try s.objectField("nulls");
+            try s.write(c.nulls);
+        }
+        if (c.type == .decimal) {
+            try s.objectField("precision");
+            try s.write(c.precision);
+            try s.objectField("scale");
+            try s.write(c.scale);
+        }
+        inline for (.{ "format", "max_len", "true_values", "false_values", "conformance", "samples", "widened_by" }) |name| {
+            if (@field(c, name)) |value| {
+                try s.objectField(name);
+                try s.write(value);
+            }
+        }
+        if (c.day_first) {
+            try s.objectField("day_first");
+            try s.write(true);
+        }
+        if (c.values.len > 0) {
+            try s.objectField("values");
+            try s.write(c.values);
+        }
+        if (c.case_insensitive) {
+            try s.objectField("case_insensitive");
+            try s.write(true);
+        }
+        if (c.utf8 != .@"error") {
+            try s.objectField("utf8");
+            try s.write(@tagName(c.utf8));
+        }
+        if (c.inferred) |i| {
+            try s.objectField("inferred");
+            try s.write(i);
+        }
+        try s.endObject();
+    }
 };
 
 pub const Schema = struct {
@@ -231,6 +285,15 @@ test "the spec's example schema reads" {
     try testing.expectEqual(Utf8Policy.replace, s.columns[5].utf8);
     try testing.expectEqual(@as(usize, 3), s.nulls.len);
     try testing.expectEqual(Match.name, s.match.?);
+}
+
+test "a column writes only what it says" {
+    var buf: [512]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try std.json.Stringify.value(Column{ .name = "amount", .type = .decimal, .precision = 18, .scale = 2, .nullable = false }, .{}, &w);
+    try testing.expectEqualStrings(
+        \\{"name":"amount","type":"decimal","nullable":false,"precision":18,"scale":2}
+    , w.buffered());
 }
 
 test "a schema written back reads the same" {

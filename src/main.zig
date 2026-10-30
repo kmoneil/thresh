@@ -15,6 +15,7 @@ const input = @import("input.zig");
 const schema = @import("schema.zig");
 const report = @import("report.zig");
 const worker = @import("worker.zig");
+const infer = @import("infer.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -95,6 +96,7 @@ fn execute(env: Env, args: []const []const u8, out: *Io.Writer, err: *Io.Writer)
     return switch (cfg.command) {
         .sniff => sniff(env, cfg, out, err),
         .validate => validateFiles(env, &cfg, out, err),
+        .infer => inferFiles(env, &cfg, out, err),
         else => {
             try err.print("thresh: {t} is not built yet\n", .{cfg.command});
             return .usage;
@@ -125,6 +127,59 @@ fn loadSchema(env: Env, cfg: *const cli.Config, err: *Io.Writer) !?schema.Owned 
             return null;
         },
     };
+}
+
+/// infer: each file's columns, merged by name into one schema (the lowest
+/// type any file reached), written to --out or stdout. A line per file on
+/// stderr, and one per column a later file widened.
+fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
+    const a = env.arena;
+    const default_nulls: schema.Schema = .{ .columns = &.{} };
+    const nulls = try worker.nullsOf(a, &default_nulls, cfg.nulls);
+    var merged: std.ArrayList(infer.ColumnState) = .empty;
+    var all_headers = true;
+    var code: Exit = .ok;
+    var rows: u64 = 0;
+    for (cfg.files) |path| {
+        const r = try worker.inferFile(.{ .io = env.io, .gpa = env.gpa }, cfg, nulls, path, a);
+        if (r.outcome.result == .@"error") {
+            code = code.worst(.unreadable);
+            if (!cfg.quiet) try err.print("error {s}  {s}\n", .{ path, r.outcome.problem orelse "" });
+            continue;
+        }
+        rows += r.outcome.rows;
+        if (!r.header) all_headers = false;
+        if (!cfg.quiet) try err.print("infer {s}  {d} rows  {d} columns\n", .{ path, r.outcome.rows, r.columns.len });
+        for (r.columns) |c| {
+            for (merged.items) |*m| {
+                if (!std.ascii.eqlIgnoreCase(m.name, c.name)) continue;
+                const before = m.kind;
+                infer.merge(m, c, path);
+                if (m.kind != before and before != .null and !cfg.quiet)
+                    try err.print("thresh: column '{s}': {t} until {s} made it {t}\n", .{ m.name, before, path, m.kind });
+                break;
+            } else try merged.append(a, c);
+        }
+    }
+    if (merged.items.len == 0) {
+        try err.print("thresh: no file to infer a schema from\n", .{});
+        return code.worst(.unreadable);
+    }
+    const s: schema.Schema = .{
+        .columns = try infer.columnsOf(a, merged.items),
+        .nulls = nulls,
+        .match = if (all_headers) .name else .position,
+        .sampled = if (cfg.sample_rows != null) true else null,
+    };
+    if (cfg.out) |path| {
+        var buf: [1 << 16]u8 = undefined;
+        const file = try Io.Dir.cwd().createFile(env.io, path, .{});
+        defer file.close(env.io);
+        var fw = file.writer(env.io, &buf);
+        try schema.writeJson(s, &fw.interface);
+        try fw.interface.flush();
+    } else try schema.writeJson(s, out);
+    return code;
 }
 
 /// validate: each file against the schema, a line apiece on stderr (or a
@@ -234,6 +289,8 @@ test {
     _ = @import("write/csv.zig");
     _ = report;
     _ = worker;
+    _ = infer;
+    _ = @import("types/date.zig");
 }
 
 test "worst keeps the higher status" {

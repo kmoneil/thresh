@@ -10,6 +10,7 @@ const cli = @import("cli.zig");
 const schema = @import("schema.zig");
 const worker = @import("worker.zig");
 const report = @import("report.zig");
+const infer = @import("infer.zig");
 const reference = @import("reference.zig");
 const records = @import("records.zig");
 const Field = records.Field;
@@ -369,4 +370,47 @@ fn expectGolden(io: Io, a: Allocator, name: []const u8, got_text: []const u8) !v
     }
     const want = try Io.Dir.cwd().readFileAlloc(io, path, a, .unlimited);
     try testing.expectEqualStrings(want, normal);
+}
+
+test "infer then validate: every clean corpus file passes against its own inferred schema" {
+    const io = testing.io;
+    const gpa = testing.allocator;
+    const corpus_dir = std.fs.path.dirname(build_options.corpus_index).?;
+    var corpus: Corpus = try .open(io, gpa);
+    defer corpus.close(io, gpa);
+    var it = corpus.names();
+    var kinds: std.EnumArray(infer.Kind, usize) = .initFill(0);
+    while (it.next()) |name| {
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var fx = try corpus.load(io, gpa, name);
+        defer fx.deinit(gpa);
+        const encoding: cli.Encoding = if (std.mem.eql(u8, fx.expected.value.encoding, "latin1")) .latin1 else .utf8;
+        const path = try std.fmt.allocPrint(a, "{s}/{s}", .{ corpus_dir, name });
+        var cfg: cli.Config = .{ .command = .infer, .encoding = encoding };
+        const nulls: []const []const u8 = &.{""};
+        const r = try worker.inferFile(.{ .io = io, .gpa = gpa }, &cfg, nulls, path, a);
+        try testing.expectEqual(report.Result.pass, r.outcome.result);
+        for (r.columns) |c| kinds.getPtr(c.kind).* += 1;
+        const s: schema.Schema = .{
+            .columns = try infer.columnsOf(a, r.columns),
+            .match = if (r.header) .name else .position,
+        };
+        cfg.command = .validate;
+        const plan: worker.Plan = .{ .cfg = &cfg, .schema = &s, .nulls = nulls, .threshold = 1.0, .timing = false };
+        const o = try worker.validateFile(.{ .io = io, .gpa = gpa }, plan, path, a);
+        if (o.result != .pass or o.rows_rejected != 0) {
+            std.debug.print("{s}: {t} against its inferred schema, {d} of {d} rows rejected, {?s}\n", .{ name, o.result, o.rows_rejected, o.rows, o.problem });
+            var buf: [8192]u8 = undefined;
+            var w: Io.Writer = .fixed(&buf);
+            schema.writeJson(s, &w) catch {};
+            std.debug.print("{s}\n", .{w.buffered()});
+            return error.TestUnexpectedResult;
+        }
+    }
+    // The corpus's columns come out as the types the generator wrote.
+    inline for (.{ .int64, .decimal, .float64, .bool, .date, .timestamp, .string }) |k| {
+        try testing.expect(kinds.get(k) > 0);
+    }
 }
