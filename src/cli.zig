@@ -61,8 +61,9 @@ pub const usage =
     \\      --version          show the version
     \\
     \\Exit status: 0 every file passed; 1 a file failed validation but every
-    \\file was processed; 2 a file could not be read or its dialect could not
-    \\be settled; 3 a usage error.
+    \\file was processed (infer: the files disagree on their columns); 2 a
+    \\file could not be read or its dialect could not be settled; 3 a usage
+    \\error.
     \\
 ;
 

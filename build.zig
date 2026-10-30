@@ -41,6 +41,7 @@ pub fn build(b: *std.Build) void {
         r.addFileInput(b.path("test/cli/orders.txt"));
         r.addFileInput(b.path("test/cli/orders16.csv"));
         r.addFileInput(b.path("test/cli/wide.csv"));
+        r.addFileInput(b.path("test/cli/noheader.csv"));
         if (check.stdout) |s| r.expectStdOutEqual(s);
         if (check.stderr) |s| r.expectStdErrEqual(s);
         r.expectExitCode(check.code);
@@ -314,6 +315,26 @@ const cli_checks = [_]struct {
         .stdout = null,
         .stderr = "infer test/cli/wide.csv  39 rows  3 columns\n" ++
             "thresh: test/cli/wide.csv: 1 row wider than the header left out, the first on line 21: ragged rows, which validate rejects\n",
+    },
+    .{
+        // Files that disagree on their columns: said, and exit 1.
+        .args = &.{ "infer", "test/cli/orders.csv", "test/cli/wide.csv", "--jobs", "1" },
+        .stdout = null,
+        .stderr = "infer test/cli/orders.csv  2 rows  3 columns\n" ++
+            "infer test/cli/wide.csv  39 rows  3 columns\n" ++
+            "thresh: test/cli/wide.csv: 1 row wider than the header left out, the first on line 21: ragged rows, which validate rejects\n" ++
+            "thresh: id, amount: typed from fewer than 10 values; check them before reusing the schema\n" ++
+            "thresh: the files disagree: 6 of the schema's 6 columns are not in every file: 'id' (1 of 2), 'name' (1 of 2), 'amount' (1 of 2) and 3 more; validate fails a file without one\n",
+        .code = 1,
+    },
+    .{
+        .args = &.{ "infer", "test/cli/orders.csv", "test/cli/noheader.csv", "--jobs", "1" },
+        .stdout = null,
+        .stderr = "infer test/cli/orders.csv  2 rows  3 columns\n" ++
+            "infer test/cli/noheader.csv  20 rows  3 columns\n" ++
+            "thresh: id, amount: typed from fewer than 10 values; check them before reusing the schema\n" ++
+            "thresh: the files disagree: 1 of 2 have no header (the first: test/cli/noheader.csv), so the schema matches columns by position; infer them apart, or pin --header\n",
+        .code = 1,
     },
     .{
         .args = &.{ "convert", "test/cli/orders.csv", "--to", "csv", "--out", ".zig-cache/cli-out/convert", "--json" },

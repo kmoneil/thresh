@@ -163,9 +163,16 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
     if (interrupt.requested()) return interrupted(err);
 
     var merged: std.ArrayList(infer.ColumnState) = .empty;
-    // Each merged column's index, by name.
+    // Each merged column's index, by name, and how many files have it.
     var merged_at: schema.NameMap(usize) = .empty;
+    var present: std.ArrayList(u32) = .empty;
     var all_headers = true;
+    // The files merged, those without a header and the first of them,
+    // and the widths of those.
+    var merged_files: u32 = 0;
+    var headless: u32 = 0;
+    var first_headless: []const u8 = "";
+    var widths: [2]usize = .{ std.math.maxInt(usize), 0 };
     var code: Exit = .ok;
     for (ctx.results, outcomes, cfg.files) |r, o, path| {
         if (o.result == .@"error") {
@@ -174,6 +181,12 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
             continue;
         }
         if (!r.header) all_headers = false;
+        merged_files += 1;
+        if (!r.header) {
+            if (headless == 0) first_headless = path;
+            headless += 1;
+            widths = .{ @min(widths[0], r.columns.len), @max(widths[1], r.columns.len) };
+        }
         if (!cfg.quiet) try err.print("infer {s}  {d} rows  {d} columns\n", .{ path, o.rows, r.columns.len });
         if (r.repeated_headers > 0 and !cfg.quiet)
             try err.print("thresh: {s}: {s}\n", .{ path, try worker.repeatedHeader(a, r.repeated_line, r.repeated_headers) });
@@ -188,8 +201,10 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
             if (!at.found_existing) {
                 at.value_ptr.* = merged.items.len;
                 try merged.append(a, c);
+                try present.append(a, 1);
                 continue;
             }
+            present.items[at.value_ptr.*] += 1;
             const m = &merged.items[at.value_ptr.*];
             const before = m.kind;
             infer.merge(m, c, path);
@@ -211,6 +226,10 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
         .threshold = cfg.threshold,
     };
     if (!cfg.quiet) try warnThin(err, merged.items, s.columns);
+    if (try disagreement(a, merged.items, present.items, merged_files, headless, first_headless, widths)) |why| {
+        try err.print("thresh: the files disagree: {s}\n", .{why});
+        code = code.worst(.failed);
+    }
     if (cfg.out) |path| {
         var buf: [1 << 16]u8 = undefined;
         const file = try Io.Dir.cwd().createFile(env.io, path, .{});
@@ -220,6 +239,30 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
         try fw.interface.flush();
     } else try schema.writeJson(s, out);
     return code;
+}
+
+/// How the files of one infer run disagree, if they do: a schema merged
+/// from them then fails some of them, or matches by position where a
+/// header named the columns. present: how many files have each column.
+fn disagreement(a: Allocator, columns: []const infer.ColumnState, present: []const u32, files: u32, headless: u32, first_headless: []const u8, widths: [2]usize) Allocator.Error!?[]const u8 {
+    if (headless > 0 and headless < files)
+        return try std.fmt.allocPrint(a, "{d} of {d} have no header (the first: {s}), so the schema matches columns by position; infer them apart, or pin --header", .{ headless, files, first_headless });
+    if (headless > 0) {
+        if (widths[0] == widths[1]) return null;
+        return try std.fmt.allocPrint(a, "they are {d} to {d} columns wide, and validate fails a file narrower than its schema", .{ widths[0], widths[1] });
+    }
+    var missing: usize = 0;
+    var names: std.ArrayList(u8) = .empty;
+    for (columns, present) |c, n| {
+        if (n == files) continue;
+        missing += 1;
+        if (missing > 3) continue;
+        if (missing > 1) try names.appendSlice(a, ", ");
+        try names.print(a, "'{s}' ({d} of {d})", .{ c.name, n, files });
+    }
+    if (missing == 0) return null;
+    if (missing > 3) try names.print(a, " and {d} more", .{missing - 3});
+    return try std.fmt.allocPrint(a, "{d} of the schema's {d} columns are not in every file: {s}; validate fails a file without one", .{ missing, columns.len, names.items });
 }
 
 /// What a column's rest says: under --threshold, that it took the rest's
