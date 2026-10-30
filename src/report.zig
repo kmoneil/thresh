@@ -153,7 +153,7 @@ pub fn writeFileReport(w: *Io.Writer, o: Outcome, d: Details) Stringify.Error!vo
     }
     try s.objectField("warnings");
     try s.beginArray();
-    inline for (.{ "utf8_bom", "mixed_newlines", "quote_in_unquoted" }) |name| {
+    inline for (dialect.Warnings.names) |name| {
         if (@field(warnings, name)) try s.write(name);
     }
     if (d.validator) |v| if (v.extra_columns) try s.write("extra_columns");
@@ -185,17 +185,17 @@ fn writeFraction(s: *Stringify, f: f64) Stringify.Error!void {
     try s.print("{s}", .{text[0..end]});
 }
 
-/// A value as a JSON string: Latin-1 transcoded, and under UTF-8 any byte
-/// that is not part of a character replaced with U+FFFD, so the report is
-/// valid JSON whatever the cell held.
+/// A value as a JSON string: Latin-1 or Windows-1252 transcoded, and under
+/// UTF-8 any byte that is not part of a character replaced with U+FFFD, so
+/// the report is valid JSON whatever the cell held.
 fn writeText(s: *Stringify, bytes: []const u8, encoding: types.Encoding) Stringify.Error!void {
     var buf: [validate.max_sample_len * 3]u8 = undefined;
     var n: usize = 0;
     var i: usize = 0;
     while (i < bytes.len) {
         const c = bytes[i];
-        if (encoding == .latin1) {
-            n += std.unicode.utf8Encode(c, buf[n..]) catch unreachable;
+        if (encoding != .utf8) {
+            n += std.unicode.utf8Encode(types.codepoint(encoding, c), buf[n..]) catch unreachable;
             i += 1;
             continue;
         }

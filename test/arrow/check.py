@@ -79,6 +79,24 @@ def run(thresh, args):
         sys.exit("thresh %s: exit %d\n%s" % (" ".join(args), p.returncode, p.stderr))
 
 
+CODECS = {"utf8": "utf-8-sig", "latin1": "latin-1", "cp1252": "cp1252"}
+
+
+def source_rows(path, dialect):
+    """The file's data records as Python's csv and codecs read them: the
+    oracle for what thresh transcodes, independent of its tables."""
+    kw = {"delimiter": dialect["delimiter"], "strict": False}
+    if dialect["quote"] is None:
+        kw.update(quoting=csv.QUOTE_NONE)
+    elif dialect["escape"] == "backslash":
+        kw.update(quotechar=dialect["quote"], doublequote=False, escapechar="\\")
+    else:
+        kw.update(quotechar=dialect["quote"], doublequote=True)
+    with open(path, encoding=CODECS[dialect["encoding"]], newline="") as f:
+        rows = [r for r in csv.reader(f, **kw) if r]
+    return rows[1:] if dialect["header"] else rows
+
+
 def check(thresh, corpus, name, out, mode):
     stem = name[: name.rindex(".")]
     path = name if os.path.isabs(name) else os.path.join(corpus, name)
@@ -86,9 +104,10 @@ def check(thresh, corpus, name, out, mode):
     stem = os.path.basename(stem)
     try:
         with open(os.path.join(corpus, stem + ".dialect.json")) as f:
-            encoding = json.load(f)["encoding"]
+            dialect = json.load(f)
+        encoding = dialect["encoding"]
     except FileNotFoundError:
-        encoding = "utf8"
+        dialect, encoding = None, "utf8"
     common = [path, "--quiet", "--encoding", encoding]
     if mode == "run":
         common += ["--schema", os.path.join(corpus, stem + ".schema.json")]
@@ -120,6 +139,17 @@ def check(thresh, corpus, name, out, mode):
             # lost zero: an inferred integer must have had none to lose.
             if mode == "convert" and pa.types.is_int64(field.type) and re.fullmatch(r"[+-]?0\d+", row[i].strip(" \t")):
                 raise AssertionError("%s (%s): row %d, %s: inferred int64 for %r, which Arrow holds as %r" % (name, mode, r, field.name, row[i], g))
+    # Text as the source holds it, decoded by Python: a Latin-1 or
+    # Windows-1252 byte thresh maps wrongly shows here, and nowhere above,
+    # where Arrow and the CSV are both thresh's.
+    if dialect is not None:
+        source = source_rows(path, dialect)
+        for i, field in enumerate(table.schema):
+            if not pa.types.is_string(field.type):
+                continue
+            for r, (src, row) in enumerate(zip(source, rows)):
+                if i < len(src) and src[i] != row[i]:
+                    raise AssertionError("%s (%s): row %d, %s: the source reads %r, thresh wrote %r" % (name, mode, r, field.name, src[i][:60], row[i][:60]))
     if DUCK is not None:
         for ext in (".arrows", ".arrow"):
             p = os.path.join(d, stem + ext)

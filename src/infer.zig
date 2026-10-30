@@ -71,8 +71,10 @@ pub const ColumnState = struct {
     /// null once two differ or one cannot be spelled.
     format: ?[]const u8 = null,
     format_mixed: bool = false,
-    /// A string value that is not UTF-8: the column is written with U+FFFD.
+    /// A value that is not UTF-8, read as UTF-8, and the first row it is
+    /// in: worker.inferFile refuses the file, naming the encodings to try.
     invalid_utf8: bool = false,
+    invalid_row: u64 = 0,
     samples: [3]?[]const u8 = .{ null, null, null },
     widened_by: ?[]const u8 = null,
 };
@@ -144,7 +146,10 @@ pub const Inferrer = struct {
     }
 
     fn noteString(f: *const Inferrer, c: *ColumnState, v: []const u8) void {
-        if (f.options.encoding == .utf8 and !c.invalid_utf8 and !types.utf8.valid(v)) c.invalid_utf8 = true;
+        if (f.options.encoding == .utf8 and !c.invalid_utf8 and !types.utf8.valid(v)) {
+            c.invalid_utf8 = true;
+            c.invalid_row = f.rows;
+        }
     }
 
     fn sample(f: *Inferrer, c: *ColumnState, v: []const u8) Allocator.Error!void {

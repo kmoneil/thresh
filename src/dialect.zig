@@ -113,11 +113,16 @@ pub const Warnings = packed struct(u8) {
     mixed_newlines: bool = false,
     /// A quote character inside an unquoted field, read as data.
     quote_in_unquoted: bool = false,
-    _: u5 = 0,
+    /// Read as UTF-8, and the sample is not: a Windows or Latin-1 export,
+    /// most likely, which --encoding cp1252 or latin1 reads.
+    not_utf8: bool = false,
+    _: u4 = 0,
+
+    pub const names = .{ "utf8_bom", "mixed_newlines", "quote_in_unquoted", "not_utf8" };
 
     pub fn jsonStringify(w: Warnings, s: *std.json.Stringify) std.json.Stringify.Error!void {
         try s.beginArray();
-        inline for (.{ "utf8_bom", "mixed_newlines", "quote_in_unquoted" }) |name| {
+        inline for (names) |name| {
             if (@field(w, name)) try s.write(name);
         }
         try s.endArray();
@@ -134,6 +139,9 @@ pub const SniffOptions = struct {
     /// The schema's columns, when there is one: its count is the strongest
     /// evidence there is, and its names say whether row 1 is a header.
     schema: ?[]const []const u8 = null,
+    /// The file is to be read as UTF-8 (no --encoding): a sample that is
+    /// not is warned of.
+    utf8: bool = true,
 };
 
 pub const Verdict = struct {
@@ -296,6 +304,7 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
     d.newline = pins.newline orelse shape.newline;
     if (shape.mixed) warnings.mixed_newlines = true;
     if (shape.stray_quotes) warnings.quote_in_unquoted = true;
+    if (options.utf8 and notUtf8(sample, complete and len == data.len)) warnings.not_utf8 = true;
     d.header = switch (pins.header) {
         .yes => true,
         .no => false,
@@ -508,6 +517,18 @@ fn lines(gpa: Allocator, sample: []const u8, d: Dialect, fields: *std.ArrayList(
     return shape;
 }
 
+/// Whether sample holds bytes that are not UTF-8. A sample cut short of
+/// the file's end may stop inside a character; that is not counted.
+fn notUtf8(sample: []const u8, whole: bool) bool {
+    var s = sample;
+    if (!whole) {
+        var i = s.len;
+        while (i > 0 and s.len - i < 3 and s[i - 1] & 0xc0 == 0x80) i -= 1;
+        if (i > 0 and s[i - 1] >= 0xc0) s = s[0 .. i - 1];
+    }
+    return !std.unicode.utf8ValidateSlice(s);
+}
+
 /// Whether the first record names the columns. With a schema, it does when
 /// at least half its fields are the schema's names, trimmed and in any
 /// case: a header missing a column, or with one the schema lacks, is still
@@ -694,6 +715,15 @@ test "a delimiter the header lacks loses to one it has" {
     const pinned = try sniffed(ragged, .{ .pins = .{ .delimiter = ',' } });
     try std.testing.expectEqual(Confidence.medium, pinned.confidence);
     try std.testing.expect(pinned.dialect.header);
+}
+
+test "a sample that is not UTF-8 is warned of, unless another encoding is given" {
+    try std.testing.expect((try sniffed("id,name\n1,caf\xe9\n2,l\x92\x9cuvre\n", .{})).warnings.not_utf8);
+    try std.testing.expect(!(try sniffed("id,name\n1,caf\xe9\n", .{ .utf8 = false })).warnings.not_utf8);
+    try std.testing.expect(!(try sniffed("id,name\n1,café\n", .{})).warnings.not_utf8);
+    // A window that stops inside a character is not a broken one.
+    const cut = try sniff(std.testing.allocator, "id,name\n1,caf\xc3", false, .{});
+    try std.testing.expect(!cut.warnings.not_utf8);
 }
 
 test "ragged records are low confidence, not a wrong high" {

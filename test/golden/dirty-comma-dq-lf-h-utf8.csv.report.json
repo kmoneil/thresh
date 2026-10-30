@@ -176,5 +176,7 @@
     "ragged": 2,
     "bad_quote": 1
   },
-  "warnings": []
+  "warnings": [
+    "not_utf8"
+  ]
 }

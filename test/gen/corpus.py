@@ -137,7 +137,8 @@ class Writer:
 
     def __init__(self, dialect, encoding, policy):
         self.d = dialect
-        self.codec = "latin-1" if encoding == "latin1" else "utf-8"
+        self.encoding = "utf8" if encoding == "utf8-bom" else encoding
+        self.codec = {"latin1": "latin-1", "cp1252": "cp1252"}.get(encoding, "utf-8")
         # "minimal": quote when needed; "strings": quote every string;
         # "all": quote every field but the header's, an empty one as "".
         self.policy = policy
@@ -209,7 +210,7 @@ class Writer:
         """Reads the file back with csv, and every field from its offsets."""
         d = self.d
         raw = bytes(self.out)
-        text = raw.decode("utf-8-sig" if self.codec == "utf-8" else "latin-1")
+        text = raw.decode("utf-8-sig" if self.codec == "utf-8" else self.codec)
         kw = {"delimiter": d.delimiter, "strict": True}
         if d.quote is None:
             kw.update(quoting=csv.QUOTE_NONE, quotechar=None)
@@ -506,9 +507,9 @@ def some(rng, num, den, f):
     return f() if rng.chance(num, den) else None
 
 
-def table(d, policy, spec, rows, header=None, blank_every=0):
+def table(d, policy, spec, rows, header=None, blank_every=0, encoding="utf8"):
     """A header (never quoted unless it must be) and rows of spec."""
-    w = Writer(d, "utf8", policy)
+    w = Writer(d, encoding, policy)
     w.record(header or [n for n, _, _, _ in spec], "h" * len(spec))
     kinds = [k for _, _, k, _ in spec]
     for i in range(rows):
@@ -737,6 +738,22 @@ def export(name):
             ("Amount", {"type": "decimal", "precision": 8, "scale": 2}, "n", lambda i: "%d.%02d" % (rng.below(10000), rng.below(100))),
         ] + [("Field %02d" % k, STRING, "s", lambda i: some(rng, 1, 4, lambda: rng.choice(WORDS))) for k in range(1, 57)]
         return table(d, "strings", spec, 2)
+    if name == "exp-comma-crlf-cp1252":
+        # A Windows ledger export: French text in Windows-1252, whose bytes
+        # 0x80 to 0x9f are punctuation and letters (’ is 0x92, œ 0x9c, €
+        # 0x80), not the control characters Latin-1 has there (card t21).
+        d = Dialect(",", '"', "\r\n", True)
+        french = ["l’œuvre", "café", "crème brûlée", "pâté", "société", "reçu", "« facture »", "coût", "dépôt", "frais d’envoi", "œufs", "Noël", "à régler", "€"]
+        spec = [
+            ("kkey", STRING, "s", lambda i: fox_id(rng)),
+            ("njournal", INT, "n", lambda i: str(rng.between(1, 9))),
+            ("cledger", STRING, "s", lambda i: "%d-%03d" % (rng.between(1000, 9999), rng.below(1000))),
+            ("dposting", US_DATE, "n", lambda i: us_date(rng)),
+            ("clibelle", STRING, "s", lambda i: " ".join(rng.choice(french) for _ in range(rng.between(1, 4)))),
+            ("nsomme", {"type": "decimal", "precision": 10, "scale": 2}, "n", lambda i: "%s%d.%02d" % ("-" if rng.chance(2, 3) else "", rng.below(100000), rng.below(100))),
+            ("cmonnaie", STRING, "s", lambda i: rng.choice(["CAD", "USD", "EUR"])),
+        ]
+        return table(d, "strings", spec, 300, encoding="cp1252")
     raise KeyError(name)
 
 
@@ -750,6 +767,7 @@ EXPORTS = [
     "exp-comma-crlf-leads",
     "exp-comma-crlf-foxpro",
     "exp-pipe-crlf-tiny",
+    "exp-comma-crlf-cp1252",
 ]
 
 
@@ -935,10 +953,10 @@ def main(argv):
     index = []
     for fname, d, encoding, adv, build in plan():
         w, columns = build()
-        d, encoding = w.d, ("latin1" if w.codec == "latin-1" else encoding or "utf8")
+        d, encoding = w.d, w.encoding
         bom = w.out.startswith(b"\xef\xbb\xbf")
         raw = w.check()
-        w.check_unique(raw.decode("utf-8-sig" if w.codec == "utf-8" else "latin-1"), adv)
+        w.check_unique(raw.decode("utf-8-sig" if w.codec == "utf-8" else w.codec), adv)
         put(fname + ".csv", raw)
         put(
             fname + ".dialect.json",
@@ -949,7 +967,7 @@ def main(argv):
                     "escape": d.escape,
                     "newline": d.newline_name(),
                     "header": d.header,
-                    "encoding": "latin1" if w.codec == "latin-1" else "utf8",
+                    "encoding": w.encoding,
                     "bom": bom,
                     "adversarial": adv,
                 }
@@ -973,7 +991,7 @@ def main(argv):
                     "escape": d.escape,
                     "newline": d.newline_name(),
                     "header": d.header,
-                    "encoding": "latin1" if w.codec == "latin-1" else "utf8",
+                    "encoding": w.encoding,
                     "bom": w.out.startswith(b"\xef\xbb\xbf"),
                     "adversarial": False,
                 }

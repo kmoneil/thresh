@@ -179,6 +179,7 @@
     "bad_quote": 1
   },
   "warnings": [
-    "utf8_bom"
+    "utf8_bom",
+    "not_utf8"
   ]
 }

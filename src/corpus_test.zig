@@ -11,6 +11,7 @@ const schema = @import("schema.zig");
 const worker = @import("worker.zig");
 const report = @import("report.zig");
 const infer = @import("infer.zig");
+const types = @import("types.zig");
 const reference = @import("reference.zig");
 const records = @import("records.zig");
 const Field = records.Field;
@@ -230,7 +231,14 @@ test "the sniffer settles every corpus file's dialect" {
         const e = fx.expected.value;
         const v = try dialect.sniff(gpa, fx.bytes, true, .{});
         const want = e.dialect();
-        const right = std.meta.eql(want, v.dialect) and v.warnings.utf8_bom == e.bom and v.start == @as(usize, if (e.bom) 3 else 0);
+        // A UTF-8 file is never taken for another encoding, and a
+        // Windows-1252 one always is: it has punctuation in 0x80 to 0x9f.
+        const not_utf8_right = switch (encodingOf(e)) {
+            .utf8 => !v.warnings.not_utf8,
+            .cp1252 => v.warnings.not_utf8,
+            .latin1 => true,
+        };
+        const right = std.meta.eql(want, v.dialect) and v.warnings.utf8_bom == e.bom and v.start == @as(usize, if (e.bom) 3 else 0) and not_utf8_right;
         // Every ordinary file, right and sure of it. The adversarial files
         // may stump it, as long as it says so.
         if (right and (e.adversarial or v.confidence == .high)) continue;
@@ -306,7 +314,7 @@ fn validateOne(io: Io, gpa: Allocator, arena: Allocator, corpus: *const Corpus, 
         .command = .validate,
         .schema = schema_path,
         .report_dir = reports,
-        .encoding = if (std.mem.eql(u8, fx.expected.value.encoding, "latin1")) .latin1 else .utf8,
+        .encoding = encodingOf(fx.expected.value),
     };
     const plan: worker.Plan = .{
         .cfg = &cfg,
@@ -386,7 +394,7 @@ test "infer then validate: every clean corpus file passes against its own inferr
         const a = arena.allocator();
         var fx = try corpus.load(io, gpa, name);
         defer fx.deinit(gpa);
-        const encoding: cli.Encoding = if (std.mem.eql(u8, fx.expected.value.encoding, "latin1")) .latin1 else .utf8;
+        const encoding = encodingOf(fx.expected.value);
         const path = try std.fmt.allocPrint(a, "{s}/{s}", .{ corpus_dir, name });
         var cfg: cli.Config = .{ .command = .infer, .encoding = encoding };
         const nulls: []const []const u8 = &.{""};
@@ -433,9 +441,9 @@ test "convert --to csv: every corpus file comes out RFC 4180, re-sniffs as it, a
         var fx = try corpus.load(io, gpa, name);
         defer fx.deinit(gpa);
         const e = fx.expected.value;
-        const latin1 = std.mem.eql(u8, e.encoding, "latin1");
+        const encoding = encodingOf(e);
         const path = try std.fmt.allocPrint(a, "{s}/{s}", .{ corpus_dir, name });
-        var cfg: cli.Config = .{ .command = .convert, .encoding = if (latin1) .latin1 else .utf8, .to = .csv, .out = out_dir };
+        var cfg: cli.Config = .{ .command = .convert, .encoding = encoding, .to = .csv, .out = out_dir };
         const nulls: []const []const u8 = &.{""};
         const inferred = try worker.inferFile(.{ .io = io, .gpa = gpa }, &cfg, nulls, path, a);
         const s: schema.Schema = .{ .columns = try infer.columnsOf(a, inferred.columns), .match = if (inferred.header) .name else .position };
@@ -458,9 +466,9 @@ test "convert --to csv: every corpus file comes out RFC 4180, re-sniffs as it, a
         }
 
         // The output's records, header aside, against the input's.
-        var want = try recordsOf(a, fx.bytes, e.dialect(), if (e.bom) 3 else 0, latin1);
+        var want = try recordsOf(a, fx.bytes, e.dialect(), if (e.bom) 3 else 0, encoding);
         if (e.header) want = want[1..];
-        const got = (try recordsOf(a, written, .rfc4180, 0, false))[1..];
+        const got = (try recordsOf(a, written, .rfc4180, 0, .utf8))[1..];
         try testing.expectEqual(want.len, got.len);
         for (want, got, 0..) |w, g, row| {
             if (w.len != g.len) {
@@ -475,9 +483,14 @@ test "convert --to csv: every corpus file comes out RFC 4180, re-sniffs as it, a
     }
 }
 
-/// Every record of bytes as its values, escapes undone (and Latin-1
-/// transcoded), in arena.
-fn recordsOf(a: Allocator, bytes: []const u8, d: Dialect, start: usize, latin1: bool) ![]const []const []const u8 {
+/// A corpus file's encoding, as its .dialect.json names it.
+fn encodingOf(e: Expected) cli.Encoding {
+    return std.meta.stringToEnum(cli.Encoding, e.encoding).?;
+}
+
+/// Every record of bytes as its values, escapes undone (and a single-byte
+/// encoding transcoded), in arena.
+fn recordsOf(a: Allocator, bytes: []const u8, d: Dialect, start: usize, encoding: cli.Encoding) ![]const []const []const u8 {
     var p: reference.Parser = .init(bytes, d, .{ .start = start });
     var fields: std.ArrayList(Field) = .empty;
     var out: std.ArrayList([]const []const u8) = .empty;
@@ -486,13 +499,15 @@ fn recordsOf(a: Allocator, bytes: []const u8, d: Dialect, start: usize, latin1: 
         for (rec, fields.items) |*r, f| {
             const scratch = try a.alloc(u8, f.len);
             const v = f.value(bytes, d, scratch);
-            if (!latin1) {
+            if (encoding == .utf8) {
                 r.* = try a.dupe(u8, v);
                 continue;
             }
+            const single = std.meta.stringToEnum(types.Encoding, @tagName(encoding)).?;
             var utf8: std.ArrayList(u8) = .empty;
             for (v) |c| {
-                if (c < 0x80) try utf8.append(a, c) else try utf8.appendSlice(a, &.{ 0xc0 | c >> 6, 0x80 | (c & 0x3f) });
+                var buf: [3]u8 = undefined;
+                try utf8.appendSlice(a, buf[0 .. std.unicode.utf8Encode(types.codepoint(single, c), &buf) catch unreachable]);
             }
             r.* = utf8.items;
         }

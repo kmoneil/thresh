@@ -99,17 +99,19 @@ pub const Batch = struct {
         b.rows += 1;
     }
 
-    /// A string's bytes as UTF-8: Latin-1 transcoded, invalid UTF-8 replaced
-    /// under utf8: replace, kept under utf8: binary.
+    /// A string's bytes as UTF-8: Latin-1 or Windows-1252 transcoded,
+    /// invalid UTF-8 replaced under utf8: replace, kept under utf8: binary.
     fn appendText(b: *Batch, c: *Column, s: []const u8) Allocator.Error!void {
         const gpa = b.gpa;
-        if (b.encoding == .latin1) {
+        if (b.encoding != .utf8) {
             for (s) |ch| {
                 if (ch < 0x80) {
                     try c.bytes.append(gpa, ch);
-                } else {
-                    try c.bytes.appendSlice(gpa, &.{ 0xc0 | ch >> 6, 0x80 | (ch & 0x3f) });
+                    continue;
                 }
+                var buf: [3]u8 = undefined;
+                const n = std.unicode.utf8Encode(types.codepoint(b.encoding, ch), &buf) catch unreachable;
+                try c.bytes.appendSlice(gpa, buf[0..n]);
             }
             return;
         }
@@ -169,4 +171,12 @@ test "Latin-1 strings are transcoded" {
     defer b.deinit();
     try b.append(&.{"caf\xe9"}, &.{.{ .string = "caf\xe9" }});
     try testing.expectEqualStrings("café", b.columns[0].text(0));
+}
+
+test "Windows-1252 strings are transcoded, its punctuation too" {
+    const s: schema.Schema = .{ .columns = &.{.{ .name = "n", .type = .string }} };
+    var b: Batch = try .init(testing.allocator, &s, .cp1252);
+    defer b.deinit();
+    try b.append(&.{"l\x92\x9cuvre \x80"}, &.{.{ .string = "l\x92\x9cuvre \x80" }});
+    try testing.expectEqualStrings("l\u{2019}\u{153}uvre \u{20ac}", b.columns[0].text(0));
 }

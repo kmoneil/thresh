@@ -30,7 +30,8 @@ pub const usage =
     \\      --columns SPEC     inline schema: "id:int64,amount:decimal(18,2)"
     \\      --null LIST        comma-separated strings read as null
     \\      --day-first        read ambiguous numeric dates as DD/MM
-    \\      --encoding E       utf8 (the default) or latin1
+    \\      --encoding E       utf8 (the default), cp1252 (Windows-1252) or
+    \\                         latin1
     \\      --threshold F      minimum conforming fraction per column (default:
     \\                         the schema's, or 1.0)
     \\      --strict           extra columns, ragged rows and ambiguous dates fail
@@ -68,7 +69,7 @@ pub const Command = enum { sniff, infer, validate, convert, run };
 
 pub const Format = enum { csv, arrow, parquet };
 
-pub const Encoding = enum { utf8, latin1 };
+pub const Encoding = enum { utf8, latin1, cp1252 };
 
 pub const HeaderMode = dialect.HeaderMode;
 
@@ -278,7 +279,7 @@ pub fn parse(gpa: std.mem.Allocator, args: []const []const u8, diag: *Diagnostic
             .columns => cfg.columns = value,
             .null => cfg.nulls = value,
             .encoding => cfg.encoding = std.meta.stringToEnum(Encoding, value) orelse
-                return diag.fail("--encoding {s}: utf8 or latin1", .{value}),
+                if (std.ascii.eqlIgnoreCase(value, "windows-1252")) .cp1252 else return diag.fail("--encoding {s}: utf8, cp1252 or latin1", .{value}),
             .threshold => cfg.threshold = parseFraction(value) orelse
                 return diag.fail("--threshold {s}: a fraction from 0 to 1", .{value}),
             .report => cfg.report_dir = value,

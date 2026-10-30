@@ -197,6 +197,7 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
         .pins = cfg.pins,
         .sample_bytes = cfg.sample_bytes,
         .max_sample = max_sample,
+        .utf8 = cfg.encoding == .utf8,
         .schema = names,
     }) catch |e| switch (e) {
         error.OutOfMemory => return e,
@@ -311,6 +312,7 @@ fn encodingOf(cfg: *const cli.Config) @import("types.zig").Encoding {
     return switch (cfg.encoding) {
         .utf8 => .utf8,
         .latin1 => .latin1,
+        .cp1252 => .cp1252,
     };
 }
 
@@ -402,6 +404,7 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
         .pins = cfg.pins,
         .sample_bytes = cfg.sample_bytes,
         .max_sample = max_sample,
+        .utf8 = cfg.encoding == .utf8,
     }) catch |e| switch (e) {
         error.OutOfMemory => return e,
         else => {
@@ -462,6 +465,12 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
     }
     out.timing.parse_ns = since(io, t1);
     out.rows = f.rows;
+    // Read as UTF-8 and not UTF-8: a guess of replace would turn every
+    // accented letter of a Windows export into U+FFFD, so say what to do.
+    for (f.columns.items) |c| if (c.invalid_utf8) {
+        out.problem = try std.fmt.allocPrint(arena, "column '{s}' is not UTF-8 (row {d}); read the file with --encoding cp1252 (Windows) or latin1", .{ c.name, c.invalid_row });
+        return .{ .outcome = out };
+    };
     out.result = .pass;
     return .{ .outcome = out, .columns = f.columns.items, .header = verdict.dialect.header };
 }

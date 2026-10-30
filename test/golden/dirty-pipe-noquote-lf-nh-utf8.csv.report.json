@@ -187,5 +187,7 @@
   "row_errors": {
     "ragged": 1
   },
-  "warnings": []
+  "warnings": [
+    "not_utf8"
+  ]
 }

@@ -13,7 +13,23 @@ pub const enumeration = @import("types/enum.zig");
 pub const utf8 = @import("types/utf8.zig");
 pub const date = @import("types/date.zig");
 
-pub const Encoding = enum { utf8, latin1 };
+pub const Encoding = enum { utf8, latin1, cp1252 };
+
+/// A single-byte encoding's byte as a code point. Latin-1's is the byte.
+/// Windows-1252 differs in 0x80 to 0x9f, where it has punctuation and a
+/// few letters (0x92 is U+2019, 0x9c U+0153); its five unassigned bytes
+/// there are their Latin-1 code points, as WHATWG's decoder reads them.
+pub fn codepoint(e: Encoding, b: u8) u21 {
+    if (e == .cp1252 and b >= 0x80 and b < 0xa0) return cp1252_c1[b - 0x80];
+    return b;
+}
+
+const cp1252_c1 = [32]u21{
+    0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+    0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+    0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+};
 
 /// Why a cell or a row is rejected. The text is what the report's samples
 /// and the reject file's _errors carry.
@@ -159,6 +175,19 @@ test check {
     try t.expectEqual(@as(?Reason, .too_long), check(&note, "abcde", .utf8));
     try t.expectEqual(@as(?Reason, .invalid_utf8), check(&note, "\xe9", .utf8));
     try t.expectEqual(@as(?Reason, null), check(&note, "\xe9", .latin1));
+    try t.expectEqual(@as(?Reason, null), check(&note, "\x92", .cp1252));
     const status: schema.Column = .{ .name = "status", .type = .@"enum", .values = &.{ "open", "closed" } };
     try t.expectEqual(@as(?Reason, .not_in_enum), check(&status, " open", .utf8));
+}
+
+test codepoint {
+    const t = std.testing;
+    try t.expectEqual(@as(u21, 0xe9), codepoint(.latin1, 0xe9));
+    try t.expectEqual(@as(u21, 0x92), codepoint(.latin1, 0x92));
+    try t.expectEqual(@as(u21, 0xe9), codepoint(.cp1252, 0xe9));
+    try t.expectEqual(@as(u21, 0x2019), codepoint(.cp1252, 0x92));
+    try t.expectEqual(@as(u21, 0x0153), codepoint(.cp1252, 0x9c));
+    try t.expectEqual(@as(u21, 0x20ac), codepoint(.cp1252, 0x80));
+    try t.expectEqual(@as(u21, 0x81), codepoint(.cp1252, 0x81));
+    try t.expectEqual(@as(u21, 'a'), codepoint(.cp1252, 'a'));
 }

@@ -351,7 +351,7 @@ fn sniff(env: Env, cfg: cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
             if (@as(u8, @bitCast(v.warnings)) != 0) {
                 try out.writeAll(" warnings=");
                 var first = true;
-                inline for (.{ "utf8_bom", "mixed_newlines", "quote_in_unquoted" }) |name| {
+                inline for (dialect.Warnings.names) |name| {
                     if (@field(v.warnings, name)) {
                         if (!first) try out.writeByte(',');
                         try out.writeAll(name);
@@ -379,6 +379,7 @@ fn sniffFile(env: Env, cfg: cli.Config, path: []const u8) !dialect.Verdict {
         .pins = cfg.pins,
         .sample_bytes = cfg.sample_bytes,
         .max_sample = max_sample,
+        .utf8 = cfg.encoding == .utf8,
     });
 }
 
