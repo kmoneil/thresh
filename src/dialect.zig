@@ -493,10 +493,13 @@ fn quoteIndex(q: ?u8) ?usize {
 /// schema's column count. A record the dialect reads as broken (a bad or
 /// unterminated quote) counts against consistency whatever its fields.
 ///
-/// Less 1.0, too, when the first record is one field and the mode more:
-/// the delimiter is not in the header, nor in the first row of a file
-/// without one. Without it ln(1 + mode) lets a byte inside values win, as
-/// `_` does over `,` in a file of codes like AB_CD_EF.
+/// Less 1.0, too, when the first record is half the mode's width or less,
+/// or twice it or more: a real delimiter makes the header (or a headerless
+/// file's first row) about as wide as the rows. Without it ln(1 + mode)
+/// lets a byte inside values win: `_` over `,` in a file of codes like
+/// AB_CD_EF, whose header has no `_` (one field) or, with names like
+/// emp_id, many more than the rows' steady few. A header one name short
+/// of its rows is not half or twice them, and keeps its delimiter.
 fn score(
     gpa: Allocator,
     sample: []const u8,
@@ -554,7 +557,7 @@ fn score(
     const consistency = @as(f64, @floatFromInt(mode_n)) / @as(f64, @floatFromInt(n));
     var s = consistency * @log(1 + @as(f64, @floatFromInt(mode)));
     if (mode == 1) s -= 0.5;
-    if (mode >= 2 and first_width == 1) s -= 1.0;
+    if (mode >= 2 and first_width > 0 and (first_width * 2 <= mode or first_width >= mode * 2)) s -= 1.0;
     if (unbalanced) s -= 0.3;
     if (options.schema) |cols| if (mode == cols.len) {
         s += 1.0;
@@ -822,6 +825,26 @@ test "a delimiter the header lacks loses to one it has" {
     const pinned = try sniffed(ragged, .{ .pins = .{ .delimiter = ',' } });
     try std.testing.expectEqual(Confidence.medium, pinned.confidence);
     try std.testing.expect(pinned.dialect.header);
+}
+
+test "a byte far more often in the header than in the rows is not the delimiter" {
+    // Names with _ split the header into 7 fields and a code each row into
+    // 3, every row alike, while the commas are ragged: a free-text column
+    // holds unquoted ones. A delimiter makes the header about as wide as
+    // the rows, so the commas, unsure, and not the _ at medium.
+    const steady = "ka_id,ka_day,ka_band,ka_vel,ka_memo,ka_kind\n" ++
+        "1,2026-02-01,QX_LUM_0,10.50,red,REG\n2,2026-02-02,QX_LUM_1,11.50,blue, late,REG\n" ++
+        "3,2026-02-03,QX_LUM_2,12.50,red,REG\n4,2026-02-04,QX_LUM_3,13.50,swap, cover, red,REG\n" ++
+        "5,2026-02-05,QX_LUM_0,14.50,blue,REG\n6,2026-02-06,QX_LUM_1,15.50,late, red,REG\n" ++
+        "7,2026-02-07,QX_LUM_2,16.50,cover,REG\n8,2026-02-08,QX_LUM_3,17.50,red, blue,REG\n" ++
+        "9,2026-02-09,QX_LUM_0,18.50,swap,REG\n10,2026-02-10,QX_LUM_1,10.50,blue, swap, late, red,REG\n";
+    const v = try sniffed(steady, .{});
+    try std.testing.expectEqual(@as(u8, ','), v.dialect.delimiter);
+    try std.testing.expect(v.dialect.header);
+    try std.testing.expectEqual(Confidence.low, v.confidence);
+    // A header one name short of its rows is not half or twice them.
+    const short = "ka_id|ka_memo\n1|red|3\n2|blue|4\n3|late|5\n4|swap|6\n";
+    try std.testing.expectEqual(@as(u8, '|'), (try sniffed(short, .{})).dialect.delimiter);
 }
 
 test "a sample that is not UTF-8 is warned of, unless another encoding is given" {
