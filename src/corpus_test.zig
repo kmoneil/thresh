@@ -533,11 +533,10 @@ fn recordsOf(a: Allocator, bytes: []const u8, d: Dialect, start: usize, encoding
                 r.* = try a.dupe(u8, v);
                 continue;
             }
-            const single = std.meta.stringToEnum(types.Encoding, @tagName(encoding)).?;
             var utf8: std.ArrayList(u8) = .empty;
             for (v) |c| {
                 var buf: [3]u8 = undefined;
-                try utf8.appendSlice(a, buf[0 .. std.unicode.utf8Encode(types.codepoint(single, c), &buf) catch unreachable]);
+                try utf8.appendSlice(a, buf[0 .. std.unicode.utf8Encode(types.codepoint(encoding, c), &buf) catch unreachable]);
             }
             r.* = utf8.items;
         }

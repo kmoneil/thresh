@@ -77,7 +77,7 @@ const Output = struct {
         const tmp_path = try std.fmt.allocPrint(arena, "{s}/.{s}{s}.{x}.tmp", .{ dir, name_stem, ext, &nonce });
         var sink: Sink = try .open(env.io, env.gpa, tmp_path);
         errdefer sink.close(env.io, env.gpa);
-        var batch: builders.Batch = try .init(env.gpa, s, encodingOf(cfg));
+        var batch: builders.Batch = try .init(env.gpa, s, cfg.encoding);
         errdefer batch.deinit();
         return .{
             .final_path = final_path,
@@ -137,7 +137,10 @@ const Output = struct {
         o.sink.close(env.io, env.gpa);
         if (keep) {
             try Io.Dir.cwd().rename(o.tmp_path, Io.Dir.cwd(), o.final_path, env.io);
-        } else Io.Dir.cwd().deleteFile(env.io, o.tmp_path) catch {};
+        } else {
+            // Best effort: one left behind is dot-named, not the output.
+            Io.Dir.cwd().deleteFile(env.io, o.tmp_path) catch {};
+        }
     }
 };
 
@@ -174,7 +177,7 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
     const gpa = env.gpa;
     const cfg = plan.cfg;
     var out: report.Outcome = .{ .file = path, .result = .@"error" };
-    var details: report.Details = .{ .schema = plan.schema, .encoding = encodingOf(cfg), .timing = plan.timing };
+    var details: report.Details = .{ .schema = plan.schema, .encoding = cfg.encoding, .timing = plan.timing };
 
     const t0 = now(io);
     var in = input.Input.open(io, gpa, path, .{ .no_mmap = cfg.no_mmap }) catch |e| {
@@ -220,21 +223,18 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
     const t1 = now(io);
     var v: validate.Validator = try .init(gpa, plan.schema, verdict.dialect, .{
         .nulls = plan.nulls,
-        .encoding = encodingOf(cfg),
+        .encoding = cfg.encoding,
         .threshold = plan.threshold,
         .strict = cfg.strict,
         .day_first = cfg.day_first,
-        .ragged = switch (cfg.ragged) {
-            .reject => .reject,
-            .pad => .pad,
-            .truncate => .truncate,
-        },
+        .ragged = cfg.ragged,
     });
     defer v.deinit();
 
     var reject: ?Sink = if (cfg.reject_dir) |dir| try .create(io, gpa, dir, name, ".rejects.csv") else null;
     defer if (reject) |*r| r.close(io, gpa);
-    // Interrupted or failed: no partial reject file left behind either.
+    // Interrupted or failed: no partial reject file left behind either,
+    // as far as deleting it can; the error being returned is the news.
     errdefer if (reject) |*r| {
         r.close(io, gpa);
         removeSink(io, cfg.reject_dir.?, name, ".rejects.csv") catch {};
@@ -243,6 +243,8 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
 
     var output: ?Output = if (plan.output) |op| try .create(env, arena, op, cfg, plan.schema, name) else null;
     var output_done = false;
+    // Unfinished means an error is on its way out: finish only deletes,
+    // and its own failure would hide that error.
     defer if (output) |*o| if (!output_done) o.finish(env, false) catch {};
     if (output) |*o| {
         v.batch = &o.batch;
@@ -272,7 +274,11 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
             try v.record(batch.records.items[i], fields, in.data(), in.base);
         }
         if (interrupt.requested()) return error.Interrupted;
-        if (output) |*o| try o.write();
+        if (output) |*o| {
+            const tw = now(io);
+            try o.write();
+            out.timing.write_ns += since(io, tw);
+        }
         switch (state) {
             .full => {},
             .end => break,
@@ -284,7 +290,7 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
     }
     // An empty file with a header pending: no columns to match.
     if (header_pending) try v.columns(null, 0, in.data(), in.base);
-    out.timing.parse_ns = since(io, t1);
+    out.timing.parse_ns = since(io, t1) -| out.timing.write_ns;
 
     out.rows = v.rows;
     out.rows_rejected = v.rejected;
@@ -294,7 +300,9 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
         const keep = out.result == .pass or !cfg.strict;
         // Done whether or not finish succeeds: it releases the output either way.
         output_done = true;
+        const tw = now(io);
         try o.finish(env, keep);
+        out.timing.write_ns += since(io, tw);
         if (keep) out.written = o.final_path;
     }
     if (v.structural.items.len > 0) {
@@ -323,14 +331,6 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
 pub fn utf16Conflict(in: *const input.Input, cfg: *const cli.Config) ?[]const u8 {
     if (in.utf16 == null or cfg.encoding == .utf8) return null;
     return "the file is UTF-16 (it starts with a byte order mark) and is read as such; leave out --encoding";
-}
-
-fn encodingOf(cfg: *const cli.Config) @import("types.zig").Encoding {
-    return switch (cfg.encoding) {
-        .utf8 => .utf8,
-        .latin1 => .latin1,
-        .cp1252 => .cp1252,
-    };
 }
 
 fn writeReport(env: Env, plan: Plan, out: report.Outcome, name: []const u8, details: report.Details) !void {
@@ -451,7 +451,7 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
     const t1 = now(io);
     var f: infer.Inferrer = .init(arena, .{
         .nulls = nulls,
-        .encoding = encodingOf(cfg),
+        .encoding = cfg.encoding,
         .day_first = cfg.day_first,
     });
     var s: records.Scanner = try .init(gpa, verdict.dialect, .{

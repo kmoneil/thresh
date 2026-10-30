@@ -55,11 +55,11 @@ pub fn main(init: std.process.Init) u8 {
             error.WriteFailed => out.err orelse e,
             else => e,
         };
-        err.interface.print("thresh: {s}\n", .{describe(cause)}) catch {};
+        err.interface.print("thresh: {s}\n", .{worker.describe(cause)}) catch {};
         break :blk .unreadable;
     };
     out.interface.flush() catch |e| {
-        err.interface.print("thresh: cannot write the output: {s}\n", .{describe(out.err orelse e)}) catch {};
+        err.interface.print("thresh: cannot write the output: {s}\n", .{worker.describe(out.err orelse e)}) catch {};
         err.interface.flush() catch {};
         return @backingInt(Exit.unreadable);
     };
@@ -383,7 +383,7 @@ fn sniff(env: Env, cfg: cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
     var code: Exit = .ok;
     for (cfg.files) |path| {
         const v = sniffFile(env, cfg, path) catch |e| {
-            try err.print("thresh: {s}: {s}\n", .{ path, describe(e) });
+            try err.print("thresh: {s}: {s}\n", .{ path, worker.describe(e) });
             code = code.worst(.unreadable);
             continue;
         };
@@ -427,19 +427,6 @@ fn sniffFile(env: Env, cfg: cli.Config, path: []const u8) !dialect.Verdict {
     });
     v.warnings.utf16 = in.utf16 != null;
     return v;
-}
-
-fn describe(e: anyerror) []const u8 {
-    return switch (e) {
-        error.FileNotFound => "no such file",
-        error.AccessDenied, error.PermissionDenied => "permission denied",
-        error.IsDir => "is a directory",
-        error.OutOfMemory => "out of memory",
-        error.BrokenPipe => "the output was closed",
-        error.Utf16 => "UTF-16 input (a UTF-16 byte order mark) is not read in v1",
-        error.Binary => "binary data (a NUL byte in the first 8 KiB)",
-        else => @errorName(e),
-    };
 }
 
 test {

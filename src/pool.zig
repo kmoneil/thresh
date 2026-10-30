@@ -48,6 +48,8 @@ pub const Lines = struct {
         if (l.quiet and !l.json) return;
         l.mutex.lockUncancelable(io);
         defer l.mutex.unlock(io);
+        // A line that cannot be written is dropped and the run goes on;
+        // main's last flush of stdout says when it was closed.
         if (l.json) report.writeJsonLine(l.out, o) catch {} else report.writeLine(l.err, o) catch {};
     }
 };
@@ -111,6 +113,8 @@ pub fn run(io: Io, gpa: Allocator, task: Task, outcomes: []report.Outcome, lines
         queue.putOne(io, i) catch break;
     }
     queue.close(io);
+    // Every worker has finished even when canceled, and a file never
+    // reached says so in its outcome.
     group.await(io) catch {};
 }
 

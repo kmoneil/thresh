@@ -27,7 +27,9 @@ pub const Result = enum {
 
 pub const Timing = struct {
     sniff_ns: u64 = 0,
+    /// Reading, validating and building the typed columns.
     parse_ns: u64 = 0,
+    /// convert and run: writing the output, apart from parse_ns.
     write_ns: u64 = 0,
 };
 
@@ -45,8 +47,9 @@ pub const Outcome = struct {
     timing: Timing = .{},
 
     pub fn throughput(o: Outcome) f64 {
-        if (o.timing.parse_ns == 0) return 0;
-        return @as(f64, @floatFromInt(o.bytes)) / 1e6 / (@as(f64, @floatFromInt(o.timing.parse_ns)) / 1e9);
+        const ns = o.timing.parse_ns + o.timing.write_ns;
+        if (ns == 0) return 0;
+        return @as(f64, @floatFromInt(o.bytes)) / 1e6 / (@as(f64, @floatFromInt(ns)) / 1e9);
     }
 };
 

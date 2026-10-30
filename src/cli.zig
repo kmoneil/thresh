@@ -70,12 +70,11 @@ pub const Command = enum { sniff, infer, validate, convert, run };
 
 pub const Format = enum { csv, arrow, parquet };
 
-pub const Encoding = enum { utf8, latin1, cp1252 };
+pub const Encoding = @import("types.zig").Encoding;
 
 pub const HeaderMode = dialect.HeaderMode;
 
-/// What a short or long row becomes.
-pub const Ragged = enum { reject, pad, truncate };
+pub const Ragged = @import("validate.zig").Ragged;
 
 pub const Pins = dialect.Pins;
 

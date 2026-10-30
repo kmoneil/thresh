@@ -8,11 +8,18 @@
 //! Message flatbuffer padded to 8, then the body its bodyLength says.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const fb = @import("flatbuf.zig");
 const schema = @import("../schema.zig");
 const builders = @import("../builders.zig");
+
+// Ints, floats, decimals and the flatbuffers' structs are written in the
+// machine's byte order, and the schema declares little-endian.
+comptime {
+    if (builtin.cpu.arch.endian() != .little) @compileError("the Arrow writer writes little-endian only");
+}
 
 const continuation: u32 = 0xFFFF_FFFF;
 const magic = "ARROW1";

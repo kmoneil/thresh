@@ -207,7 +207,8 @@ pub const Verdict = struct {
 };
 
 pub const SniffError = error{
-    /// A UTF-16 byte order mark: not read in v1.
+    /// A UTF-16 byte order mark: bytes not transcoded first, as
+    /// input.Input does for every file thresh reads.
     Utf16,
     /// A NUL byte in the first 8 KiB, and no UTF-16 BOM to explain it.
     Binary,

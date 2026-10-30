@@ -24,6 +24,7 @@ const Dialect = @import("dialect.zig").Dialect;
 const csv = @import("write/csv.zig");
 const builders = @import("builders.zig");
 
+/// What a short or long row becomes.
 pub const Ragged = enum { reject, pad, truncate };
 
 pub const Options = struct {
@@ -37,8 +38,9 @@ pub const Options = struct {
     day_first: bool = false,
 };
 
-/// The most mismatch samples a column keeps, and rejected rows the report
-/// lists, so a file with a million bad rows has a small report.
+/// The most mismatch samples a column keeps, and rejected rows and
+/// repeated header lines the report lists, so a file with a million bad
+/// rows has a small report.
 pub const max_samples = 10;
 /// A sample's value is cut to this many bytes.
 pub const max_sample_len = 200;
@@ -203,7 +205,7 @@ pub const Validator = struct {
         // The header again: not a row, and said so.
         if (v.header_seen and fields.len == v.names.len and try v.isHeader(fields, data, base)) {
             v.repeated_headers += 1;
-            if (v.repeated_lines.items.len < max_sample_rows) try v.repeated_lines.append(v.gpa, rec.line);
+            if (v.repeated_lines.items.len < max_samples) try v.repeated_lines.append(v.gpa, rec.line);
             return;
         }
         v.rows += 1;
@@ -340,13 +342,11 @@ pub const Validator = struct {
     }
 };
 
-/// The fraction of rows a column's cells conform in: nulls it allows count.
-const max_sample_rows = 10;
-
 fn endsLine(c: u8) bool {
     return c == '\n' or c == '\r';
 }
 
+/// The fraction of rows a column's cells conform in: nulls it allows count.
 pub fn conformance(s: ColumnStats, rows: u64) f64 {
     if (rows == 0) return 1.0;
     return 1.0 - @as(f64, @floatFromInt(s.mismatches)) / @as(f64, @floatFromInt(rows));

@@ -134,7 +134,7 @@ pub fn read(col: *const schema.Column, v: []const u8, encoding: Encoding) Read {
 }
 
 /// Why v does not fit col, or null when it does.
-pub fn check(col: *const schema.Column, v: []const u8, encoding: Encoding) ?Reason {
+fn check(col: *const schema.Column, v: []const u8, encoding: Encoding) ?Reason {
     return switch (read(col, v, encoding)) {
         .ok => null,
         .bad => |r| r,
