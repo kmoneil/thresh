@@ -555,7 +555,12 @@ fn score(
         i = j;
     }
     const consistency = @as(f64, @floatFromInt(mode_n)) / @as(f64, @floatFromInt(n));
-    var s = consistency * @log(1 + @as(f64, @floatFromInt(mode)));
+    // One record is consistent under every delimiter that splits it, so
+    // how many fields it splits into is no evidence: each such reading
+    // scores alike and the tie goes to the prior order, space last. A
+    // header-only file whose names hold spaces needs it.
+    const width: u32 = if (n == 1 and mode >= 2) 2 else mode;
+    var s = consistency * @log(1 + @as(f64, @floatFromInt(width)));
     if (mode == 1) s -= 0.5;
     if (mode >= 2 and first_width > 0 and (first_width * 2 <= mode or first_width >= mode * 2)) s -= 1.0;
     if (unbalanced) s -= 0.3;
@@ -655,9 +660,11 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
     @memset(typed, true);
     @memset(seen, false);
     var rows: usize = 0;
+    var complete: usize = 0;
     while (rows < 100) : (rows += 1) {
         const rec = try p.next(gpa, fields) orelse break;
         if (rec.end == sample.len and sample[sample.len - 1] != '\n' and sample[sample.len - 1] != '\r') break;
+        complete += 1;
         if (fields.items.len != first.len) continue;
         // Row 1 again is not a column's evidence either way.
         const again = for (fields.items, ends, 0..) |f, end, col| {
@@ -674,6 +681,17 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
         }
     }
     for (typed, seen) |t, s| if (t and s) return true;
+    // Row 1 alone, nothing under it: an empty extract's header, when its
+    // values (none empty or typed, as above) are distinct names.
+    if (complete == 0) {
+        var taken: NameMap(void) = .empty;
+        defer taken.deinit(gpa);
+        for (ends, 0..) |end, col| {
+            const start = if (col == 0) 0 else ends[col - 1];
+            if ((try taken.getOrPut(gpa, names.items[start..end])).found_existing) return false;
+        }
+        return true;
+    }
     return false;
 }
 
@@ -845,6 +863,20 @@ test "a byte far more often in the header than in the rows is not the delimiter"
     // A header one name short of its rows is not half or twice them.
     const short = "ka_id|ka_memo\n1|red|3\n2|blue|4\n3|late|5\n4|swap|6\n";
     try std.testing.expectEqual(@as(u8, '|'), (try sniffed(short, .{})).dialect.delimiter);
+}
+
+test "a header and nothing else: its delimiter by the prior order, and a header" {
+    // One record splits consistently on anything; the names hold spaces,
+    // which split it into more fields than the pipes do.
+    const v = try sniffed("zv tok|zv vane|zv lurn|zv fen", .{});
+    try std.testing.expectEqual(@as(u8, '|'), v.dialect.delimiter);
+    try std.testing.expect(v.dialect.header);
+    // Numbers alone on one line are a row, not names.
+    try std.testing.expect(!(try sniffed("1|2|3\n", .{})).dialect.header);
+    // Two names alike are not a header either.
+    try std.testing.expect(!(try sniffed("tok|tok|vane\n", .{})).dialect.header);
+    // A line only spaces split stays space-delimited.
+    try std.testing.expectEqual(@as(u8, ' '), (try sniffed("tok vane lurn\n", .{})).dialect.delimiter);
 }
 
 test "a sample that is not UTF-8 is warned of, unless another encoding is given" {
