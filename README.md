@@ -41,6 +41,7 @@ zig build vet             # zigvet, built from the pinned dependency
 zig build corpus          # the fixture corpus, into zig-out/corpus (python3)
 zig build bench           # MB/s per parsing stage, ReleaseFast (-- --size BYTES)
 zig build scale -Doptimize=ReleaseFast  # 10,000 files, MB/s by --jobs, Ctrl-C
+zig build fuzz            # replay the fuzz seeds; tools/fuzz.sh [LIMIT] fuzzes
 zig build run -- sniff a.csv
 ```
 

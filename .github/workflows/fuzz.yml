@@ -1,0 +1,95 @@
+# Coverage-guided fuzzing of the targets in src/fuzz_test.zig, off the
+# pull-request path: `zig build test` in ci.yml already replays every
+# target's seeds. What is left is discovery, which grows with CPU time
+# against a corpus that persists, so this runs briefly after each push to
+# main and at length every night, each run starting from the corpus the
+# last one kept. (dateparsa.zig's fuzz workflow, without its issue report.)
+name: fuzz
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Off the hour: every cron in the world runs on it.
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: Runs per fuzz target, as zig build --fuzz takes it (20K, 2M)
+        required: false
+        default: 1M
+
+permissions:
+  contents: read
+
+# One run at a time, so two never race to save the corpus.
+concurrency:
+  group: fuzz
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: fuzz
+    runs-on: ubuntu-latest
+    # Locally (M5 Max) 100K runs a target, three targets, took 3.4 minutes
+    # with the build; a runner is slower. Re-size if the nights drift.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+
+      # The corpus is an artifact, not a cache entry: the cache evicts the
+      # least recently used first, and the corpus is read once a night.
+      - name: Restore the fuzz corpus
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -o pipefail
+          id=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=fuzz-corpus&per_page=100" --jq '
+            [.artifacts[] | select(.expired | not)
+              | select(.workflow_run.head_branch == env.BRANCH or .workflow_run.head_branch == "main")]
+            | sort_by(.created_at) | last | .id // empty')
+          if [ -z "$id" ]; then
+            echo "No fuzz-corpus artifact yet: this run starts from the seeds alone"
+            exit 0
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "$RUNNER_TEMP/corpus.zip"
+          mkdir -p .zig-cache/f
+          unzip -q -o "$RUNNER_TEMP/corpus.zip" -d .zig-cache/f
+
+      # tools/fuzz.sh fails the step on a find, which `zig build --fuzz`
+      # alone does not, and prints the failing input in hex.
+      - name: Coverage-guided fuzzing
+        env:
+          LIMIT: ${{ inputs.limit || (github.event_name == 'push' && '20K' || '1M') }}
+        run: |
+          set -o pipefail
+          tools/fuzz.sh "$LIMIT" 2>&1 | tee fuzz.log
+
+      - name: Save the fuzz corpus
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-corpus
+          path: |
+            .zig-cache/f
+            !.zig-cache/f/in*
+            !.zig-cache/f/crash
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Keep the failing input
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-failure
+          path: |
+            fuzz.log
+            .zig-cache/f/in*
+          include-hidden-files: true
+          if-no-files-found: ignore

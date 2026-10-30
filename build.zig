@@ -130,6 +130,23 @@ pub fn build(b: *std.Build) void {
     scale.has_side_effects = true;
     b.step("scale", "10,000 files, throughput by --jobs, and Ctrl-C (python3; use -Doptimize=ReleaseFast)").dependOn(&scale.step);
 
+    // The fuzz targets, src/fuzz_test.zig. `zig build fuzz` replays their
+    // seeds, as `zig build test` does; tools/fuzz.sh runs them under the
+    // fuzzer. Always the LLVM backend: the self-hosted x86_64 one, the
+    // Debug default there, emits no coverage for the fuzzer to steer by.
+    const fuzz_options = b.addOptions();
+    fuzz_options.addOption(u32, "differential_cases", 0);
+    const fuzz_mod = b.createModule(.{
+        .root_source_file = b.path("src/fuzz_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    fuzz_mod.addOptions("build_options", fuzz_options);
+    const fuzz_tests = b.addTest(.{ .root_module = fuzz_mod, .filters = &.{"fuzz:"}, .use_llvm = true });
+    const run_fuzz = b.addRunArtifact(fuzz_tests);
+    b.step("fuzz", "Replay the fuzz seeds (tools/fuzz.sh to fuzz)").dependOn(&run_fuzz.step);
+    test_step.dependOn(&run_fuzz.step);
+
     const lint_paths = [_][]const u8{ "build.zig", "src", "bench" };
     var fmt_paths: [lint_paths.len]std.Build.LazyPath = undefined;
     for (lint_paths, &fmt_paths) |p, *lp| lp.* = b.path(p);
