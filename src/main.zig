@@ -163,6 +163,8 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
     if (interrupt.requested()) return interrupted(err);
 
     var merged: std.ArrayList(infer.ColumnState) = .empty;
+    // Each merged column's index, by name.
+    var merged_at: schema.NameMap(usize) = .empty;
     var all_headers = true;
     var code: Exit = .ok;
     for (ctx.results, outcomes, cfg.files) |r, o, path| {
@@ -180,14 +182,17 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
         const columns = try a.dupe(infer.ColumnState, r.columns);
         for (columns) |*c| try restOf(err, cfg, path, c);
         for (columns) |c| {
-            for (merged.items) |*m| {
-                if (!std.ascii.eqlIgnoreCase(m.name, c.name)) continue;
-                const before = m.kind;
-                infer.merge(m, c, path);
-                if (m.kind != before and before != .null and !cfg.quiet)
-                    try err.print("thresh: column '{s}': {t} until {s} made it {t}\n", .{ m.name, before, path, m.kind });
-                break;
-            } else try merged.append(a, c);
+            const at = try merged_at.getOrPut(a, c.name);
+            if (!at.found_existing) {
+                at.value_ptr.* = merged.items.len;
+                try merged.append(a, c);
+                continue;
+            }
+            const m = &merged.items[at.value_ptr.*];
+            const before = m.kind;
+            infer.merge(m, c, path);
+            if (m.kind != before and before != .null and !cfg.quiet)
+                try err.print("thresh: column '{s}': {t} until {s} made it {t}\n", .{ m.name, before, path, m.kind });
         }
     }
     if (merged.items.len == 0) {
@@ -347,13 +352,38 @@ fn runPool(env: Env, cfg: *const cli.Config, task: pool.Task, out: *Io.Writer, e
     else
         .none;
     defer progress.end();
-    const cpus = std.Thread.getCpuCount() catch 1;
+    const jobs = jobsFor(cfg.jobs, std.Thread.getCpuCount() catch 1, cfg.files.len);
+    if (jobs.capped and !cfg.quiet) try err.print("thresh: --jobs {d}: capped at {d} a CPU, since each worker holds a thread and a 4 MiB index\n", .{ cfg.jobs.?, max_jobs_per_cpu });
     try pool.run(env.io, env.gpa, task, outcomes, &lines, .{
-        .jobs = cfg.jobs orelse cpus,
+        .jobs = jobs.n,
         .progress = progress,
         .keep = env.arena,
     });
     return outcomes;
+}
+
+/// The most workers a CPU gets, whatever --jobs asks: each holds a thread
+/// and a 4 MiB index from the start, so --jobs 1000 would commit 4 GB.
+const max_jobs_per_cpu = 4;
+
+/// The workers a run gets: --jobs, or a CPU apiece, no more than files or
+/// max_jobs_per_cpu a CPU. capped: --jobs asked for more than that allows.
+fn jobsFor(requested: ?usize, cpus: usize, files: usize) struct { n: usize, capped: bool } {
+    const want = @min(requested orelse cpus, files);
+    const most = max_jobs_per_cpu * cpus;
+    return .{ .n = @max(1, @min(want, most)), .capped = want > most };
+}
+
+test jobsFor {
+    try std.testing.expectEqual(@as(usize, 8), jobsFor(null, 8, 100).n);
+    try std.testing.expectEqual(@as(usize, 3), jobsFor(null, 8, 3).n);
+    try std.testing.expectEqual(@as(usize, 20), jobsFor(20, 8, 100).n);
+    const big = jobsFor(1000, 8, 1000);
+    try std.testing.expectEqual(@as(usize, 32), big.n);
+    try std.testing.expect(big.capped);
+    // Asked for more workers than files: no more workers than files, and
+    // nothing capped that the files would not have.
+    try std.testing.expect(!jobsFor(1000, 8, 10).capped);
 }
 
 /// summary.json with --report, and the run's exit status.

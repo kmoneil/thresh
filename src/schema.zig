@@ -31,6 +31,26 @@ pub const Utf8Policy = enum {
 
 pub const Match = enum { name, position };
 
+/// Column names as a header, a schema and infer's merge compare them:
+/// ASCII case ignored. Callers trim them first.
+pub const NameContext = struct {
+    pub fn hash(_: NameContext, s: []const u8) u64 {
+        var h: u64 = 0xcbf2_9ce4_8422_2325;
+        for (s) |c| h = (h ^ std.ascii.toLower(c)) *% 0x100_0000_01b3;
+        return h;
+    }
+
+    pub fn eql(_: NameContext, a: []const u8, b: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(a, b);
+    }
+};
+
+/// A map keyed by column name, compared as NameContext does: a file of
+/// thousands of columns is matched in a pass, not a pass per column.
+pub fn NameMap(comptime V: type) type {
+    return std.HashMapUnmanaged([]const u8, V, NameContext, std.hash_map.default_max_load_percentage);
+}
+
 pub const Column = struct {
     name: []const u8,
     type: Type,

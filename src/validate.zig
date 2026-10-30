@@ -175,14 +175,28 @@ pub const Validator = struct {
             const used = try v.gpa.alloc(bool, h.len);
             defer v.gpa.free(used);
             @memset(used, false);
+            // Each header name's first index, and after each index the next
+            // with the same name: a schema column takes the first not used.
+            const next = try v.gpa.alloc(?u32, h.len);
+            defer v.gpa.free(next);
+            var first: schema_mod.NameMap(u32) = .empty;
+            defer first.deinit(v.gpa);
+            try first.ensureTotalCapacity(v.gpa, @intCast(h.len));
+            var i = h.len;
+            while (i > 0) {
+                i -= 1;
+                const r = first.getOrPutAssumeCapacity(std.mem.trim(u8, h[i], " \t"));
+                next[i] = if (r.found_existing) r.value_ptr.* else null;
+                r.value_ptr.* = @intCast(i);
+            }
             for (s.columns, v.mapping) |c, *m| {
                 m.* = null;
-                for (h, 0..) |n, i| {
-                    if (!used[i] and std.ascii.eqlIgnoreCase(std.mem.trim(u8, n, " \t"), std.mem.trim(u8, c.name, " \t"))) {
-                        m.* = @intCast(i);
-                        used[i] = true;
-                        break;
-                    }
+                var at = first.get(std.mem.trim(u8, c.name, " \t"));
+                while (at) |k| : (at = next[k]) {
+                    if (used[k]) continue;
+                    m.* = k;
+                    used[k] = true;
+                    break;
                 }
                 if (m.* == null) try v.fail("the schema's column '{s}' is not in the header", .{c.name});
             }

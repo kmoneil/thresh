@@ -52,7 +52,7 @@ pub const usage =
     \\      --arrow-file       arrow: the file format with a footer, not a stream
     \\
     \\Running:
-    \\      --jobs N           files processed at once (default: CPU count)
+    \\      --jobs N           files processed at once (default: CPU count; at most 4 a CPU)
     \\      --no-mmap          read files through a buffer instead of mapping them
     \\      --json             one JSON object per file on stdout
     \\      --quiet            no summary on stderr

@@ -162,18 +162,19 @@ pub const Inferrer = struct {
     /// numbered), or column1, column2... for width columns without one.
     pub fn header(f: *Inferrer, names: ?[]const []const u8, width: usize) Allocator.Error!void {
         const n = if (names) |ns| ns.len else width;
+        // The names taken, so a repeated one is told apart.
+        var taken: schema.NameMap(void) = .empty;
+        defer taken.deinit(f.arena);
+        try taken.ensureTotalCapacity(f.arena, @intCast(f.columns.items.len + n));
+        for (f.columns.items) |c| taken.putAssumeCapacity(c.name, {});
         for (0..n) |i| {
             var name: []const u8 = if (names) |ns| std.mem.trim(u8, ns[i], " \t") else "";
-            if (name.len == 0 or f.find(name) != null) {
+            if (name.len == 0 or taken.contains(name)) {
                 name = try std.fmt.allocPrint(f.arena, "column{d}", .{i + 1});
             } else name = try f.arena.dupe(u8, name);
+            taken.putAssumeCapacity(name, {});
             try f.columns.append(f.arena, .{ .name = name });
         }
-    }
-
-    fn find(f: *const Inferrer, name: []const u8) ?usize {
-        for (f.columns.items, 0..) |c, i| if (std.ascii.eqlIgnoreCase(c.name, name)) return i;
-        return null;
     }
 
     /// One record's values, in the header's order; a record wider than the

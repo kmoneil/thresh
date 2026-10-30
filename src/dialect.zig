@@ -7,6 +7,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const reference = @import("reference.zig");
 const Field = @import("records.zig").Field;
+const NameMap = @import("schema.zig").NameMap;
 
 pub const Dialect = struct {
     delimiter: u8,
@@ -622,15 +623,13 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
     const first = try fields.toOwnedSlice(gpa);
     defer gpa.free(first);
     if (options.schema) |names| {
+        var known: NameMap(void) = .empty;
+        defer known.deinit(gpa);
+        try known.ensureTotalCapacity(gpa, @intCast(names.len));
+        for (names) |name| known.putAssumeCapacity(std.mem.trim(u8, name, " \t"), {});
         var named: usize = 0;
         for (first) |f| {
-            const v = std.mem.trim(u8, try value(gpa, &scratch, sample, d, f), " \t");
-            for (names) |name| {
-                if (std.ascii.eqlIgnoreCase(v, std.mem.trim(u8, name, " \t"))) {
-                    named += 1;
-                    break;
-                }
-            }
+            if (known.contains(std.mem.trim(u8, try value(gpa, &scratch, sample, d, f), " \t"))) named += 1;
         }
         if (named * 2 >= first.len and named > 0) return true;
     }
