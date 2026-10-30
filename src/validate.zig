@@ -97,32 +97,32 @@ pub const Validator = struct {
     values: std.ArrayList([]const u8) = .empty,
 
     pub fn init(gpa: Allocator, s: *const Schema, d: Dialect, options: Options) Allocator.Error!Validator {
-        const stats = try gpa.alloc(ColumnStats, s.columns.len);
-        @memset(stats, .{});
-        const mapping = try gpa.alloc(?u32, s.columns.len);
-        for (mapping, 0..) |*m, i| m.* = @intCast(i);
-        const raw = try gpa.alloc([]const u8, s.columns.len);
-        const cells = try gpa.alloc(?types.Value, s.columns.len);
-        const dates = try gpa.alloc(?types.date.Column, s.columns.len);
-        for (dates, s.columns) |*dc, c| dc.* = switch (c.type) {
-            .date, .timestamp => .init(c.format, c.day_first or options.day_first, options.strict),
-            else => null,
-        };
-        var names: std.ArrayList([]const u8) = .empty;
-        defer names.deinit(gpa);
         var v: Validator = .{
             .gpa = gpa,
             .arena = .init(gpa),
             .schema = s,
             .dialect = d,
             .options = options,
-            .mapping = mapping,
+            .mapping = &.{},
             .width = s.columns.len,
             .names = &.{},
-            .stats = stats,
-            .dates = dates,
-            .raw = raw,
-            .cells = cells,
+            .stats = &.{},
+            .dates = &.{},
+            .raw = &.{},
+            .cells = &.{},
+        };
+        // deinit frees what is allocated by then; an empty slice is nothing.
+        errdefer v.deinit();
+        v.stats = try gpa.alloc(ColumnStats, s.columns.len);
+        @memset(v.stats, .{});
+        v.mapping = try gpa.alloc(?u32, s.columns.len);
+        for (v.mapping, 0..) |*m, i| m.* = @intCast(i);
+        v.raw = try gpa.alloc([]const u8, s.columns.len);
+        v.cells = try gpa.alloc(?types.Value, s.columns.len);
+        v.dates = try gpa.alloc(?types.date.Column, s.columns.len);
+        for (v.dates, s.columns) |*dc, c| dc.* = switch (c.type) {
+            .date, .timestamp => .init(c.format, c.day_first or options.day_first, options.strict),
+            else => null,
         };
         const a = v.arena.allocator();
         const ns = try a.alloc([]const u8, s.columns.len);
@@ -532,4 +532,14 @@ test "dates without a format: ambiguity counted, refused under --strict" {
     var day_first = try run("d\n13/04/2024\n05/06/2024\n", &s, .{ .day_first = true }, &rejects);
     defer day_first.deinit();
     try testing.expectEqual(@as(u64, 0), day_first.rejected);
+}
+
+fn initDeinit(gpa: Allocator, s: *const Schema) !void {
+    var v: Validator = try .init(gpa, s, .rfc4180, .{});
+    v.deinit();
+}
+
+test "init frees what it holds when an allocation fails" {
+    const s: Schema = .{ .columns = &.{ .{ .name = "id", .type = .int64 }, .{ .name = "status", .type = .@"enum", .values = &.{ "open", "closed" } }, .{ .name = "day", .type = .date } } };
+    try testing.checkAllAllocationFailures(testing.allocator, initDeinit, .{&s});
 }

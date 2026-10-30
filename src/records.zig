@@ -784,3 +784,12 @@ test "a batch of wide rows of empty fields stops at its byte limit" {
     try testing.expectEqual(@as(usize, 2), b.len());
     try testing.expectEqual(@as(usize, 100), b.recordFields(1).len);
 }
+
+fn scannerInitDeinit(gpa: Allocator) !void {
+    var s: Scanner = try .init(gpa, .rfc4180, .{ .positions = 64 });
+    s.deinit();
+}
+
+test "Scanner.init frees what it holds when an allocation fails" {
+    try testing.checkAllAllocationFailures(testing.allocator, scannerInitDeinit, .{});
+}

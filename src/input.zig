@@ -60,35 +60,40 @@ pub const Input = struct {
     };
 
     pub fn open(io: Io, gpa: Allocator, path: []const u8, options: Options) !Input {
-        const file = try Io.Dir.cwd().openFile(io, path, .{});
-        errdefer file.close(io);
-        const stat = try file.stat(io);
+        var in: Input = .{ .file = try Io.Dir.cwd().openFile(io, path, .{}), .size = 0, .source = .empty, .eof = true };
+        // close frees whatever is held by then: a buffer, UTF-16's raw bytes.
+        // Each is allocated before it is stored, since a union or struct
+        // literal is built in place: a failed try inside one would leave
+        // close a tag set over an undefined slice.
+        errdefer in.close(io, gpa);
+        const stat = try in.file.stat(io);
         if (stat.kind == .directory) return error.IsDir;
-        var in: Input = .{ .file = file, .size = stat.size, .source = .empty, .eof = true };
+        in.size = stat.size;
         if (stat.size == 0) return in;
         var bom: [2]u8 = undefined;
-        if (stat.size >= 2 and try file.readPositionalAll(io, &bom, 0) == 2) {
+        if (stat.size >= 2 and try in.file.readPositionalAll(io, &bom, 0) == 2) {
             const order: ?std.builtin.Endian = if (std.mem.eql(u8, &bom, "\xff\xfe")) .little else if (std.mem.eql(u8, &bom, "\xfe\xff")) .big else null;
             if (order) |o| {
                 // Two bytes give at most three of UTF-8: room for the whole of
                 // a small file, the buffer's size for a large one.
                 const raw_len: usize = @max(16, @as(usize, @intCast(@min(options.buffer, stat.size))));
                 const raw = try gpa.alloc(u8, raw_len);
-                errdefer gpa.free(raw);
                 in.utf16 = .{ .order = o, .pos = 2, .raw = raw };
-                in.source = .{ .buffered = .{ .buf = try gpa.alloc(u8, raw_len + raw_len / 2 + 16) } };
+                const buf = try gpa.alloc(u8, raw_len + raw_len / 2 + 16);
+                in.source = .{ .buffered = .{ .buf = buf } };
                 in.eof = false;
                 try in.refill(io, gpa, 0);
                 return in;
             }
         }
         if (!options.no_mmap and can_map) {
-            if (map(file, stat.size)) |m| {
+            if (map(in.file, stat.size)) |m| {
                 in.source = .{ .mapped = m };
                 return in;
             } else |_| {}
         }
-        in.source = .{ .buffered = .{ .buf = try gpa.alloc(u8, @intCast(@min(options.buffer, stat.size))) } };
+        const buf = try gpa.alloc(u8, @intCast(@min(options.buffer, stat.size)));
+        in.source = .{ .buffered = .{ .buf = buf } };
         in.eof = false;
         try in.refill(io, gpa, 0);
         return in;
@@ -318,4 +323,25 @@ test "an empty file is an empty input" {
     defer in.close(io, testing.allocator);
     try testing.expect(in.eof);
     try testing.expectEqual(@as(usize, 0), in.data().len);
+}
+
+/// Opens path and reads it through from its start, so each refill grows
+/// the buffer.
+fn openAndGrow(gpa: Allocator, io: Io, path: []const u8, options: Options) !void {
+    var in: Input = try .open(io, gpa, path, options);
+    defer in.close(io, gpa);
+    while (!in.eof) try in.refill(io, gpa, in.base);
+}
+
+test "open and refill free what they hold when an allocation fails" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.csv", .data = "id,name\n1,apple\n2,pear\n3,plum\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "u.csv", .data = "\xff\xfei\x00d\x00,\x00x\x00\n\x001\x00,\x00\xe9\x00\n\x00" });
+    var path_buf: [256]u8 = undefined;
+    for ([_][]const u8{ "a.csv", "u.csv" }) |name| {
+        const path = try std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}/{s}", .{ tmp.sub_path, name });
+        try testing.checkAllAllocationFailures(testing.allocator, openAndGrow, .{ io, path, Options{ .no_mmap = true, .buffer = 4 } });
+    }
 }

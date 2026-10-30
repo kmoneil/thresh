@@ -341,3 +341,18 @@ test "inline errors" {
     try testing.expectEqualStrings("--columns: id:integer: no type 'integer'", diag.message);
     try testing.expectError(error.InvalidSchema, parseInline(testing.allocator, "a:decimal(18", &diag));
 }
+
+fn parseAndFree(gpa: Allocator, json: bool, text: []const u8) !void {
+    var diag: Diagnostic = .{};
+    var o = if (json) try parseJson(gpa, text, &diag) else try parseInline(gpa, text, &diag);
+    o.deinit();
+}
+
+test "the parsers free what they hold when an allocation fails" {
+    const json =
+        \\{"columns": [{"name": "id", "type": "int64", "nullable": false},
+        \\  {"name": "status", "type": "enum", "values": ["open", "closed"]}], "nulls": ["", "N/A"]}
+    ;
+    try testing.checkAllAllocationFailures(testing.allocator, parseAndFree, .{ true, json });
+    try testing.checkAllAllocationFailures(testing.allocator, parseAndFree, .{ false, "id:int64, amount:decimal(8,2), name:string" });
+}

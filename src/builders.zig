@@ -180,3 +180,17 @@ test "Windows-1252 strings are transcoded, its punctuation too" {
     try b.append(&.{"l\x92\x9cuvre \x80"}, &.{.{ .string = "l\x92\x9cuvre \x80" }});
     try testing.expectEqualStrings("l\u{2019}\u{153}uvre \u{20ac}", b.columns[0].text(0));
 }
+
+fn batchInitDeinit(gpa: Allocator, s: *const schema.Schema) !void {
+    var b: Batch = try .init(gpa, s, .utf8);
+    b.deinit();
+}
+
+test "init frees what it holds when an allocation fails" {
+    const s: schema.Schema = .{ .columns = &.{
+        .{ .name = "id", .type = .int64 },
+        .{ .name = "name", .type = .string },
+        .{ .name = "day", .type = .date },
+    } };
+    try testing.checkAllAllocationFailures(testing.allocator, batchInitDeinit, .{&s});
+}
