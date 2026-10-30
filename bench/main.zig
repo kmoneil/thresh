@@ -1,23 +1,36 @@
-//! Throughput of each parsing stage, in MB/s, on synthetic input built in
-//! memory, so the disk is not what is measured.
+//! Throughput of each stage, in MB/s of input, on synthetic input built in
+//! memory, so the disk is not what is measured (the page cache serves a
+//! mapped file the same way).
 //!
-//!   zig build bench -- [--size BYTES] [--runs N] [--profile narrow|wide|text]
+//!   zig build bench -- [--size BYTES] [--runs N] [--profile narrow|wide|text] [--json]
 //!
 //! Profiles: narrow (six short numeric and code columns), wide (thirty
 //! mixed columns, some quoted with embedded delimiters and doubled
-//! quotes), text (four columns, one of them 1 to 20 KB of quoted prose
-//! with line breaks). Each stage runs --runs times; the best run counts.
+//! quotes), text (four columns, one of them 1 to 20 KB of quoted prose with
+//! line breaks). Stages, each including those before it:
+//!
+//!   stage1    the structural index alone
+//!   parse     stages 1 and 2: records and fields, in batches
+//!   validate  every cell checked against the profile's schema
+//!   csv       validated rows built into typed columns and written as CSV
+//!   arrow     the same, written as Arrow IPC
+//!   reference the scalar reference parser, for scale
+//!
+//! Each runs --runs times and the fastest counts. --json prints one object,
+//! profile to stage to MB/s, for tools/bench_gate.sh.
 
 const std = @import("std");
 const thresh = @import("thresh");
 const scan = thresh.scan;
 const records = thresh.records;
+const schema = thresh.schema;
 const Dialect = thresh.Dialect;
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const Profile = enum { narrow, wide, text };
+pub const Stage = enum { stage1, parse, validate, csv, arrow, reference };
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -25,11 +38,16 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     var size: usize = 1 << 30;
     var runs: usize = 3;
+    var json = false;
     var profiles: []const Profile = &.{ .narrow, .wide, .text };
     var one: [1]Profile = undefined;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const a = args[i];
+        if (std.mem.eql(u8, a, "--json")) {
+            json = true;
+            continue;
+        }
         if (i + 1 == args.len) return usage();
         i += 1;
         if (std.mem.eql(u8, a, "--size")) {
@@ -45,32 +63,45 @@ pub fn main(init: std.process.Init) !void {
     var out_buf: [4096]u8 = undefined;
     var out = Io.File.stdout().writerStreaming(io, &out_buf);
     const w = &out.interface;
-    try w.print("{s:<8} {s:>10} {s:>12} {s:>12} {s:>12}\n", .{ "profile", "MB", "stage 1", "stages 1+2", "reference" });
-    for (profiles) |p| {
+    if (json) try w.writeByte('{') else {
+        try w.print("{s:<8} {s:>6}", .{ "profile", "MB" });
+        for (std.enums.values(Stage)) |s| try w.print(" {s:>10}", .{@tagName(s)});
+        try w.writeAll("   (MB/s)\n");
+    }
+    for (profiles, 0..) |p, pi| {
         const data = try generate(gpa, p, size);
         defer gpa.free(data);
         const mb = @as(f64, @floatFromInt(data.len)) / 1e6;
-        const s1 = try best(io, runs, data, stage1, gpa);
-        const s2 = try best(io, runs, data, stages12, gpa);
-        const ref = try best(io, runs, data, referenceParse, gpa);
-        try w.print("{t:<8} {d:>10.0} {d:>7.0} MB/s {d:>7.0} MB/s {d:>7.0} MB/s\n", .{ p, mb, mb / s1, mb / s2, mb / ref });
+        const s = schemaOf(p);
+        if (json) try w.print("{s}\"{t}\":{{", .{ if (pi > 0) "," else "", p }) else try w.print("{t:<8} {d:>6.0}", .{ p, mb });
+        for (std.enums.values(Stage), 0..) |stage, si| {
+            const seconds = try best(io, gpa, runs, data, &s, stage);
+            if (json) try w.print("{s}\"{t}\":{d:.0}", .{ if (si > 0) "," else "", stage, mb / seconds }) else try w.print(" {d:>10.0}", .{mb / seconds});
+        }
+        try w.writeAll(if (json) "}" else "\n");
         try w.flush();
     }
+    if (json) try w.writeAll("}\n");
     try w.flush();
 }
 
 fn usage() error{Usage} {
-    std.debug.print("usage: bench [--size BYTES] [--runs N] [--profile narrow|wide|text]\n", .{});
+    std.debug.print("usage: bench [--size BYTES] [--runs N] [--profile narrow|wide|text] [--json]\n", .{});
     return error.Usage;
 }
 
-/// The fastest of runs runs of f over data, in seconds.
-fn best(io: Io, runs: usize, data: []const u8, comptime f: fn (Allocator, []const u8) anyerror!u64, gpa: Allocator) !f64 {
+/// The fastest of runs runs of the stage over data, in seconds.
+fn best(io: Io, gpa: Allocator, runs: usize, data: []const u8, s: *const schema.Schema, stage: Stage) !f64 {
     var fastest: f64 = std.math.inf(f64);
     var check: ?u64 = null;
     for (0..runs) |_| {
         const start = Io.Timestamp.now(io, .awake);
-        const n = try f(gpa, data);
+        const n = switch (stage) {
+            .stage1 => try stage1(gpa, data),
+            .parse => try parse(gpa, data),
+            .reference => try referenceParse(gpa, data),
+            .validate, .csv, .arrow => try pipeline(gpa, data, s, stage),
+        };
         const ns = start.durationTo(Io.Timestamp.now(io, .awake)).nanoseconds;
         // Every run must find the same; it also keeps the work from being
         // optimized away.
@@ -102,7 +133,7 @@ fn stage1(gpa: Allocator, data: []const u8) !u64 {
 }
 
 /// Stages 1 and 2: records and fields into batches, counting fields.
-fn stages12(gpa: Allocator, data: []const u8) !u64 {
+fn parse(gpa: Allocator, data: []const u8) !u64 {
     var s: records.Scanner = try .init(gpa, .rfc4180, .{});
     defer s.deinit();
     s.feed(data, 0, true);
@@ -119,6 +150,43 @@ fn stages12(gpa: Allocator, data: []const u8) !u64 {
     return total;
 }
 
+/// Parse and validate against the profile's schema, and with a writer,
+/// build each batch's accepted rows into typed columns and write them to
+/// a writer that discards (so the disk is not measured). Counts rows.
+fn pipeline(gpa: Allocator, data: []const u8, s: *const schema.Schema, stage: Stage) !u64 {
+    var v: thresh.validate.Validator = try .init(gpa, s, .rfc4180, .{});
+    defer v.deinit();
+    try v.columns(null, s.columns.len, data, 0);
+    var typed: ?thresh.builders.Batch = if (stage == .validate) null else try .init(gpa, s, .utf8);
+    defer if (typed) |*t| t.deinit();
+    if (typed) |*t| v.batch = t;
+    var sink_buf: [1 << 20]u8 = undefined;
+    var sink: Io.Writer.Discarding = .init(&sink_buf);
+    var csv_w: thresh.csv.Writer = .{ .out = &sink.writer, .options = .{} };
+    var arrow_w: thresh.arrow.Writer = .init(gpa, &sink.writer, s, .{});
+    defer arrow_w.deinit();
+    if (stage == .arrow) try arrow_w.header();
+
+    var scanner: records.Scanner = try .init(gpa, .rfc4180, .{});
+    defer scanner.deinit();
+    scanner.feed(data, 0, true);
+    var batch: records.Batch = .{};
+    defer batch.deinit(gpa);
+    while (true) {
+        batch.clear();
+        const state = try batch.fill(gpa, &scanner, .{});
+        for (0..batch.len()) |i| try v.record(batch.records.items[i], batch.recordFields(i), data, 0);
+        if (typed) |*t| {
+            if (stage == .csv) try csv_w.batch(t) else if (t.rows > 0) try arrow_w.batch(t);
+            t.reset();
+        }
+        if (state == .end) break;
+    }
+    if (stage == .arrow) try arrow_w.end();
+    if (v.rejected != 0) return error.Rejected;
+    return v.rows;
+}
+
 /// The reference parser over the same input, for scale.
 fn referenceParse(gpa: Allocator, data: []const u8) !u64 {
     var p: thresh.reference.Parser = .init(data, .rfc4180, .{});
@@ -128,6 +196,42 @@ fn referenceParse(gpa: Allocator, data: []const u8) !u64 {
     while (try p.next(gpa, &fields)) |_| total += fields.items.len;
     return total;
 }
+
+const codes = [_][]const u8{ "open", "closed", "pending" };
+
+fn schemaOf(p: Profile) schema.Schema {
+    return switch (p) {
+        .narrow => .{ .columns = &.{
+            .{ .name = "id", .type = .int64, .nullable = false },
+            .{ .name = "code", .type = .@"enum", .values = &codes },
+            .{ .name = "amount", .type = .decimal, .precision = 12, .scale = 2 },
+            .{ .name = "qty", .type = .int64 },
+            .{ .name = "flag", .type = .bool },
+            .{ .name = "day", .type = .date, .format = "%Y-%m-%d" },
+        } },
+        .wide => .{ .columns = &wide_columns },
+        .text => .{ .columns = &.{
+            .{ .name = "id", .type = .int64, .nullable = false },
+            .{ .name = "title", .type = .string },
+            .{ .name = "body", .type = .string },
+            .{ .name = "n", .type = .int64 },
+        } },
+    };
+}
+
+const wide_columns = blk: {
+    @setEvalBranchQuota(100_000);
+    var cols: [30]schema.Column = undefined;
+    for (&cols, 0..) |*c, i| {
+        const name = std.fmt.comptimePrint("c{d}", .{i});
+        c.* = switch (i % 5) {
+            0 => .{ .name = name, .type = .int64 },
+            1 => .{ .name = name, .type = .decimal, .precision = 10, .scale = 3 },
+            else => .{ .name = name, .type = .string },
+        };
+    }
+    break :blk cols;
+};
 
 /// About size bytes of CSV in the profile, from a fixed seed.
 fn generate(gpa: Allocator, profile: Profile, size: usize) ![]u8 {
@@ -142,7 +246,7 @@ fn generate(gpa: Allocator, profile: Profile, size: usize) ![]u8 {
         switch (profile) {
             .narrow => try w.print("{d},{s},{d}.{d:0>2},{d},{s},2026-{d:0>2}-{d:0>2}\n", .{
                 row,
-                ([_][]const u8{ "open", "closed", "pending" })[r.uintLessThan(usize, 3)],
+                codes[r.uintLessThan(usize, 3)],
                 r.uintLessThan(u32, 100000),
                 r.uintLessThan(u32, 100),
                 r.uintLessThan(u32, 1000),

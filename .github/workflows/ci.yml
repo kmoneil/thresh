@@ -49,6 +49,22 @@ jobs:
       - name: zig build arrow-check
         run: zig build arrow-check
 
+  # No benchmark stage more than 10% slower than on the base branch. Both
+  # are built and run, in turns, on this runner: a hosted runner is not a
+  # fixed machine, so a stored baseline would measure the runner.
+  bench:
+    name: benchmark gate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - name: tools/bench_gate.sh
+        run: tools/bench_gate.sh "origin/${{ github.base_ref }}"
+
   test:
     name: test (${{ matrix.os }})
     strategy:

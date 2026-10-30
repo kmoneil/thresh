@@ -101,6 +101,10 @@ pub fn build(b: *std.Build) void {
                 .root_source_file = b.path("src/root.zig"),
                 .target = target,
                 .optimize = .ReleaseFast,
+                .imports = &.{.{ .name = "dateparsa", .module = b.dependency("dateparsa", .{
+                    .target = target,
+                    .optimize = .ReleaseFast,
+                }).module("dateparsa") }},
             }) }},
         }),
     });
