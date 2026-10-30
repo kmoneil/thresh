@@ -246,6 +246,8 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
         for (delimiters.slice()) |delim| {
             var best_for_delim: ?Scored = null;
             var best_clean: ?Scored = null;
+            // The best reading under each quote character, '"' and '\''.
+            var best_by_quote: [2]?Scored = .{ null, null };
             for (prior_quotes) |quote| {
                 if (pins.quote) |pq| switch (pq) {
                     .none => if (quote != null) continue,
@@ -269,6 +271,9 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
                     const c = try score(gpa, sample[start..], whole, d, options, &parser_fields, &counts);
                     if (best_for_delim == null or c.score > best_for_delim.?.score + 1e-9) best_for_delim = c;
                     if (c.clean_quoted and (best_clean == null or c.score > best_clean.?.score + 1e-9)) best_clean = c;
+                    if (quoteIndex(quote)) |k| if (best_by_quote[k] == null or c.score > best_by_quote[k].?.score + 1e-9) {
+                        best_by_quote[k] = c;
+                    };
                 }
             }
             // A quote whose parse is clean beats reading its characters as
@@ -277,6 +282,19 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
             // and the wider shape scores higher.
             if (best_clean) |bc| if (best_for_delim) |b| if (bc.consistency >= b.consistency) {
                 best_for_delim = bc;
+            };
+            // A reading that leaves fields wrapped in a quote character as
+            // data, when the reading that honours it parses most records:
+            // the quote is the file's, and the records it breaks are its
+            // errors (a quote inside a quoted field, not doubled), not a
+            // sign it has none.
+            if (best_for_delim) |b| for (best_by_quote, 0..) |cand, k| {
+                const q = cand orelse continue;
+                if (b.dialect.quote == q.dialect.quote) continue;
+                if (b.bare[k] * 2 >= b.records and q.consistency >= 0.8) {
+                    best_for_delim = q;
+                    break;
+                }
             };
             const c = best_for_delim orelse continue;
             if (!any or c.score > best.score + 1e-9) {
@@ -413,7 +431,14 @@ const Scored = struct {
     /// as data and no record broken: the quote explains every one of its
     /// characters in the sample.
     clean_quoted: bool = false,
+    /// Unquoted fields that start and end with '"', and with '\'': quotes
+    /// this reading leaves as data.
+    bare: [2]usize = .{ 0, 0 },
 };
+
+fn quoteIndex(q: ?u8) ?usize {
+    return if (q == '"') 0 else if (q == '\'') 1 else null;
+}
 
 /// One candidate's score over its first options.records complete records:
 /// consistency x ln(1 + mode), less 0.5 for a single column and 0.3 for a
@@ -438,6 +463,7 @@ fn score(
     var p: reference.Parser = .init(sample, d, .{});
     var unbalanced = false;
     var quoted_fields: usize = 0;
+    var bare: [2]usize = .{ 0, 0 };
     var dirty = false;
     while (counts.items.len < options.records) {
         const rec = try p.next(gpa, fields) orelse break;
@@ -451,7 +477,13 @@ fn score(
         }
         if (rec.problem == .unterminated_quote) unbalanced = true;
         if (rec.problem != null or rec.stray_quotes > 0) dirty = true;
-        for (fields.items) |f| quoted_fields += @intFromBool(f.flags.quoted);
+        for (fields.items) |f| {
+            quoted_fields += @intFromBool(f.flags.quoted);
+            if (f.flags.quoted or f.len < 2) continue;
+            const v = sample[@intCast(f.start)..][0..f.len];
+            if (v[0] != v[v.len - 1]) continue;
+            if (quoteIndex(v[0])) |k| bare[k] += 1;
+        }
         // A broken record is no field count at all: 0 never wins the mode.
         try counts.append(gpa, if (rec.problem != null) 0 else @intCast(fields.items.len));
     }
@@ -487,6 +519,7 @@ fn score(
         .mode = mode,
         .records = n,
         .clean_quoted = d.quote != null and quoted_fields > 0 and !dirty and !unbalanced,
+        .bare = bare,
     };
 }
 
@@ -724,6 +757,19 @@ test "a sample that is not UTF-8 is warned of, unless another encoding is given"
     // A window that stops inside a character is not a broken one.
     const cut = try sniff(std.testing.allocator, "id,name\n1,caf\xc3", false, .{});
     try std.testing.expect(!cut.warnings.not_utf8);
+}
+
+test "a quote that wraps every field wins, though a few of its fields break" {
+    // Two values with a quote inside them, not doubled: those two records
+    // break under '"', and reading every quote as data parses all of them.
+    var buf: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buf.deinit();
+    try buf.writer.writeAll("id, name, note\n");
+    for (0..30) |i| try buf.writer.print("\"{d}\",\"n{d}\",\"{s}\"\n", .{ i, i, if (i == 5 or i == 9) "say \"hi\" now" else "plain" });
+    const v = try sniffed(buf.written(), .{});
+    try std.testing.expectEqual(@as(?u8, '"'), v.dialect.quote);
+    try std.testing.expect(v.dialect.header);
+    try std.testing.expect(v.confidence != .low);
 }
 
 test "ragged records are low confidence, not a wrong high" {

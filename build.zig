@@ -175,6 +175,7 @@ const dirty_files = [_][]const u8{
     "dirty-pipe-noquote-lf-nh-utf8",
     "dirty-semicolon-dq-cr-h-utf8-bom",
     "dirty-comma-dq-lf-h-missing-column",
+    "dirty-comma-dq-crlf-h-quote-all",
 };
 
 /// What `zig build test` runs thresh with, and what it must write and exit

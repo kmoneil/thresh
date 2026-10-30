@@ -14,6 +14,10 @@ ca8edfd523fe0baf1b45d8b300f088a49de8c2ffac3e4d3b3ee049ba24e361e9  adv-giant-firs
 45b68a6865e04c95ddab955bcfb9f7a75e219cc2f14b3dc4096a06283c3aef6e  adv-pipe-text.dialect.json
 ec0b75acfbb17cd18f78ba468c729e754baf685b1e76012f4db171a500b48c2c  adv-pipe-text.fields
 aa1ed93780925b1b30f7de7637b84d895f0b93d3c6ff76ee911fb7f62fff4ca8  adv-pipe-text.schema.json
+1f15627b3c55e0bfe245549e3d24913f80cc03a9d9e1e32f9890f6ec91b7d1cf  dirty-comma-dq-crlf-h-quote-all.csv
+72e32a7f81329ab65f7a1c508b7708b718409b40d91792a55d10c03495fc8386  dirty-comma-dq-crlf-h-quote-all.dialect.json
+17d07c58db841b5801da16d30e5fa5659421fadfda0ba380888cd730c43d302c  dirty-comma-dq-crlf-h-quote-all.expect.json
+fa02cbc7661cb5e04c9eff8e5312647ede2a7f6a85033133302d0317908a220d  dirty-comma-dq-crlf-h-quote-all.schema.json
 32fa6a602f517c51ad857cce31ffba6fa89a628ae3b31dcbe4e814f18ed424e6  dirty-comma-dq-lf-h-missing-column.csv
 612679e782b78b9caf23c47e557db94112131805a2021d837e0a87074f614c59  dirty-comma-dq-lf-h-missing-column.dialect.json
 8b55d446a62a6c671e6bd68dbe306b391f410cdf1d89dfca45701be8c26d63c4  dirty-comma-dq-lf-h-missing-column.expect.json
@@ -34,7 +38,7 @@ fa02cbc7661cb5e04c9eff8e5312647ede2a7f6a85033133302d0317908a220d  dirty-semicolo
 5538a04a34d48af5a4877e8abb2506b2a4eb377d4ee249d38e60787220c65f10  dirty-tab-sq-crlf-h-latin1.dialect.json
 6d1231eb58eb4a1b5a66fbbfb2eeb5ca3ad5f3f2d86b8b6de6bcfeb953ad8251  dirty-tab-sq-crlf-h-latin1.expect.json
 fa02cbc7661cb5e04c9eff8e5312647ede2a7f6a85033133302d0317908a220d  dirty-tab-sq-crlf-h-latin1.schema.json
-3c7d22b50dd82e129c9b6f8c5933bde9b680ce1d82fb9b5eb6e247a58ffe1df3  dirty.txt
+c7d5890ae5d0bbd04c65c8b59aeb4e2e9161512fde883406b4103fb4d92c83c3  dirty.txt
 051d16726a4e8a74c49f075cf6a17824342c70eb3848a4ed02311dc434e3f221  exp-comma-crlf-cp1252.csv
 43872e9c163e0877dc709a1e9a437d34edf10c9f2201d3724d41d0d126cbf27d  exp-comma-crlf-cp1252.dialect.json
 553eedd2ee6d94890cc76065d03247d790c9a92dd302eed74f102de160cb50cb  exp-comma-crlf-cp1252.fields

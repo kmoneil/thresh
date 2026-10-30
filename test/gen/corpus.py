@@ -829,7 +829,15 @@ DIRTY = [
     ("dirty-pipe-noquote-lf-nh-utf8", Dialect("|", None, "\n", False), "utf8", None),
     ("dirty-semicolon-dq-cr-h-utf8-bom", Dialect(";", '"', "\r", True), "utf8-bom", None),
     ("dirty-comma-dq-lf-h-missing-column", Dialect(",", '"', "\n", True), "utf8", "flag"),
+    ("dirty-comma-dq-crlf-h-quote-all", Dialect(",", '"', "\r\n", True), "utf8", None),
 ]
+
+# A dirty file whose every field is quoted: a quote inside one, not doubled,
+# breaks its record under '"', and reading every quote as data breaks none,
+# so the sniffer must still take '"' (card t24). Its first injection is that
+# quote, inside the sniffer's first 32 records, and no name in it holds the
+# delimiter, so the reading that ignores quotes parses all of those.
+DIRTY_POLICY = {"dirty-comma-dq-crlf-h-quote-all": "all"}
 
 
 def dirty_file(fname, d, encoding, missing):
@@ -848,14 +856,15 @@ def dirty_file(fname, d, encoding, missing):
     kinds = ["n", "s", "n", "n", "n", "n", "n", "s"]
     # The file's columns: the schema's, less the one it is missing.
     keep = [i for i, n in enumerate(names) if n != missing]
-    w = Writer(d, encoding, "minimal")
+    w = Writer(d, encoding, DIRTY_POLICY.get(fname, "minimal"))
     if d.header:
-        w.record([names[i] for i in keep], ["s"] * len(keep))
+        w.record([names[i] for i in keep], ["h"] * len(keep))
     stats = {n: {"mismatches": 0, "nulls": 0} for n in names}
     rejected = []
     rows = 60
     unquoted_special = [5 * k + 2 for k in range(6)]
-    shift = rng.below(len(INJECTIONS))
+    quote_all = fname in DIRTY_POLICY
+    shift = len(INJECTIONS) - 1 if quote_all else rng.below(len(INJECTIONS))
     injected = 0
     for i in range(rows):
         line = i + (2 if d.header else 1)
@@ -871,7 +880,7 @@ def dirty_file(fname, d, encoding, missing):
             # Some names need their quotes, so the file's quote is the one
             # the sniffer settles: one nothing needs reads as data. An
             # unquoted file opens quotes it never closes, as the clean ones do.
-            name(rng, d, d.quote is not None and i % 5 == 1).replace("'", "").replace('"', ""),
+            name(rng, d, d.quote is not None and i % 5 == 1 and not quote_all).replace("'", "").replace('"', ""),
         ]
         if d.quote is None and i in unquoted_special:
             values[-1] = unclosed(rng, unquoted_special, i)
