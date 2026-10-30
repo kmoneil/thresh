@@ -44,8 +44,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      # A virtual environment first on PATH: the check runs python3 -I,
+      # which ignores the user site, so pip install --user is not seen.
       - name: pyarrow and duckdb
-        run: python3 -m pip install --user pyarrow duckdb pytz
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install pyarrow duckdb pytz
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
       - name: zig build arrow-check
         run: zig build arrow-check
 
