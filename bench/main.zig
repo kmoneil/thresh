@@ -162,10 +162,10 @@ fn pipeline(gpa: Allocator, data: []const u8, s: *const schema.Schema, stage: St
     if (typed) |*t| v.batch = t;
     var sink_buf: [1 << 20]u8 = undefined;
     var sink: Io.Writer.Discarding = .init(&sink_buf);
-    var csv_w: thresh.csv.Writer = .{ .out = &sink.writer, .options = .{} };
-    var arrow_w: thresh.arrow.Writer = .init(gpa, &sink.writer, s, .{});
+    var csv_w: thresh.csv.Writer = .{ .options = .{} };
+    var arrow_w: thresh.arrow.Writer = .init(gpa, s, .{});
     defer arrow_w.deinit();
-    if (stage == .arrow) try arrow_w.header();
+    if (stage == .arrow) try arrow_w.header(&sink.writer);
 
     var scanner: records.Scanner = try .init(gpa, .rfc4180, .{});
     defer scanner.deinit();
@@ -177,12 +177,12 @@ fn pipeline(gpa: Allocator, data: []const u8, s: *const schema.Schema, stage: St
         const state = try batch.fill(gpa, &scanner, .{});
         for (0..batch.len()) |i| try v.record(batch.records.items[i], batch.recordFields(i), data, 0);
         if (typed) |*t| {
-            if (stage == .csv) try csv_w.batch(t) else if (t.rows > 0) try arrow_w.batch(t);
+            if (stage == .csv) try csv_w.batch(&sink.writer, t) else if (t.rows > 0) try arrow_w.batch(&sink.writer, t);
             t.reset();
         }
         if (state == .end) break;
     }
-    if (stage == .arrow) try arrow_w.end();
+    if (stage == .arrow) try arrow_w.end(&sink.writer);
     if (v.rejected != 0) return error.Rejected;
     return v.rows;
 }

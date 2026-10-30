@@ -86,43 +86,33 @@ const Output = struct {
             .batch = batch,
             .format = switch (plan.to) {
                 .csv => .{ .csv = .{
-                    .out = undefined,
                     .options = .{ .delimiter = cfg.out_delimiter, .newline = cfg.out_newline },
                     .normalize_dates = cfg.normalize_dates,
                 } },
-                .arrow => .{ .arrow = .init(env.gpa, undefined, s, .{ .file = cfg.arrow_file }) },
+                .arrow => .{ .arrow = .init(env.gpa, s, .{ .file = cfg.arrow_file }) },
                 .parquet => unreachable,
             },
         };
     }
 
-    /// Writes what the batch holds, then empties it.
+    /// Writes the column names (CSV) or the schema message (Arrow).
     fn header(o: *Output, s: *const Schema, arena: Allocator) !void {
         const names = try arena.alloc([]const u8, s.columns.len);
         for (names, s.columns) |*n, c| n.* = c.name;
+        const out = &o.sink.writer.interface;
         switch (o.format) {
-            .csv => |*w| {
-                w.out = &o.sink.writer.interface;
-                try w.header(names);
-            },
-            .arrow => |*w| {
-                w.out = &o.sink.writer.interface;
-                try w.header();
-            },
+            .csv => |*w| try w.header(out, names),
+            .arrow => |*w| try w.header(out),
         }
     }
 
+    /// Writes what the batch holds, then empties it.
     fn write(o: *Output) !void {
+        const out = &o.sink.writer.interface;
         switch (o.format) {
-            .csv => |*w| {
-                w.out = &o.sink.writer.interface;
-                try w.batch(&o.batch);
-            },
+            .csv => |*w| try w.batch(out, &o.batch),
             // An empty batch is no record batch.
-            .arrow => |*w| if (o.batch.rows > 0) {
-                w.out = &o.sink.writer.interface;
-                try w.batch(&o.batch);
-            },
+            .arrow => |*w| if (o.batch.rows > 0) try w.batch(out, &o.batch),
         }
         o.batch.reset();
     }
@@ -140,10 +130,7 @@ const Output = struct {
         errdefer Io.Dir.cwd().deleteFile(env.io, o.tmp_path) catch {};
         defer o.sink.close(env.io, env.gpa);
         if (keep) switch (o.format) {
-            .arrow => |*w| {
-                w.out = &o.sink.writer.interface;
-                try w.end();
-            },
+            .arrow => |*w| try w.end(&o.sink.writer.interface),
             .csv => {},
         };
         if (keep) try o.sink.writer.interface.flush();

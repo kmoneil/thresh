@@ -46,9 +46,10 @@ pub const Options = struct {
     file: bool = false,
 };
 
+/// Each call that writes takes the writer to write to, so a Writer moved
+/// by value holds no pointer into where it was made.
 pub const Writer = struct {
     gpa: Allocator,
-    out: *Io.Writer,
     schema: *const schema.Schema,
     options: Options,
     /// Bytes written so far: a block's offset in the file format.
@@ -61,8 +62,8 @@ pub const Writer = struct {
     nodes: std.ArrayList(FieldNode) = .empty,
     buffers: std.ArrayList(Buffer) = .empty,
 
-    pub fn init(gpa: Allocator, out: *Io.Writer, s: *const schema.Schema, options: Options) Writer {
-        return .{ .gpa = gpa, .out = out, .schema = s, .options = options };
+    pub fn init(gpa: Allocator, s: *const schema.Schema, options: Options) Writer {
+        return .{ .gpa = gpa, .schema = s, .options = options };
     }
 
     pub fn deinit(w: *Writer) void {
@@ -70,21 +71,21 @@ pub const Writer = struct {
     }
 
     /// The file's magic (file format) and the schema message.
-    pub fn header(w: *Writer) !void {
-        if (w.options.file) try w.raw(magic ++ "\x00\x00");
+    pub fn header(w: *Writer, out: *Io.Writer) !void {
+        if (w.options.file) try w.raw(out, magic ++ "\x00\x00");
         var arena: std.heap.ArenaAllocator = .init(w.gpa);
         defer arena.deinit();
         var b: fb.Builder = .init(arena.allocator());
         const s = try schemaTable(&b, w.schema);
         w.body.clearRetainingCapacity();
-        _ = try w.message(&b, header_schema, s);
+        _ = try w.message(out, &b, header_schema, s);
     }
 
     /// One record batch from b, after the dictionaries the first time.
-    pub fn batch(w: *Writer, b: *const builders.Batch) !void {
+    pub fn batch(w: *Writer, out: *Io.Writer, b: *const builders.Batch) !void {
         if (!w.dictionaries_sent) {
             w.dictionaries_sent = true;
-            try w.dictionaries();
+            try w.dictionaries(out);
         }
         w.body.clearRetainingCapacity();
         w.nodes.clearRetainingCapacity();
@@ -94,21 +95,21 @@ pub const Writer = struct {
         defer arena.deinit();
         var f: fb.Builder = .init(arena.allocator());
         const rb = try w.recordBatch(&f, b.rows);
-        const block = try w.message(&f, header_record_batch, rb);
+        const block = try w.message(out, &f, header_record_batch, rb);
         try w.batch_blocks.append(w.gpa, block);
     }
 
     /// The end: the stream's end-of-stream marker, and in the file format
     /// the footer, its length and the magic.
-    pub fn end(w: *Writer) !void {
+    pub fn end(w: *Writer, out: *Io.Writer) !void {
         if (!w.dictionaries_sent) {
             w.dictionaries_sent = true;
-            try w.dictionaries();
+            try w.dictionaries(out);
         }
         var eos: [8]u8 = undefined;
         std.mem.writeInt(u32, eos[0..4], continuation, .little);
         std.mem.writeInt(u32, eos[4..8], 0, .little);
-        try w.raw(&eos);
+        try w.raw(out, &eos);
         if (!w.options.file) return;
         var arena: std.heap.ArenaAllocator = .init(w.gpa);
         defer arena.deinit();
@@ -120,20 +121,20 @@ pub const Writer = struct {
             .{ .slot = 3, .value = .{ .ref = try b.structs(Block, w.batch_blocks.items) } },
         });
         try b.finish(w.gpa, footer, &w.meta);
-        try w.raw(w.meta.items);
+        try w.raw(out, w.meta.items);
         var len: [4]u8 = undefined;
         std.mem.writeInt(i32, &len, @intCast(w.meta.items.len), .little);
-        try w.raw(&len);
-        try w.raw(magic);
+        try w.raw(out, &len);
+        try w.raw(out, magic);
     }
 
-    fn raw(w: *Writer, bytes: []const u8) !void {
-        try w.out.writeAll(bytes);
+    fn raw(w: *Writer, out: *Io.Writer, bytes: []const u8) !void {
+        try out.writeAll(bytes);
         w.written += bytes.len;
     }
 
     /// Writes the message with header as its header and w.body as its body.
-    fn message(w: *Writer, b: *fb.Builder, header_type: u8, header_ref: fb.Ref) !Block {
+    fn message(w: *Writer, out: *Io.Writer, b: *fb.Builder, header_type: u8, header_ref: fb.Ref) !Block {
         try padBody(w.gpa, &w.body);
         const m = try b.table(&.{
             .{ .slot = 0, .value = .{ .i16 = metadata_v5 } },
@@ -150,15 +151,15 @@ pub const Writer = struct {
         var prefix: [8]u8 = undefined;
         std.mem.writeInt(u32, prefix[0..4], continuation, .little);
         std.mem.writeInt(i32, prefix[4..8], @intCast(w.meta.items.len), .little);
-        try w.raw(&prefix);
-        try w.raw(w.meta.items);
-        try w.raw(w.body.items);
+        try w.raw(out, &prefix);
+        try w.raw(out, w.meta.items);
+        try w.raw(out, w.body.items);
         return block;
     }
 
     /// The enum columns' values, a dictionary batch each, id the column's
     /// index.
-    fn dictionaries(w: *Writer) !void {
+    fn dictionaries(w: *Writer, out: *Io.Writer) !void {
         for (w.schema.columns, 0..) |c, i| {
             if (c.type != .@"enum") continue;
             w.body.clearRetainingCapacity();
@@ -186,7 +187,7 @@ pub const Writer = struct {
                 .{ .slot = 1, .value = .{ .ref = rb } },
                 .{ .slot = 2, .value = .{ .bool = false } },
             });
-            try w.dictionary_blocks.append(w.gpa, try w.message(&b, header_dictionary, db));
+            try w.dictionary_blocks.append(w.gpa, try w.message(out, &b, header_dictionary, db));
         }
     }
 
@@ -339,11 +340,11 @@ test "a stream: schema, a dictionary, a batch, the end" {
     try b.append(&.{ "2", "closed", "" }, &.{ .{ .int = 2 }, .{ .enumeration = 1 }, null });
     var out: Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
-    var w: Writer = .init(gpa, &out.writer, &s, .{});
+    var w: Writer = .init(gpa, &s, .{});
     defer w.deinit();
-    try w.header();
-    try w.batch(&b);
-    try w.end();
+    try w.header(&out.writer);
+    try w.batch(&out.writer, &b);
+    try w.end(&out.writer);
     const bytes = out.written();
     try std.testing.expectEqual(@as(usize, 0), bytes.len % 8);
     try std.testing.expectEqual(continuation, std.mem.readInt(u32, bytes[0..4], .little));
@@ -365,11 +366,11 @@ test "the file format ends in a footer and the magic" {
     try b.append(&.{"1.5"}, &.{.{ .float = 1.5 }});
     var out: Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
-    var w: Writer = .init(gpa, &out.writer, &s, .{ .file = true });
+    var w: Writer = .init(gpa, &s, .{ .file = true });
     defer w.deinit();
-    try w.header();
-    try w.batch(&b);
-    try w.end();
+    try w.header(&out.writer);
+    try w.batch(&out.writer, &b);
+    try w.end(&out.writer);
     const bytes = out.written();
     try std.testing.expectEqualStrings("ARROW1\x00\x00", bytes[0..8]);
     try std.testing.expectEqualStrings("ARROW1", bytes[bytes.len - 6 ..]);

@@ -74,27 +74,26 @@ const date = @import("../types/date.zig");
 /// Latin-1 file transcoded) and, with normalize_dates, dates and
 /// timestamps are RFC 3339 (timestamps in UTC).
 pub const Writer = struct {
-    out: *Io.Writer,
     options: Options,
     normalize_dates: bool = false,
 
-    pub fn header(w: *Writer, names: []const []const u8) Io.Writer.Error!void {
-        try record(w.out, names, w.options);
+    pub fn header(w: *Writer, out: *Io.Writer, names: []const []const u8) Io.Writer.Error!void {
+        try record(out, names, w.options);
     }
 
-    pub fn batch(w: *Writer, b: *const builders.Batch) Io.Writer.Error!void {
+    pub fn batch(w: *Writer, out: *Io.Writer, b: *const builders.Batch) Io.Writer.Error!void {
         var buf: [64]u8 = undefined;
         for (0..b.rows) |row| {
             for (b.columns, 0..) |*c, i| {
-                if (i > 0) try delimiter(w.out, w.options);
+                if (i > 0) try delimiter(out, w.options);
                 if (!c.valid.items[row]) continue;
                 if (w.normalize_dates and (c.type == .date or c.type == .timestamp)) {
-                    try field(w.out, rfc3339(&buf, c.type, c.ints.items[row]), w.options);
+                    try field(out, rfc3339(&buf, c.type, c.ints.items[row]), w.options);
                     continue;
                 }
-                try field(w.out, c.text(row), w.options);
+                try field(out, c.text(row), w.options);
             }
-            try endRecord(w.out, w.options);
+            try endRecord(out, w.options);
         }
     }
 };
@@ -133,12 +132,12 @@ test "batches as RFC 4180, dates normalized when asked" {
     try b.append(&.{ "", "", "", "" }, &.{ null, null, null, null });
     var out: Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    var w: Writer = .{ .out = &out.writer, .options = .{} };
-    try w.header(&.{ "id", "at", "day", "note" });
-    try w.batch(&b);
+    var w: Writer = .{ .options = .{} };
+    try w.header(&out.writer, &.{ "id", "at", "day", "note" });
+    try w.batch(&out.writer, &b);
     try std.testing.expectEqualStrings("id,at,day,note\n1,2024-03-15 10:20:30,15/03/2024,\"a, \"\"b\"\"\"\n,,,\n", out.written());
     out.clearRetainingCapacity();
     w.normalize_dates = true;
-    try w.batch(&b);
+    try w.batch(&out.writer, &b);
     try std.testing.expectEqualStrings("1,2024-03-15T10:20:30Z,2024-03-15,\"a, \"\"b\"\"\"\n,,,\n", out.written());
 }
