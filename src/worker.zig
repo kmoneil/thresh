@@ -181,7 +181,7 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
 
     const names = try arena.alloc([]const u8, plan.schema.columns.len);
     for (names, plan.schema.columns) |*n, c| n.* = c.name;
-    var sniffed = (try openSniffed(env, cfg, path, names, &out)) orelse {
+    var sniffed = (try openSniffed(env, cfg, path, names, &out, arena)) orelse {
         try writeReport(env, plan, out, name, details);
         return out;
     };
@@ -385,11 +385,12 @@ pub const Sniffed = struct {
 
 /// Opens path and sniffs as much of its start as the sniffer may want:
 /// the one way sniff, infer and validate read a file's dialect. A problem
-/// with the file (it cannot be opened, is UTF-16 under --encoding, or
-/// gives the sniffer nothing to score) goes in out.problem and gives null.
+/// with the file (it cannot be opened, is UTF-16 under --encoding, gives
+/// the sniffer nothing to score, or has a header a name short of its
+/// rows) goes in out.problem, allocated in arena, and gives null.
 /// out.bytes and out.timing.sniff_ns are set as far as it gets. Low
 /// confidence is the caller's to judge. The caller closes the Input.
-pub fn openSniffed(env: Env, cfg: *const cli.Config, path: []const u8, schema_names: ?[]const []const u8, out: *report.Outcome) !?Sniffed {
+pub fn openSniffed(env: Env, cfg: *const cli.Config, path: []const u8, schema_names: ?[]const []const u8, out: *report.Outcome, arena: Allocator) !?Sniffed {
     const t0 = now(env.io);
     defer out.timing.sniff_ns = since(env.io, t0);
     var in = input.Input.open(env.io, env.gpa, path, .{ .no_mmap = cfg.no_mmap }) catch |e| {
@@ -419,6 +420,12 @@ pub fn openSniffed(env: Env, cfg: *const cli.Config, path: []const u8, schema_na
         },
     };
     verdict.warnings.utf16 = in.utf16 != null;
+    // Its names cannot be matched to its columns, and guessing where the
+    // missing one goes would name the columns after it wrongly.
+    if (verdict.warnings.header_short) {
+        out.problem = try std.fmt.allocPrint(arena, "row 1 is a header of {d} names over rows of {d} fields: a name is missing, and which column lacks it cannot be told; fix the header, or pin --header no to read row 1 as data", .{ verdict.header_fields, verdict.fields });
+        return null;
+    }
     kept = true;
     return .{ .in = in, .verdict = verdict };
 }
@@ -443,7 +450,7 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
     const io = env.io;
     const gpa = env.gpa;
     var out: report.Outcome = .{ .file = path, .result = .@"error" };
-    var sniffed = (try openSniffed(env, cfg, path, null, &out)) orelse return .{ .outcome = out };
+    var sniffed = (try openSniffed(env, cfg, path, null, &out, arena)) orelse return .{ .outcome = out };
     defer sniffed.in.close(io, gpa);
     const in = &sniffed.in;
     const verdict = sniffed.verdict;

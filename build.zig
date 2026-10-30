@@ -42,6 +42,7 @@ pub fn build(b: *std.Build) void {
         r.addFileInput(b.path("test/cli/orders16.csv"));
         r.addFileInput(b.path("test/cli/wide.csv"));
         r.addFileInput(b.path("test/cli/noheader.csv"));
+        r.addFileInput(b.path("test/cli/short.csv"));
         if (check.stdout) |s| r.expectStdOutEqual(s);
         if (check.stderr) |s| r.expectStdErrEqual(s);
         r.expectExitCode(check.code);
@@ -335,6 +336,17 @@ const cli_checks = [_]struct {
             "thresh: id, amount: typed from fewer than 10 values; check them before reusing the schema\n" ++
             "thresh: the files disagree: 1 of 2 have no header (the first: test/cli/noheader.csv), so the schema matches columns by position; infer them apart, or pin --header\n",
         .code = 1,
+    },
+    .{
+        // A header a name short of its rows: said, not guessed at.
+        .args = &.{ "infer", "test/cli/short.csv" },
+        .stderr = "error test/cli/short.csv  row 1 is a header of 3 names over rows of 4 fields: a name is missing, and which column lacks it cannot be told; fix the header, or pin --header no to read row 1 as data\n" ++
+            "thresh: no file to infer a schema from\n",
+        .code = 2,
+    },
+    .{
+        .args = &.{ "sniff", "test/cli/short.csv", "--header", "no" },
+        .stdout = "test/cli/short.csv: delimiter=| quote=\" escape=doubled newline=lf header=no confidence=medium\n",
     },
     .{
         .args = &.{ "convert", "test/cli/orders.csv", "--to", "csv", "--out", ".zig-cache/cli-out/convert", "--json" },

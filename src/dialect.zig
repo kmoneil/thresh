@@ -122,9 +122,12 @@ pub const Warnings = packed struct(u8) {
     utf16: bool = false,
     /// Some of its code units made no character and are U+FFFD.
     utf16_invalid: bool = false,
-    _: u2 = 0,
+    /// Row 1 is a header a field or two narrower than the rows, which hold
+    /// values past it: a name is missing, and where cannot be told.
+    header_short: bool = false,
+    _: u1 = 0,
 
-    pub const names = .{ "utf8_bom", "mixed_newlines", "quote_in_unquoted", "not_utf8", "utf16", "utf16_invalid" };
+    pub const names = .{ "utf8_bom", "mixed_newlines", "quote_in_unquoted", "not_utf8", "utf16", "utf16_invalid", "header_short" };
 
     pub fn jsonStringify(w: Warnings, s: *std.json.Stringify) std.json.Stringify.Error!void {
         try s.beginArray();
@@ -169,6 +172,8 @@ pub const Verdict = struct {
     /// Where records start: 3 past a UTF-8 BOM.
     start: usize,
     warnings: Warnings,
+    /// With warnings.header_short, the names row 1 has.
+    header_fields: usize = 0,
     /// The best candidates with other delimiters, best first.
     runners_up: [2]?Runner = .{ null, null },
 
@@ -296,10 +301,19 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
     if (shape.mixed) warnings.mixed_newlines = true;
     if (shape.stray_quotes) warnings.quote_in_unquoted = true;
     if (options.utf8 and notUtf8(sample, complete and len == data.len)) warnings.not_utf8 = true;
+    var header_fields: usize = 0;
     d.header = switch (pins.header) {
         .yes => true,
         .no => false,
-        .auto => try isHeader(gpa, sample, d, options, &parser_fields),
+        .auto => switch (try isHeader(gpa, sample, d, options, &parser_fields)) {
+            .no => false,
+            .yes => true,
+            .short => |n| short: {
+                warnings.header_short = true;
+                header_fields = n;
+                break :short true;
+            },
+        },
     };
     const confidence = confidenceOf(best, runners, options);
     return .{
@@ -312,6 +326,7 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
         .sample_len = len,
         .start = start,
         .warnings = warnings,
+        .header_fields = header_fields,
         .runners_up = runners,
     };
 }
@@ -623,9 +638,13 @@ fn notUtf8(sample: []const u8, whole: bool) bool {
 /// a header, and validation says which column. Failing that, it does when
 /// every field in it is a non-empty string and some column below it holds
 /// only values of another type.
-fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOptions, fields: *std.ArrayList(Field)) Allocator.Error!bool {
+/// What row 1 is: no header, a header, or a header narrower than the rows
+/// (its width), which they hold values past.
+const HeaderRead = union(enum) { no, yes, short: usize };
+
+fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOptions, fields: *std.ArrayList(Field)) Allocator.Error!HeaderRead {
     var p: reference.Parser = .init(sample, d, .{});
-    _ = try p.next(gpa, fields) orelse return false;
+    _ = try p.next(gpa, fields) orelse return .no;
     var scratch: std.ArrayList(u8) = .empty;
     defer scratch.deinit(gpa);
     const first = try fields.toOwnedSlice(gpa);
@@ -639,7 +658,7 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
         for (first) |f| {
             if (known.contains(std.mem.trim(u8, try value(gpa, &scratch, sample, d, f), " \t"))) named += 1;
         }
-        if (named * 2 >= first.len and named > 0) return true;
+        if (named * 2 >= first.len and named > 0) return .yes;
     }
     // Row 1's values, to know it again below: two exports joined repeat it.
     var names: std.ArrayList(u8) = .empty;
@@ -648,24 +667,43 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
     defer gpa.free(ends);
     for (first, ends) |f, *e| {
         const v = try value(gpa, &scratch, sample, d, f);
-        if (v.len == 0 or looksTyped(v)) return false;
+        if (v.len == 0 or looksTyped(v)) return .no;
         try names.appendSlice(gpa, std.mem.trim(u8, v, " \t"));
         e.* = names.items.len;
     }
-    // Per column: still typed (every non-empty value so far), and seen one.
-    const typed = try gpa.alloc(bool, first.len);
+    // Per column: still typed (every non-empty value so far), and seen one;
+    // over the rows as wide as row 1, and apart over those a field or two
+    // wider, on row 1's columns, with whether any holds a value past them.
+    const typed = try gpa.alloc(bool, first.len * 4);
     defer gpa.free(typed);
-    const seen = try gpa.alloc(bool, first.len);
-    defer gpa.free(seen);
-    @memset(typed, true);
-    @memset(seen, false);
+    @memset(typed[0 .. first.len * 2], true);
+    @memset(typed[first.len * 2 ..], false);
+    const wide_typed = typed[first.len..][0..first.len];
+    const seen = typed[first.len * 2 ..][0..first.len];
+    const wide_seen = typed[first.len * 3 ..][0..first.len];
     var rows: usize = 0;
     var complete: usize = 0;
+    var same: usize = 0;
+    var past = false;
     while (rows < 100) : (rows += 1) {
         const rec = try p.next(gpa, fields) orelse break;
         if (rec.end == sample.len and sample[sample.len - 1] != '\n' and sample[sample.len - 1] != '\r') break;
         complete += 1;
+        if (fields.items.len > first.len and fields.items.len <= first.len + 2) {
+            for (fields.items, 0..) |f, col| {
+                const v = try value(gpa, &scratch, sample, d, f);
+                if (v.len == 0) continue;
+                if (col >= first.len) {
+                    past = true;
+                    continue;
+                }
+                wide_seen[col] = true;
+                if (!looksTyped(v)) wide_typed[col] = false;
+            }
+            continue;
+        }
         if (fields.items.len != first.len) continue;
+        same += 1;
         // Row 1 again is not a column's evidence either way.
         const again = for (fields.items, ends, 0..) |f, end, col| {
             const start = if (col == 0) 0 else ends[col - 1];
@@ -680,7 +718,11 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
             if (!looksTyped(v)) typed[col] = false;
         }
     }
-    for (typed, seen) |t, s| if (t and s) return true;
+    for (typed[0..first.len], seen) |t, s| if (t and s) return .yes;
+    // No row as wide as row 1, and rows a field or two wider with values
+    // past it: a header a name short. (A trailing delimiter on every row,
+    // nothing past it, is not that.)
+    if (same == 0 and past) for (wide_typed, wide_seen) |t, s| if (t and s) return .{ .short = first.len };
     // Row 1 alone, nothing under it: an empty extract's header, when its
     // values (none empty or typed, as above) are distinct names.
     if (complete == 0) {
@@ -688,11 +730,11 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
         defer taken.deinit(gpa);
         for (ends, 0..) |end, col| {
             const start = if (col == 0) 0 else ends[col - 1];
-            if ((try taken.getOrPut(gpa, names.items[start..end])).found_existing) return false;
+            if ((try taken.getOrPut(gpa, names.items[start..end])).found_existing) return .no;
         }
-        return true;
+        return .yes;
     }
-    return false;
+    return .no;
 }
 
 fn value(gpa: Allocator, scratch: *std.ArrayList(u8), sample: []const u8, d: Dialect, f: Field) Allocator.Error![]const u8 {
@@ -877,6 +919,22 @@ test "a header and nothing else: its delimiter by the prior order, and a header"
     try std.testing.expect(!(try sniffed("tok|tok|vane\n", .{})).dialect.header);
     // A line only spaces split stays space-delimited.
     try std.testing.expectEqual(@as(u8, ' '), (try sniffed("tok vane lurn\n", .{})).dialect.delimiter);
+}
+
+test "a header a name short of its rows is said; a trailing delimiter is not that" {
+    const short = "zq_a|zq_b\n1|x|2\n2|y|3\n3|z|4\n4|w|5\n";
+    const v = try sniffed(short, .{});
+    try std.testing.expectEqual(@as(u8, '|'), v.dialect.delimiter);
+    try std.testing.expect(v.dialect.header);
+    try std.testing.expect(v.warnings.header_short);
+    try std.testing.expectEqual(@as(usize, 2), v.header_fields);
+    try std.testing.expectEqual(@as(usize, 3), v.fields);
+    // A delimiter ending every row, nothing past it: as before, no header
+    // and nothing said.
+    const trailing = try sniffed("zq_a|zq_b\n1|x|\n2|y|\n3|z|\n4|w|\n", .{});
+    try std.testing.expect(!trailing.warnings.header_short);
+    // Pinned, the header is taken as it is.
+    try std.testing.expect(!(try sniffed(short, .{ .pins = .{ .header = .yes } })).warnings.header_short);
 }
 
 test "a sample that is not UTF-8 is warned of, unless another encoding is given" {

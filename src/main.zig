@@ -460,7 +460,7 @@ fn sniff(env: Env, cfg: cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
     var code: Exit = .ok;
     for (cfg.files) |path| {
         var o: report.Outcome = .{ .file = path, .result = .@"error" };
-        var sniffed = (try worker.openSniffed(.{ .io = env.io, .gpa = env.gpa }, &cfg, path, null, &o)) orelse {
+        var sniffed = (try worker.openSniffed(.{ .io = env.io, .gpa = env.gpa }, &cfg, path, null, &o, env.arena)) orelse {
             try err.print("thresh: {s}: {s}\n", .{ path, o.problem.? });
             code = code.worst(.unreadable);
             continue;
