@@ -142,7 +142,10 @@ compiles that is almost certainly wrong.
 
 Early, and tried on real feeds. Next: problems as codes as well as
 sentences, a versioned report format, and then thresh as a C library and
-a Python package that hands rows and rejects to pyarrow, polars or DuckDB
+a Python package, [threshio](https://pypi.org/project/threshio/), that
+checks a file before the rest of your code runs, describes it in one
+document (for people, code or an AI, with a shapes-only mode that leaves
+the data out), and hands rows and rejects to pyarrow, polars or DuckDB
 without a copy.
 
 ## License
