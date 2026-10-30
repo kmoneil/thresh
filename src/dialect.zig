@@ -734,7 +734,53 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
         }
         return .yes;
     }
+    if (same > 0 and try textHeader(gpa, sample, d, names.items, ends, fields)) return .yes;
     return .no;
+}
+
+/// Row 1 over columns of text, where types cannot tell: a header when
+/// none of its values appears again in its column, and some column
+/// repeats a few values (a code, a category) without row 1's among them.
+/// A file without a header mostly has one of those values in row 1.
+/// names and ends are row 1's values, trimmed, end to end.
+fn textHeader(gpa: Allocator, sample: []const u8, d: Dialect, names: []const u8, ends: []const usize, fields: *std.ArrayList(Field)) Allocator.Error!bool {
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scratch: std.ArrayList(u8) = .empty;
+    defer scratch.deinit(gpa);
+    const n = ends.len;
+    // Each column's distinct values, up to a few more than a category has,
+    // and how many rows fill it.
+    const distinct = try a.alloc(NameMap(void), n);
+    @memset(distinct, .empty);
+    const filled = try a.alloc(u32, n);
+    @memset(filled, 0);
+    var p: reference.Parser = .init(sample, d, .{});
+    _ = try p.next(gpa, fields) orelse return false;
+    var rows: usize = 0;
+    while (rows < 100) : (rows += 1) {
+        const rec = try p.next(gpa, fields) orelse break;
+        if (rec.end == sample.len and sample[sample.len - 1] != '\n' and sample[sample.len - 1] != '\r') break;
+        if (fields.items.len != n) continue;
+        var matches: usize = 0;
+        for (fields.items, 0..) |f, col| {
+            const v = std.mem.trim(u8, try value(gpa, &scratch, sample, d, f), " \t");
+            const start = if (col == 0) 0 else ends[col - 1];
+            if (std.ascii.eqlIgnoreCase(v, names[start..ends[col]])) matches += 1;
+        }
+        // Row 1 again whole, as joined files have it: no evidence.
+        if (matches == n) continue;
+        if (matches > 0) return false;
+        for (fields.items, 0..) |f, col| {
+            const v = std.mem.trim(u8, try value(gpa, &scratch, sample, d, f), " \t");
+            if (v.len == 0) continue;
+            filled[col] += 1;
+            if (distinct[col].count() <= 32) try distinct[col].put(a, try a.dupe(u8, v), {});
+        }
+    }
+    for (distinct, filled) |m, k| if (k >= 8 and m.count() * 4 <= k) return true;
+    return false;
 }
 
 fn value(gpa: Allocator, scratch: *std.ArrayList(u8), sample: []const u8, d: Dialect, f: Field) Allocator.Error![]const u8 {
@@ -935,6 +981,23 @@ test "a header a name short of its rows is said; a trailing delimiter is not tha
     try std.testing.expect(!trailing.warnings.header_short);
     // Pinned, the header is taken as it is.
     try std.testing.expect(!(try sniffed(short, .{ .pins = .{ .header = .yes } })).warnings.header_short);
+}
+
+test "over columns of text, a header is told by values it does not share" {
+    // Codes and a category repeat below; the names never do.
+    var buf: [2048]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try w.writeAll("zq.tok,zq.vane,zq.lurn(alt)\r\n");
+    for (0..30) |i| try w.print("[QX_{d}].ab,{{ef}},{s}\r\n", .{ i % 4, if (i % 2 == 0) "gh" else "" });
+    try std.testing.expect((try sniffed(w.buffered(), .{})).dialect.header);
+    // Without a header, row 1 is one of the category's values.
+    w = .fixed(&buf);
+    for (0..31) |i| try w.print("[QX_{d}].ab,{{ef}},{s}\r\n", .{ i % 4, if (i % 2 == 0) "gh" else "" });
+    try std.testing.expect(!(try sniffed(w.buffered(), .{})).dialect.header);
+    // Free text that never repeats is no evidence either way: no header.
+    w = .fixed(&buf);
+    for (0..31) |i| try w.print("ab{d} cd,ef{d} gh\r\n", .{ i, i * 7 });
+    try std.testing.expect(!(try sniffed(w.buffered(), .{})).dialect.header);
 }
 
 test "a sample that is not UTF-8 is warned of, unless another encoding is given" {
