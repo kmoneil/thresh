@@ -1,0 +1,31 @@
+lug_id  |picked_on |lug_kg|cultivar
+1       |2026-09-02|18.5  |Marrowdew                                            
+2       |2026-09-03|17.0  |Brookwood                                            
+3       |2026-09-04|21.3  |Quillon                                              
+4       |2026-09-05|17.0  |Brookwood                                            
+5       |2026-09-06|16.6  |Brookwood                                            
+6       |2026-09-07|21.2  |Brookwood                                            
+7       |2026-09-08|17.3  |Brookwood                                            
+8       |2026-09-09|19.3  |Marrowdew                                            
+9       |2026-09-10|17.6  |Ember Pip                                            
+10      |2026-09-11|20.2  |Brookwood                                            
+11      |2026-09-12|19.4  |Marrowdew                                            
+12      |2026-09-13|19.1  |Ember Pip                                            
+13      |2026-09-14|21.5  |Brookwood                                            
+14      |2026-09-15|16.0  |Ember Pip                                            
+15      |2026-09-16|20.0  |Marrowdew                                            
+16      |2026-09-17|20.9  |Starfall                                             
+17      |2026-09-18|16.9  |Brookwood                                            
+18      |2026-09-19|21.5  |Marrowdew                                            
+19      |2026-09-20|18.7  |Starfall                                             
+20      |2026-09-21|14.6  |Starfall                                             
+21      |2026-09-22|22.9  |Ember Pip                                            
+22      |2026-09-23|18.8  |Starfall                                             
+23      |2026-09-24|18.2  |Starfall                                             
+24      |2026-09-25|21.2  |Starfall                                             
+25      |2026-09-26|22.6  |Starfall                                             
+26      |2026-09-27|19.4  |Quillon                                              
+27      |2026-09-28|14.0  |Quillon                                              
+28      |2026-09-01|16.9  |Brookwood                                            
+29      |2026-09-02|16.6  |Ember Pip                                            
+30      |2026-09-03|20.4  |Brookwood                                            

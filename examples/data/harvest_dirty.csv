@@ -1,0 +1,31 @@
+lug_id,picked_on,orchard_row,lug_kg,cultivar,bruised,remark
+1,2026-09-02,R02,14.1,Starfall,false,frost
+2,2026-09-03,R03,18.4,Marrowdew,false,
+3,2026-09-04,R04,14.9,Brookwood,false,sunburn
+4,2026-09-05,R05,"18,5",Marrowdew,false,
+5,2026-09-06,R06,18.0,Starfall,false,
+6,2026-09-07,R07,19.6,Quillon,false,
+7,2026-09-08,R08,16.3,Brookwood,true,frost
+8,2026-09-31,R09,19.2,Brookwood,false,
+9,2026-09-10,R10,22.2,Quillon,false,
+10,2026-09-11,R11,19.9,Ember Pip,false,
+11,2026-09-12,R12,16.6,Quillon,false,
+12,2026-09-13,R01,18.7,Marrowdew,maybe,
+13,2026-09-14,R02,21.5,Marrowdew,false,
+14,2026-09-15,R03,17.5,Brookwood,false,
+15,2026-09-16,R04,18.4,Marrowdew,false,shade side
+,2026-09-17,R05,17.7,Marrowdew,false,
+17,2026-09-18,R06,15.5,Starfall,false,late pick
+18,2026-09-19,R07,14.9,Starfall,false,
+19,2026-09-20,R08,17.1,Marrowdew,false,shade side
+20,2026-09-21,R09,17.3,Starfall,false,windfall
+21,extra,2026-09-22,R10,14.5,Ember Pip,false,ladder 2
+22,2026-09-23,R11,14.1,Starfall,true,windfall
+23,2026-09-24,R12,14.0,Ember Pip,false,frost
+24,2026-09-25,R01,16.2,Marrowdew,true,sunburn
+25,2026-09-26,R02,14.3,Brookwood,true,windfall
+26,2026-09-27,R03,19.9,Starfall,false,small
+27,2026-09-28,R04,21.0,Ember Pip,false,
+28,2026-09-01,R05,14.4,Quillon,false,
+29,2026-09-02,R06,17.1,Ember Pip,true,windfall
+30,2026-09-03,R07,21.2,Marrowdew,false,

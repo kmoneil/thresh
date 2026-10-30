@@ -85,7 +85,7 @@ pub fn build(b: *std.Build) void {
     // The tests over the corpus: a module of their own, given the corpus's
     // index (an option path must be a file), so -Dcorpus=false leaves a
     // test run that needs no Python.
-    if (b.option(bool, "corpus", "Run the tests over the fixture corpus (needs python3; default true)") orelse true) {
+    if (b.option(bool, "corpus", "Run the tests over the fixture corpus and examples/ (needs python3; default true)") orelse true) {
         const corpus_options = b.addOptions();
         corpus_options.addOptionPath("corpus_index", corpus_dir.path(b, "index.txt"));
         // The module compiles the tests of every file it imports; the
@@ -109,6 +109,15 @@ pub fn build(b: *std.Build) void {
             corpus_run.addFileInput(b.path(b.fmt("test/golden/{s}.csv.report.json", .{name})));
         }
         test_step.dependOn(&corpus_run.step);
+
+        // examples/README.md run: every command in it prints what it shows
+        // (tools/examples_check.py; --update rewrites it).
+        const examples = b.addSystemCommand(&.{ "python3", "-I" });
+        examples.addFileArg(b.path("tools/examples_check.py"));
+        examples.addArtifactArg(exe);
+        examples.addFileArg(b.path("examples/README.md"));
+        examples.has_side_effects = true;
+        test_step.dependOn(&examples.step);
     }
 
     // The stages' throughput, always ReleaseFast: `zig build bench --

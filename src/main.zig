@@ -262,7 +262,7 @@ fn disagreement(a: Allocator, columns: []const infer.ColumnState, present: []con
     }
     if (missing == 0) return null;
     if (missing > 3) try names.print(a, " and {d} more", .{missing - 3});
-    return try std.fmt.allocPrint(a, "{d} of the schema's {d} columns are not in every file: {s}; validate fails a file without one", .{ missing, columns.len, names.items });
+    return try std.fmt.allocPrint(a, "{d} of the schema's {d} columns {s} not in every file: {s}; validate fails a file without one", .{ missing, columns.len, if (missing == 1) "is" else "are", names.items });
 }
 
 /// What a column's rest says: under --threshold, that it took the rest's
