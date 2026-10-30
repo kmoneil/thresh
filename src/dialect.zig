@@ -122,12 +122,12 @@ pub const Warnings = packed struct(u8) {
     utf16: bool = false,
     /// Some of its code units made no character and are U+FFFD.
     utf16_invalid: bool = false,
-    /// Row 1 is a header a field or two narrower than the rows, which hold
-    /// values past it: a name is missing, and where cannot be told.
-    header_short: bool = false,
+    /// Row 1 is a header of another width than the rows: names missing,
+    /// or names past the rows' fields, and which cannot be told.
+    header_width: bool = false,
     _: u1 = 0,
 
-    pub const names = .{ "utf8_bom", "mixed_newlines", "quote_in_unquoted", "not_utf8", "utf16", "utf16_invalid", "header_short" };
+    pub const names = .{ "utf8_bom", "mixed_newlines", "quote_in_unquoted", "not_utf8", "utf16", "utf16_invalid", "header_width" };
 
     pub fn jsonStringify(w: Warnings, s: *std.json.Stringify) std.json.Stringify.Error!void {
         try s.beginArray();
@@ -172,7 +172,7 @@ pub const Verdict = struct {
     /// Where records start: 3 past a UTF-8 BOM.
     start: usize,
     warnings: Warnings,
-    /// With warnings.header_short, the names row 1 has.
+    /// With warnings.header_width, the names row 1 has.
     header_fields: usize = 0,
     /// The best candidates with other delimiters, best first.
     runners_up: [2]?Runner = .{ null, null },
@@ -308,10 +308,10 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
         .auto => switch (try isHeader(gpa, sample, d, options, &parser_fields)) {
             .no => false,
             .yes => true,
-            .short => |n| short: {
-                warnings.header_short = true;
+            .other_width => |n| other: {
+                warnings.header_width = true;
                 header_fields = n;
-                break :short true;
+                break :other true;
             },
         },
     };
@@ -647,9 +647,9 @@ fn notUtf8(sample: []const u8, whole: bool) bool {
 /// a header, and validation says which column. Failing that, it does when
 /// every field in it is a non-empty string and some column below it holds
 /// only values of another type.
-/// What row 1 is: no header, a header, or a header narrower than the rows
-/// (its width), which they hold values past.
-const HeaderRead = union(enum) { no, yes, short: usize };
+/// What row 1 is: no header, a header, or a header of another width than
+/// the rows (its own width), whose names cannot be matched to them.
+const HeaderRead = union(enum) { no, yes, other_width: usize };
 
 fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOptions, fields: *std.ArrayList(Field)) Allocator.Error!HeaderRead {
     var p: reference.Parser = .init(sample, d, .{});
@@ -689,18 +689,22 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
     if (blanks * 2 >= first.len) return .no;
     // Per column: still typed (every non-empty value so far), and seen one;
     // over the rows as wide as row 1, and apart over those a field or two
-    // wider, on row 1's columns, with whether any holds a value past them.
-    const typed = try gpa.alloc(bool, first.len * 4);
+    // wider (with whether any holds a value past row 1) and those narrower
+    // (at least half as wide), on the columns they share.
+    const typed = try gpa.alloc(bool, first.len * 6);
     defer gpa.free(typed);
-    @memset(typed[0 .. first.len * 2], true);
-    @memset(typed[first.len * 2 ..], false);
+    @memset(typed[0 .. first.len * 3], true);
+    @memset(typed[first.len * 3 ..], false);
     const wide_typed = typed[first.len..][0..first.len];
-    const seen = typed[first.len * 2 ..][0..first.len];
-    const wide_seen = typed[first.len * 3 ..][0..first.len];
+    const narrow_typed = typed[first.len * 2 ..][0..first.len];
+    const seen = typed[first.len * 3 ..][0..first.len];
+    const wide_seen = typed[first.len * 4 ..][0..first.len];
+    const narrow_seen = typed[first.len * 5 ..][0..first.len];
     var rows: usize = 0;
     var complete: usize = 0;
     var same: usize = 0;
     var past = false;
+    var narrow: usize = 0;
     while (rows < 100) : (rows += 1) {
         const rec = try p.next(gpa, fields) orelse break;
         if (rec.end == sample.len and sample[sample.len - 1] != '\n' and sample[sample.len - 1] != '\r') break;
@@ -715,6 +719,16 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
                 }
                 wide_seen[col] = true;
                 if (!looksTyped(v)) wide_typed[col] = false;
+            }
+            continue;
+        }
+        if (fields.items.len < first.len and fields.items.len * 2 > first.len) {
+            narrow = @max(narrow, fields.items.len);
+            for (fields.items, 0..) |f, col| {
+                const v = std.mem.trim(u8, try value(gpa, &scratch, sample, d, f), " \t");
+                if (v.len == 0) continue;
+                narrow_seen[col] = true;
+                if (!looksTyped(v)) narrow_typed[col] = false;
             }
             continue;
         }
@@ -740,7 +754,14 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
     // No row as wide as row 1, and rows a field or two wider with values
     // past it: a header a name short. (A trailing delimiter on every row,
     // nothing past it, is not that.)
-    if (same == 0 and past) for (wide_typed, wide_seen, blank) |t, s, b| if (t and s and !b) return .{ .short = first.len };
+    if (same == 0 and past) for (wide_typed, wide_seen, blank) |t, s, b| if (t and s and !b) return .{ .other_width = first.len };
+    // No row as wide as row 1, and rows narrower: a header whose names past
+    // them are blank is one whose line alone ends in a delimiter; one with
+    // names there names more columns than the rows have.
+    if (same == 0 and narrow > 0) for (narrow_typed[0..narrow], narrow_seen[0..narrow], blank[0..narrow]) |t, s, b| if (t and s and !b) {
+        for (blank[narrow..]) |extra| if (!extra) return .{ .other_width = first.len };
+        return .yes;
+    };
     // Row 1 alone, nothing under it: an empty extract's header, when its
     // values (none empty or typed, as above) are distinct names.
     if (complete == 0) {
@@ -998,15 +1019,39 @@ test "a header a name short of its rows is said; a trailing delimiter is not tha
     const v = try sniffed(short, .{});
     try std.testing.expectEqual(@as(u8, '|'), v.dialect.delimiter);
     try std.testing.expect(v.dialect.header);
-    try std.testing.expect(v.warnings.header_short);
+    try std.testing.expect(v.warnings.header_width);
     try std.testing.expectEqual(@as(usize, 2), v.header_fields);
     try std.testing.expectEqual(@as(usize, 3), v.fields);
     // A delimiter ending every row, nothing past it: as before, no header
     // and nothing said.
     const trailing = try sniffed("zq_a|zq_b\n1|x|\n2|y|\n3|z|\n4|w|\n", .{});
-    try std.testing.expect(!trailing.warnings.header_short);
+    try std.testing.expect(!trailing.warnings.header_width);
     // Pinned, the header is taken as it is.
-    try std.testing.expect(!(try sniffed(short, .{ .pins = .{ .header = .yes } })).warnings.header_short);
+    try std.testing.expect(!(try sniffed(short, .{ .pins = .{ .header = .yes } })).warnings.header_width);
+}
+
+test "a header wider than its rows: a trailing delimiter is fine, names past them are said" {
+    var buf: [1024]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    // The header line alone ends in a delimiter: a header, of 3 columns.
+    try w.writeAll("zq_a|zq_b|zq_c|\n");
+    for (0..20) |i| try w.print("{d}|ab{d}|{d}\n", .{ i, i, i * 2 });
+    const t = try sniffed(w.buffered(), .{});
+    try std.testing.expect(t.dialect.header);
+    try std.testing.expect(!t.warnings.header_width);
+    // A name past the rows: which has no column cannot be told.
+    w = .fixed(&buf);
+    try w.writeAll("zq_a|zq_b|zq_c|zq_d\n");
+    for (0..20) |i| try w.print("{d}|ab{d}|{d}\n", .{ i, i, i * 2 });
+    const l = try sniffed(w.buffered(), .{});
+    try std.testing.expect(l.warnings.header_width);
+    try std.testing.expectEqual(@as(usize, 4), l.header_fields);
+    try std.testing.expectEqual(@as(usize, 3), l.fields);
+    // A blank name mid-header is no trailing delimiter: said too.
+    w = .fixed(&buf);
+    try w.writeAll("zq_a||zq_b|zq_c\n");
+    for (0..20) |i| try w.print("{d}|ab{d}|{d}\n", .{ i, i, i * 2 });
+    try std.testing.expect((try sniffed(w.buffered(), .{})).warnings.header_width);
 }
 
 test "fixed-length records: their padding is not a delimiter, nor hides a header" {

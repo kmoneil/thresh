@@ -43,6 +43,8 @@ pub fn build(b: *std.Build) void {
         r.addFileInput(b.path("test/cli/wide.csv"));
         r.addFileInput(b.path("test/cli/noheader.csv"));
         r.addFileInput(b.path("test/cli/short.csv"));
+        r.addFileInput(b.path("test/cli/trailing.csv"));
+        r.addFileInput(b.path("test/cli/long.csv"));
         if (check.stdout) |s| r.expectStdOutEqual(s);
         if (check.stderr) |s| r.expectStdErrEqual(s);
         r.expectExitCode(check.code);
@@ -340,8 +342,19 @@ const cli_checks = [_]struct {
     .{
         // A header a name short of its rows: said, not guessed at.
         .args = &.{ "infer", "test/cli/short.csv" },
-        .stderr = "error test/cli/short.csv  row 1 is a header of 3 names over rows of 4 fields: a name is missing, and which column lacks it cannot be told; fix the header, or pin --header no to read row 1 as data\n" ++
+        .stderr = "error test/cli/short.csv  row 1 is a header of 3 names over rows of 4 fields, and which names go with which columns cannot be told; fix the header, or pin --header no to read row 1 as data\n" ++
             "thresh: no file to infer a schema from\n",
+        .code = 2,
+    },
+    .{
+        // A header line alone ending in a delimiter: its 3 columns.
+        .args = &.{ "infer", "test/cli/trailing.csv" },
+        .stdout = null,
+        .stderr = "infer test/cli/trailing.csv  20 rows  3 columns\n",
+    },
+    .{
+        .args = &.{ "sniff", "test/cli/long.csv" },
+        .stderr = "thresh: test/cli/long.csv: row 1 is a header of 4 names over rows of 3 fields, and which names go with which columns cannot be told; fix the header, or pin --header no to read row 1 as data\n",
         .code = 2,
     },
     .{

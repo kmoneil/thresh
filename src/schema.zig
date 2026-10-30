@@ -64,6 +64,15 @@ pub fn headerNames(arena: Allocator, raw: []const []const u8) Allocator.Error![]
     return out;
 }
 
+/// How many of a header's names are columns, for rows width wide: all of
+/// them, less blank ones at its end past the rows, a delimiter that ends
+/// the header line alone.
+pub fn headerWidth(raw: []const []const u8, width: usize) usize {
+    var n = raw.len;
+    while (n > width and std.mem.trim(u8, raw[n - 1], " \t").len == 0) n -= 1;
+    return n;
+}
+
 /// A map keyed by column name, compared as NameContext does: a file of
 /// thousands of columns is matched in a pass, not a pass per column.
 pub fn NameMap(comptime V: type) type {
@@ -387,6 +396,14 @@ test headerNames {
     const got = try headerNames(arena.allocator(), &.{ " zv_id ", "", "ZV_ID", "column2", "zv_vol" });
     const want = [_][]const u8{ "zv_id", "column2", "column3", "column4", "zv_vol" };
     for (want, got) |w, g| try testing.expectEqualStrings(w, g);
+}
+
+test headerWidth {
+    try testing.expectEqual(@as(usize, 3), headerWidth(&.{ "a", "b", "c", " ", "" }, 3));
+    // Rows that reach them make blank names columns.
+    try testing.expectEqual(@as(usize, 5), headerWidth(&.{ "a", "b", "c", " ", "" }, 5));
+    // A blank not at the end is a column, whatever the rows.
+    try testing.expectEqual(@as(usize, 4), headerWidth(&.{ "a", "", "c", "d" }, 3));
 }
 
 fn parseAndFree(gpa: Allocator, json: bool, text: []const u8) !void {

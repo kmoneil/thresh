@@ -243,7 +243,7 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
             const fields = batch.recordFields(i);
             if (header_pending) {
                 header_pending = false;
-                try v.columns(fields, fields.len, in.data(), in.base);
+                try v.columns(fields, verdict.fields, in.data(), in.base);
                 continue;
             }
             try v.record(batch.records.items[i], fields, in.data(), in.base);
@@ -420,10 +420,10 @@ pub fn openSniffed(env: Env, cfg: *const cli.Config, path: []const u8, schema_na
         },
     };
     verdict.warnings.utf16 = in.utf16 != null;
-    // Its names cannot be matched to its columns, and guessing where the
-    // missing one goes would name the columns after it wrongly.
-    if (verdict.warnings.header_short) {
-        out.problem = try std.fmt.allocPrint(arena, "row 1 is a header of {d} names over rows of {d} fields: a name is missing, and which column lacks it cannot be told; fix the header, or pin --header no to read row 1 as data", .{ verdict.header_fields, verdict.fields });
+    // Its names cannot be matched to its columns, and guessing where one
+    // is missing or extra would name the columns after it wrongly.
+    if (verdict.warnings.header_width) {
+        out.problem = try std.fmt.allocPrint(arena, "row 1 is a header of {d} names over rows of {d} fields, and which names go with which columns cannot be told; fix the header, or pin --header no to read row 1 as data", .{ verdict.header_fields, verdict.fields });
         return null;
     }
     kept = true;
@@ -492,9 +492,10 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
             try records.values(gpa, batch.recordFields(i), in.data(), in.base, verdict.dialect, &scratch, &values);
             if (header_pending) {
                 header_pending = false;
-                try f.header(values.items, values.items.len);
-                const names = try arena.alloc([]const u8, values.items.len);
-                for (names, values.items) |*n, h| n.* = try arena.dupe(u8, std.mem.trim(u8, h, " \t"));
+                const kept = values.items[0..schema_mod.headerWidth(values.items, verdict.fields)];
+                try f.header(kept, kept.len);
+                const names = try arena.alloc([]const u8, kept.len);
+                for (names, kept) |*n, h| n.* = try arena.dupe(u8, std.mem.trim(u8, h, " \t"));
                 header_names = names;
                 continue;
             }

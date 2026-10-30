@@ -157,6 +157,8 @@ pub const Validator = struct {
     /// name, header is its fields: a column missing from it fails the file,
     /// and one it has that the schema does not is a warning (a failure
     /// under --strict). Otherwise by position, width the file's fields.
+    /// width: the rows', whatever the header is; blank names past it at the
+    /// header's end are not columns (schema.headerWidth).
     pub fn columns(v: *Validator, header: ?[]const Field, width: usize, data: []const u8, base: u64) Allocator.Error!void {
         const s = v.schema;
         const by_name = (s.match orelse if (header != null) schema_mod.Match.name else .position) == .name;
@@ -165,8 +167,8 @@ pub const Validator = struct {
         if (header) |h| {
             const names = try a.alloc([]const u8, h.len);
             for (names, h) |*n, f| n.* = try a.dupe(u8, try v.valueOf(f, data, base));
-            v.names = names;
-            v.width = h.len;
+            v.names = names[0..schema_mod.headerWidth(names, width)];
+            v.width = v.names.len;
             v.header_seen = true;
         } else v.width = width;
 
@@ -532,6 +534,23 @@ test "a header's blank and repeated names match the columnN infer gives them" {
     defer v.deinit();
     try testing.expect(v.passed());
     try testing.expectEqual(@as(u64, 2), v.rows);
+}
+
+test "blank names past the rows at a header's end are no columns" {
+    const s: Schema = .{ .columns = &.{
+        .{ .name = "zq_a", .type = .int64 },
+        .{ .name = "zq_b", .type = .string },
+    } };
+    var v: Validator = try .init(testing.allocator, &s, .rfc4180, .{});
+    defer v.deinit();
+    const input = "zq_a,zq_b,\n";
+    var p: reference.Parser = .init(input, .rfc4180, .{});
+    var fields: std.ArrayList(Field) = .empty;
+    defer fields.deinit(testing.allocator);
+    _ = try p.next(testing.allocator, &fields);
+    try v.columns(fields.items, 2, input, 0);
+    try testing.expectEqual(@as(usize, 2), v.width);
+    try testing.expectEqual(@as(usize, 0), v.structural.items.len);
 }
 
 test "the threshold lets a little dirt through" {
