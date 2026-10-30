@@ -493,6 +493,8 @@ INJECTIONS = [
     ("amount", "12,50"),
     ("ratio", "abc"),
     ("flag", "maybe"),
+    ("created", "2024-02-30"),
+    ("updated", "3 days ago"),
     ("name", "x" * 60),
     ("name", "caf\udce9"),
     ("*", "short"),

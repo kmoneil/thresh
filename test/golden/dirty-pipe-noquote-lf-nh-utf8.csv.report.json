@@ -1,6 +1,6 @@
 {
   "file": "dirty-pipe-noquote-lf-nh-utf8.csv",
-  "bytes": 4458,
+  "bytes": 4459,
   "rows": 60,
   "result": "fail",
   "dialect": {
@@ -27,8 +27,8 @@
       "name": "id",
       "type": "int64",
       "nulls": 0,
-      "mismatches": 6,
-      "conformance": 0.9,
+      "mismatches": 4,
+      "conformance": 0.93333333,
       "samples": [
         {
           "row": 12,
@@ -51,8 +51,8 @@
       "name": "code",
       "type": "enum",
       "nulls": 0,
-      "mismatches": 4,
-      "conformance": 0.93333333,
+      "mismatches": 2,
+      "conformance": 0.96666667,
       "samples": [
         {
           "row": 24,
@@ -65,8 +65,8 @@
       "name": "amount",
       "type": "decimal",
       "nulls": 0,
-      "mismatches": 6,
-      "conformance": 0.9,
+      "mismatches": 4,
+      "conformance": 0.93333333,
       "samples": [
         {
           "row": 28,
@@ -89,8 +89,8 @@
       "name": "ratio",
       "type": "float64",
       "nulls": 11,
-      "mismatches": 5,
-      "conformance": 0.91666667,
+      "mismatches": 3,
+      "conformance": 0.95,
       "samples": [
         {
           "row": 8,
@@ -108,8 +108,8 @@
       "name": "flag",
       "type": "bool",
       "nulls": 0,
-      "mismatches": 4,
-      "conformance": 0.93333333,
+      "mismatches": 2,
+      "conformance": 0.96666667,
       "samples": [
         {
           "row": 44,
@@ -122,32 +122,48 @@
       "name": "created",
       "type": "date",
       "nulls": 0,
-      "mismatches": 3,
-      "conformance": 0.95,
-      "format": "%Y-%m-%d"
+      "mismatches": 2,
+      "conformance": 0.96666667,
+      "format": "%Y-%m-%d",
+      "ambiguous": 0,
+      "samples": [
+        {
+          "row": 48,
+          "value": "2024-02-30",
+          "reason": "not in the column's format"
+        }
+      ]
     },
     {
       "name": "updated",
       "type": "timestamp",
       "nulls": 0,
-      "mismatches": 3,
-      "conformance": 0.95,
-      "format": "%Y-%m-%d %H:%M:%S"
+      "mismatches": 2,
+      "conformance": 0.96666667,
+      "format": "%Y-%m-%d %H:%M:%S",
+      "ambiguous": 0,
+      "samples": [
+        {
+          "row": 52,
+          "value": "3 days ago",
+          "reason": "not in the column's format"
+        }
+      ]
     },
     {
       "name": "name",
       "type": "string",
       "nulls": 0,
-      "mismatches": 5,
-      "conformance": 0.91666667,
+      "mismatches": 3,
+      "conformance": 0.95,
       "samples": [
         {
-          "row": 48,
+          "row": 56,
           "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "reason": "longer than max_len"
         },
         {
-          "row": 52,
+          "row": 60,
           "value": "caf�",
           "reason": "not valid UTF-8"
         }
@@ -169,7 +185,7 @@
     40
   ],
   "row_errors": {
-    "ragged": 3
+    "ragged": 1
   },
   "warnings": []
 }

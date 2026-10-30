@@ -11,6 +11,7 @@ pub const boolean = @import("types/bool.zig");
 pub const time = @import("types/time.zig");
 pub const enumeration = @import("types/enum.zig");
 pub const utf8 = @import("types/utf8.zig");
+pub const date = @import("types/date.zig");
 
 pub const Encoding = enum { utf8, latin1 };
 
@@ -29,6 +30,10 @@ pub const Reason = enum {
     not_in_enum,
     too_long,
     invalid_utf8,
+    not_date,
+    not_in_format,
+    relative_date,
+    ambiguous_date,
     // Rows: counted against every column.
     ragged,
     unterminated_quote,
@@ -49,6 +54,10 @@ pub const Reason = enum {
             .not_in_enum => "not one of the enum's values",
             .too_long => "longer than max_len",
             .invalid_utf8 => "not valid UTF-8",
+            .not_date => "not a date",
+            .not_in_format => "not in the column's format",
+            .relative_date => "a relative date, which needs a base time",
+            .ambiguous_date => "an ambiguous date (--strict)",
             .ragged => "a different number of fields",
             .unterminated_quote => "a quote never closed",
             .bad_quote => "something after a closing quote",
@@ -80,13 +89,24 @@ pub fn check(col: *const schema.Column, v: []const u8, encoding: Encoding) ?Reas
             if (encoding == .utf8 and col.utf8 == .@"error" and !utf8.valid(v)) break :str .invalid_utf8;
             break :str null;
         },
-        // Milestone 6 reads these with dateparsa; until then any value is one.
-        .date, .timestamp => null,
+        // A column's dates need its date.Column, which the validator keeps.
+        .date, .timestamp => unreachable,
         .binary => null,
     };
 }
 
+/// The Reason for a date column's problem.
+pub fn dateReason(p: date.Problem) Reason {
+    return switch (p) {
+        .not_date => .not_date,
+        .not_in_format => .not_in_format,
+        .relative => .relative_date,
+        .ambiguous => .ambiguous_date,
+    };
+}
+
 test {
+    _ = date;
     _ = int;
     _ = float;
     _ = decimal;

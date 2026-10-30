@@ -1,6 +1,6 @@
 {
   "file": "dirty-comma-dq-lf-h-utf8.csv",
-  "bytes": 4560,
+  "bytes": 4551,
   "rows": 60,
   "result": "fail",
   "dialect": {
@@ -9,16 +9,16 @@
     "escape": "doubled",
     "newline": "lf",
     "header": true,
-    "confidence": "medium",
-    "score": 3.06,
+    "confidence": "high",
+    "score": 3.20,
     "runners_up": [
       {
         "delimiter": ":",
-        "score": 1.34
+        "score": 1.30
       },
       {
-        "delimiter": "-",
-        "score": 1.23
+        "delimiter": " ",
+        "score": 1.30
       }
     ]
   },
@@ -31,17 +31,17 @@
       "conformance": 0.9,
       "samples": [
         {
-          "row": 37,
+          "row": 53,
           "value": "12a",
           "reason": "not an int64"
         },
         {
-          "row": 41,
+          "row": 57,
           "value": "",
           "reason": "null in a non-nullable column"
         },
         {
-          "row": 45,
+          "row": 61,
           "value": "99999999999999999999",
           "reason": "out of int64 range"
         }
@@ -51,40 +51,28 @@
       "name": "code",
       "type": "enum",
       "nulls": 0,
-      "mismatches": 4,
-      "conformance": 0.93333333,
-      "samples": [
-        {
-          "row": 49,
-          "value": "OPEN",
-          "reason": "not one of the enum's values"
-        }
-      ]
+      "mismatches": 3,
+      "conformance": 0.95
     },
     {
       "name": "amount",
       "type": "decimal",
       "nulls": 0,
-      "mismatches": 7,
-      "conformance": 0.88333333,
+      "mismatches": 6,
+      "conformance": 0.9,
       "samples": [
         {
           "row": 5,
-          "value": "12,50",
-          "reason": "not a decimal"
-        },
-        {
-          "row": 53,
           "value": "1234567890123.45",
           "reason": "too many digits for the decimal's precision"
         },
         {
-          "row": 57,
+          "row": 9,
           "value": "1.234",
           "reason": "too many digits after the point for the decimal's scale"
         },
         {
-          "row": 61,
+          "row": 13,
           "value": "12,50",
           "reason": "not a decimal"
         }
@@ -93,12 +81,12 @@
     {
       "name": "ratio",
       "type": "float64",
-      "nulls": 7,
+      "nulls": 6,
       "mismatches": 4,
       "conformance": 0.93333333,
       "samples": [
         {
-          "row": 9,
+          "row": 17,
           "value": "abc",
           "reason": "not a float64"
         }
@@ -112,7 +100,7 @@
       "conformance": 0.93333333,
       "samples": [
         {
-          "row": 13,
+          "row": 21,
           "value": "maybe",
           "reason": "not a bool"
         }
@@ -122,17 +110,33 @@
       "name": "created",
       "type": "date",
       "nulls": 0,
-      "mismatches": 3,
-      "conformance": 0.95,
-      "format": "%Y-%m-%d"
+      "mismatches": 4,
+      "conformance": 0.93333333,
+      "format": "%Y-%m-%d",
+      "ambiguous": 0,
+      "samples": [
+        {
+          "row": 25,
+          "value": "2024-02-30",
+          "reason": "not in the column's format"
+        }
+      ]
     },
     {
       "name": "updated",
       "type": "timestamp",
       "nulls": 0,
-      "mismatches": 3,
-      "conformance": 0.95,
-      "format": "%Y-%m-%d %H:%M:%S"
+      "mismatches": 4,
+      "conformance": 0.93333333,
+      "format": "%Y-%m-%d %H:%M:%S",
+      "ambiguous": 0,
+      "samples": [
+        {
+          "row": 29,
+          "value": "3 days ago",
+          "reason": "not in the column's format"
+        }
+      ]
     },
     {
       "name": "name",
@@ -142,12 +146,12 @@
       "conformance": 0.91666667,
       "samples": [
         {
-          "row": 17,
+          "row": 33,
           "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "reason": "longer than max_len"
         },
         {
-          "row": 21,
+          "row": 37,
           "value": "caf�",
           "reason": "not valid UTF-8"
         }

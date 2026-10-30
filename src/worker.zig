@@ -100,6 +100,7 @@ pub fn validateFile(env: Env, plan: Plan, path: []const u8, arena: Allocator) !r
         .encoding = encodingOf(cfg),
         .threshold = plan.threshold,
         .strict = cfg.strict,
+        .day_first = cfg.day_first,
         .ragged = switch (cfg.ragged) {
             .reject => .reject,
             .pad => .pad,

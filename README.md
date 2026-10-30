@@ -13,9 +13,9 @@ thresh run      <file>... --schema s.json --to arrow --out dir/
 ```
 
 Status: early. In: the parser (a SIMD structural index checked against a
-scalar reference parser), the sniffer, and validation of every type but
-dates (which milestone 6 reads with dateparsa): `thresh sniff` and `thresh
-validate`, with per-file JSON reports, summary.json and reject files.
+scalar reference parser), the sniffer, and validation of every type, dates
+and timestamps through dateparsa: `thresh sniff` and `thresh validate`,
+with per-file JSON reports, summary.json and reject files.
 `infer`, `convert` and `run` parse their options and stop. `thresh --help`
 lists every option.
 

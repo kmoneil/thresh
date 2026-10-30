@@ -64,7 +64,8 @@
       "nulls": 0,
       "mismatches": 0,
       "conformance": 1.0,
-      "format": "%Y-%m-%d"
+      "format": "%Y-%m-%d",
+      "ambiguous": 0
     },
     {
       "name": "updated",
@@ -72,7 +73,8 @@
       "nulls": 0,
       "mismatches": 0,
       "conformance": 1.0,
-      "format": "%Y-%m-%d %H:%M:%S"
+      "format": "%Y-%m-%d %H:%M:%S",
+      "ambiguous": 0
     },
     {
       "name": "name",

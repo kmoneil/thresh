@@ -80,7 +80,7 @@ pub fn writeFileReport(w: *Io.Writer, o: Outcome, d: Details) Stringify.Error!vo
         if (v.foreign_newlines > 0) warnings.mixed_newlines = true;
         try s.objectField("columns");
         try s.beginArray();
-        for (v.schema.columns, v.stats) |c, st| {
+        for (v.schema.columns, v.stats, 0..) |c, st, i| {
             try s.beginObject();
             try s.objectField("name");
             try s.write(c.name);
@@ -95,6 +95,20 @@ pub fn writeFileReport(w: *Io.Writer, o: Outcome, d: Details) Stringify.Error!vo
             if (c.format) |f| {
                 try s.objectField("format");
                 try s.write(f);
+            }
+            if (v.dates[i]) |dc| {
+                try s.objectField("ambiguous");
+                try s.write(dc.ambiguous);
+                if (dc.ambiguous > 0) {
+                    // The orders every value whose order is a guess still fits.
+                    const fits = dc.fits();
+                    try s.objectField("fits");
+                    try s.beginArray();
+                    inline for (.{ "month_first", "day_first", "year_first" }) |order| {
+                        if (@field(fits, order)) try s.write(order);
+                    }
+                    try s.endArray();
+                }
             }
             if (st.samples.items.len > 0) {
                 try s.objectField("samples");

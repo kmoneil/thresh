@@ -78,6 +78,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/corpus_test.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{.{ .name = "dateparsa", .module = dateparsa.module("dateparsa") }},
         });
         corpus_mod.addOptions("build_options", corpus_options);
         const corpus_run = b.addRunArtifact(b.addTest(.{ .root_module = corpus_mod }));

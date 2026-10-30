@@ -32,6 +32,8 @@ pub const Options = struct {
     threshold: f64 = 1.0,
     strict: bool = false,
     ragged: Ragged = .reject,
+    /// --day-first: every date column reads ambiguous dates day first.
+    day_first: bool = false,
 };
 
 /// The most mismatch samples a column keeps, and rejected rows the report
@@ -63,6 +65,8 @@ pub const Validator = struct {
     /// The header's names, for the reject file.
     names: []const []const u8,
     stats: []ColumnStats,
+    /// Each date or timestamp column's reader; null for other types.
+    dates: []?types.date.Column,
     rows: u64 = 0,
     rejected: u64 = 0,
     rejected_sample: std.ArrayList(u64) = .empty,
@@ -86,6 +90,11 @@ pub const Validator = struct {
         @memset(stats, .{});
         const mapping = try gpa.alloc(?u32, s.columns.len);
         for (mapping, 0..) |*m, i| m.* = @intCast(i);
+        const dates = try gpa.alloc(?types.date.Column, s.columns.len);
+        for (dates, s.columns) |*dc, c| dc.* = switch (c.type) {
+            .date, .timestamp => .init(c.format, c.day_first or options.day_first, options.strict),
+            else => null,
+        };
         var names: std.ArrayList([]const u8) = .empty;
         defer names.deinit(gpa);
         var v: Validator = .{
@@ -98,6 +107,7 @@ pub const Validator = struct {
             .width = s.columns.len,
             .names = &.{},
             .stats = stats,
+            .dates = dates,
         };
         const a = v.arena.allocator();
         const ns = try a.alloc([]const u8, s.columns.len);
@@ -110,6 +120,7 @@ pub const Validator = struct {
         for (v.stats) |*s| s.samples.deinit(v.gpa);
         v.gpa.free(v.stats);
         v.gpa.free(v.mapping);
+        v.gpa.free(v.dates);
         v.rejected_sample.deinit(v.gpa);
         v.structural.deinit(v.gpa);
         v.scratch.deinit(v.gpa);
@@ -196,7 +207,7 @@ pub const Validator = struct {
             try v.errors.print(v.gpa, "*:{s}", .{r.text()});
             return v.rejectRow(rec, fields, data, base);
         }
-        for (v.schema.columns, v.mapping, v.stats) |*c, m, *st| {
+        for (v.schema.columns, v.mapping, v.stats, v.dates) |*c, m, *st, *dc| {
             const i = m orelse continue;
             const value = if (i < fields.len) try v.valueOf(fields[i], data, base) else "";
             const r: Reason = if (v.isNull(c, value)) r: {
@@ -205,6 +216,9 @@ pub const Validator = struct {
                     continue;
                 }
                 break :r .null_value;
+            } else if (dc.*) |*d| switch (d.read(value)) {
+                .ok => continue,
+                .bad => |p| types.dateReason(p),
             } else types.check(c, value, v.options.encoding) orelse continue;
             st.mismatches += 1;
             if (st.samples.items.len < max_samples) try st.samples.append(v.gpa, .{
@@ -374,4 +388,41 @@ test "the threshold lets a little dirt through" {
     try testing.expect(v.passed());
     v.options.threshold = 0.8;
     try testing.expect(!v.passed());
+}
+
+test "a format from formatOf sends the column down the fast path" {
+    const values = [_][]const u8{ "2024-03-15 10:20:30", "2023-01-02 03:04:05", "2025-12-31 23:59:59" };
+    var buf: [64]u8 = undefined;
+    const format = types.date.formatOf(&values, false, &buf).?;
+    try testing.expectEqualStrings("%Y-%m-%d %H:%M:%S", format);
+    const s: Schema = .{ .columns = &.{
+        .{ .name = "id", .type = .int64 },
+        .{ .name = "at", .type = .timestamp, .format = format },
+    } };
+    var rejects: Io.Writer.Allocating = .init(testing.allocator);
+    defer rejects.deinit();
+    var v = try run("id,at\n1,2024-03-15 10:20:30\n2,2023-01-02 03:04:05\n3,2025-12-31 23:59:59\n4,yesterday\n", &s, .{}, &rejects);
+    defer v.deinit();
+    try testing.expectEqual(@as(u64, 1), v.rejected);
+    // The first value showed the layout; the other two were read with it.
+    try testing.expectEqual(@as(u64, 2), v.dates[1].?.fast);
+    try testing.expectEqual(Reason.not_in_format, v.stats[1].samples.items[0].reason);
+}
+
+test "dates without a format: ambiguity counted, refused under --strict" {
+    const s: Schema = .{ .columns = &.{.{ .name = "d", .type = .date }} };
+    var rejects: Io.Writer.Allocating = .init(testing.allocator);
+    defer rejects.deinit();
+    const input = "d\n03/04/2024\n05/06/2024\n2024-07-08\n3 days ago\n";
+    var v = try run(input, &s, .{}, &rejects);
+    defer v.deinit();
+    try testing.expectEqual(@as(u64, 2), v.dates[0].?.ambiguous);
+    try testing.expectEqual(@as(u64, 1), v.rejected);
+    try testing.expectEqual(Reason.relative_date, v.stats[0].samples.items[0].reason);
+    var strict = try run(input, &s, .{ .strict = true }, &rejects);
+    defer strict.deinit();
+    try testing.expectEqual(@as(u64, 3), strict.rejected);
+    var day_first = try run("d\n13/04/2024\n05/06/2024\n", &s, .{ .day_first = true }, &rejects);
+    defer day_first.deinit();
+    try testing.expectEqual(@as(u64, 0), day_first.rejected);
 }
