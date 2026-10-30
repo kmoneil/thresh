@@ -1,12 +1,14 @@
 """Runs every command in a Markdown walkthrough and checks what it prints.
 
-    python3 -I tools/examples_check.py THRESH examples/README.md [--update]
+    python3 -I tools/examples_check.py THRESH PAGE.md [--dir DIR] [--update]
 
 A ```console block holds commands, each a line starting "$ ", and after
 each what it prints, stdout and stderr together as a terminal shows them,
 then "[exit N]" when its status is not 0. The commands run in order, in
-a copy of the walkthrough's directory, with THRESH's directory first on
-PATH, so a schema one command writes the next can read. Numbers that
+a copy of the page's directory (or of --dir, for a page that shows
+another directory's files, as the top README shows examples/), with
+THRESH's directory first on PATH, so a schema one command writes the
+next can read. Numbers that
 change from run to run (MB/s, timing_ms, throughput_mb_s) are not
 compared. With --update the walkthrough is rewritten with what the
 commands print, for when thresh's output changes on purpose.
@@ -59,6 +61,11 @@ def normal(line):
 def main():
     args = [a for a in sys.argv[1:] if a != "--update"]
     update = "--update" in sys.argv[1:]
+    run_dir = None
+    if "--dir" in args:
+        i = args.index("--dir")
+        run_dir = os.path.abspath(args[i + 1])
+        del args[i : i + 2]
     if len(args) != 2:
         sys.exit(__doc__)
     thresh, doc = os.path.abspath(args[0]), os.path.abspath(args[1])
@@ -66,7 +73,7 @@ def main():
     work = tempfile.mkdtemp(prefix="thresh-examples-")
     try:
         here = os.path.join(work, "w")
-        shutil.copytree(os.path.dirname(doc), here)
+        shutil.copytree(run_dir or os.path.dirname(doc), here)
         env = dict(os.environ, PATH=os.path.dirname(thresh) + os.pathsep + os.environ.get("PATH", ""))
         failed, rewritten, last = 0, [], 0
         for start, end in blocks(lines):

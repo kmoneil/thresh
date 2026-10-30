@@ -118,6 +118,15 @@ pub fn build(b: *std.Build) void {
         examples.addFileArg(b.path("examples/README.md"));
         examples.has_side_effects = true;
         test_step.dependOn(&examples.step);
+        // So is the top README's showcase, run in a copy of examples/.
+        const readme = b.addSystemCommand(&.{ "python3", "-I" });
+        readme.addFileArg(b.path("tools/examples_check.py"));
+        readme.addArtifactArg(exe);
+        readme.addFileArg(b.path("README.md"));
+        readme.addArg("--dir");
+        readme.addDirectoryArg(b.path("examples"));
+        readme.has_side_effects = true;
+        test_step.dependOn(&readme.step);
     }
 
     // The stages' throughput, always ReleaseFast: `zig build bench --
