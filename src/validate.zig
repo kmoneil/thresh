@@ -212,34 +212,8 @@ pub const Validator = struct {
         v.stray_quotes += rec.stray_quotes;
         if (rec.foreign_newline) v.foreign_newlines += 1;
         v.errors.clearRetainingCapacity();
-        var row_error: ?Reason = if (rec.problem) |p| switch (p) {
-            .unterminated_quote => .unterminated_quote,
-            .bad_quote => .bad_quote,
-            .field_too_long => .field_too_long,
-        } else null;
-        // The last record, with no line break after it, short of fields or
-        // inside a quote: the file stops mid-record, most likely cut off in
-        // a copy or a transfer. Its row is rejected (or padded) as any
-        // other, and the file fails, since it is not all there.
-        if (rec.end > base and !endsLine(data[@intCast(rec.end - 1 - base)])) {
-            if (rec.problem == .unterminated_quote) {
-                try v.fail("the file ends mid-record, inside a quoted field and with no line break: was it cut off?", .{});
-            } else if (rec.problem == null and fields.len < v.width) {
-                try v.fail("the file ends mid-record: its last line has no line break and {d} of {d} fields; was it cut off?", .{ fields.len, v.width });
-            }
-        }
-        if (row_error == null and fields.len != v.width) {
-            const ok = switch (v.options.ragged) {
-                .reject => false,
-                .pad => fields.len < v.width,
-                .truncate => fields.len > v.width,
-            };
-            if (!ok) {
-                row_error = .ragged;
-                if (v.options.strict) v.strict_failure = true;
-            }
-        }
-        if (row_error) |r| {
+        if (rec.end > base and !endsLine(data[@intCast(rec.end - 1 - base)])) try v.cutOff(rec, fields.len);
+        if (v.rowError(rec, fields.len)) |r| {
             v.row_errors.getPtr(r).* += 1;
             for (v.stats) |*s| s.mismatches += 1;
             try v.errors.print(v.gpa, "*:{s}", .{r.text()});
@@ -254,36 +228,79 @@ pub const Validator = struct {
             const i = m orelse continue;
             const value = if (i < v.values.items.len) v.values.items[i] else "";
             raw.* = value;
-            const r: Reason = if (v.isNull(c, value)) r: {
-                if (c.nullable) {
-                    st.nulls += 1;
-                    continue;
-                }
-                break :r .null_value;
-            } else if (dc.*) |*d| switch (d.read(value)) {
-                .ok => |t| {
-                    cell.* = if (c.type == .date) .{ .date = types.date.days(t) } else .{ .timestamp = types.date.micros(t) };
-                    continue;
-                },
-                .bad => |p| types.dateReason(p),
-            } else switch (types.read(c, value, v.options.encoding)) {
-                .ok => |x| {
-                    cell.* = x;
-                    continue;
-                },
-                .bad => |r| r,
-            };
-            st.mismatches += 1;
-            if (st.samples.items.len < max_samples) try st.samples.append(v.gpa, .{
-                .row = rec.line,
-                .value = try v.arena.allocator().dupe(u8, value[0..@min(value.len, max_sample_len)]),
-                .reason = r,
-            });
-            if (v.errors.items.len > 0) try v.errors.append(v.gpa, ';');
-            try v.errors.print(v.gpa, "{s}:{s}", .{ c.name, r.text() });
+            const r = v.cellReason(c, dc, st, value, cell) orelse continue;
+            try v.mismatch(c, st, rec.line, value, r);
         }
         if (v.errors.items.len > 0) return v.rejectRow(rec, fields, data, base);
         if (v.batch) |b| try b.append(v.raw, v.cells);
+    }
+
+    /// The last record, with no line break after it, short of fields or
+    /// inside a quote: the file stops mid-record, most likely cut off in a
+    /// copy or a transfer. Its row is rejected (or padded) as any other,
+    /// and the file fails, since it is not all there.
+    fn cutOff(v: *Validator, rec: Record, width: usize) Allocator.Error!void {
+        if (rec.problem == .unterminated_quote) {
+            try v.fail("the file ends mid-record, inside a quoted field and with no line break: was it cut off?", .{});
+        } else if (rec.problem == null and width < v.width) {
+            try v.fail("the file ends mid-record: its last line has no line break and {d} of {d} fields; was it cut off?", .{ width, v.width });
+        }
+    }
+
+    /// Why the whole record is rejected, or null: a problem the parser
+    /// found, or a width the ragged policy does not take.
+    fn rowError(v: *Validator, rec: Record, width: usize) ?Reason {
+        if (rec.problem) |p| return switch (p) {
+            .unterminated_quote => .unterminated_quote,
+            .bad_quote => .bad_quote,
+            .field_too_long => .field_too_long,
+        };
+        if (width == v.width) return null;
+        const ok = switch (v.options.ragged) {
+            .reject => false,
+            .pad => width < v.width,
+            .truncate => width > v.width,
+        };
+        if (ok) return null;
+        if (v.options.strict) v.strict_failure = true;
+        return .ragged;
+    }
+
+    /// Why value does not fit column c, or null when it does: a null c
+    /// allows is counted, and anything else read into cell.
+    fn cellReason(v: *Validator, c: *const Column, dc: *?types.date.Column, st: *ColumnStats, value: []const u8, cell: *?types.Value) ?Reason {
+        if (v.isNull(c, value)) {
+            if (!c.nullable) return .null_value;
+            st.nulls += 1;
+            return null;
+        }
+        if (dc.*) |*d| switch (d.read(value)) {
+            .ok => |t| {
+                cell.* = if (c.type == .date) .{ .date = types.date.days(t) } else .{ .timestamp = types.date.micros(t) };
+                return null;
+            },
+            .bad => |p| return types.dateReason(p),
+        };
+        switch (types.read(c, value, v.options.encoding)) {
+            .ok => |x| {
+                cell.* = x;
+                return null;
+            },
+            .bad => |r| return r,
+        }
+    }
+
+    /// A cell that does not fit: counted against its column, kept as a
+    /// sample while there is room, and named in the row's _errors.
+    fn mismatch(v: *Validator, c: *const Column, st: *ColumnStats, line: u64, value: []const u8, r: Reason) Allocator.Error!void {
+        st.mismatches += 1;
+        if (st.samples.items.len < max_samples) try st.samples.append(v.gpa, .{
+            .row = line,
+            .value = try v.arena.allocator().dupe(u8, value[0..@min(value.len, max_sample_len)]),
+            .reason = r,
+        });
+        if (v.errors.items.len > 0) try v.errors.append(v.gpa, ';');
+        try v.errors.print(v.gpa, "{s}:{s}", .{ c.name, r.text() });
     }
 
     fn isNull(v: *const Validator, c: *const Column, value: []const u8) bool {
