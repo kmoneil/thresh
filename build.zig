@@ -39,6 +39,10 @@ pub fn build(b: *std.Build) void {
     // `zig build run -- sniff a.csv` runs it.
     const exe = b.addExecutable(.{ .name = "thresh", .root_module = mod });
     b.installArtifact(exe);
+    // Beside the binary, so an archive of zig-out carries what Apache-2.0
+    // asks: the license, and the notices of what thresh compiles in.
+    b.installFile("LICENSE", "share/doc/thresh/LICENSE");
+    b.installFile("NOTICE", "share/doc/thresh/NOTICE");
     const run = b.addRunArtifact(exe);
     run.addPassthruArgs();
     b.step("run", "Run thresh (-- sniff FILE)").dependOn(&run.step);
@@ -127,6 +131,12 @@ pub fn build(b: *std.Build) void {
         readme.addDirectoryArg(b.path("examples"));
         readme.has_side_effects = true;
         test_step.dependOn(&readme.step);
+        // NOTICE carries dateparsa's NOTICE as the pinned version ships it.
+        const notice = b.addSystemCommand(&.{ "python3", "-I" });
+        notice.addFileArg(b.path("tools/notice_check.py"));
+        notice.addFileArg(b.path("NOTICE"));
+        notice.addFileArg(dateparsa.path("NOTICE"));
+        test_step.dependOn(&notice.step);
     }
 
     // The stages' throughput, always ReleaseFast: `zig build bench --
