@@ -315,6 +315,9 @@ pub fn parse(gpa: std.mem.Allocator, args: []const []const u8, diag: *Diagnostic
             return diag.fail("--delimiter and --quote are the same byte", .{});
         if (cfg.pins.comment == d) return diag.fail("--delimiter and --comment are the same byte", .{});
     }
+    // A backslash escapes only inside quotes, so with none it means nothing.
+    if (cfg.pins.quote) |q| if (q == .none and cfg.pins.escape == .backslash)
+        return diag.fail("--quote none and --escape backslash together", .{});
     if (cfg.to == .parquet) return diag.fail("--to parquet: not in v1; write arrow and convert it", .{});
     switch (cfg.command) {
         .sniff, .infer => {},
@@ -424,12 +427,12 @@ test "a command and files with no options" {
 
 test "dialect pins, in both spellings" {
     const cfg = try expectConfig(&.{
-        "convert",        "weird.dat", "--delimiter", "|",    "--quote=none", "--escape", "backslash",
-        "--newline=crlf", "--header",  "yes",         "--to", "csv",          "--out",    "clean/",
+        "convert",        "weird.dat", "--delimiter", "|",    "--quote=~", "--escape", "backslash",
+        "--newline=crlf", "--header",  "yes",         "--to", "csv",       "--out",    "clean/",
     });
     defer testing.allocator.free(cfg.files);
     try testing.expectEqual(@as(?u8, '|'), cfg.pins.delimiter);
-    try testing.expectEqual(Pins.Quote.none, cfg.pins.quote.?);
+    try testing.expectEqual(Pins.Quote{ .byte = '~' }, cfg.pins.quote.?);
     try testing.expectEqual(Dialect.Escape.backslash, cfg.pins.escape.?);
     try testing.expectEqual(Dialect.Newline.crlf, cfg.pins.newline.?);
     try testing.expect(cfg.pins.complete());
@@ -489,6 +492,7 @@ test "usage errors" {
     try expectUsage(&.{ "convert", "a", "--to", "csv" }, "convert needs --out");
     try expectUsage(&.{ "convert", "a", "--to", "parquet", "--out", "o" }, "--to parquet: not in v1; write arrow and convert it");
     try expectUsage(&.{ "sniff", "a", "--delimiter", "'", "--quote", "'" }, "--delimiter and --quote are the same byte");
+    try expectUsage(&.{ "sniff", "a", "--quote", "none", "--escape", "backslash" }, "--quote none and --escape backslash together");
     try expectUsage(&.{ "sniff", "a", "--pad", "--truncate" }, "--pad and --truncate together");
     try expectUsage(&.{ "sniff", "a", "--threshold", "1.5" }, "--threshold 1.5: a fraction from 0 to 1");
     try expectUsage(&.{ "infer", "a", "--out-newline", "crlf" }, "--out-newline is not an option of infer");

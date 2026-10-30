@@ -211,6 +211,9 @@ pub const SniffError = error{
     Utf16,
     /// A NUL byte in the first 8 KiB, and no UTF-16 BOM to explain it.
     Binary,
+    /// The pins leave no dialect to score: a backslash escape with no
+    /// quote, or a quote that is the delimiter.
+    Unscorable,
 } || Allocator.Error;
 
 /// The delimiters tried first, in the order a tie goes.
@@ -238,6 +241,11 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
     defer counts.deinit(gpa);
     const pins = options.pins;
     const delimiters = candidateDelimiters(data[start..@min(data.len, options.sample_bytes)], pins);
+    const pinned_quote = [1]?u8{if (pins.quote) |pq| switch (pq) {
+        .none => null,
+        .byte => |b| b,
+    } else null};
+    const quotes: []const ?u8 = if (pins.quote != null) &pinned_quote else &prior_quotes;
 
     var window = @max(options.sample_bytes, 1);
     var best: Scored = undefined;
@@ -253,11 +261,7 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
             var best_clean: ?Scored = null;
             // The best reading under each quote character, '"' and '\''.
             var best_by_quote: [2]?Scored = .{ null, null };
-            for (prior_quotes) |quote| {
-                if (pins.quote) |pq| switch (pq) {
-                    .none => if (quote != null) continue,
-                    .byte => |b| if (quote != b) continue,
-                };
+            for (quotes) |quote| {
                 if (quote == delim) continue;
                 for ([_]Dialect.Escape{ .doubled, .backslash }) |escape| {
                     if (pins.escape) |pe| if (pe != escape) continue;
@@ -308,7 +312,7 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
                 any = true;
             } else pushRunner(&runners, .{ .delimiter = delim, .score = c.score });
         }
-        std.debug.assert(any);
+        if (!any) return error.Unscorable;
         // The spec grows the window only while the winner has seen too few
         // records; this also grows it while the winner is not a clear one,
         // since a record bigger than the window loses its dialect the count
@@ -734,6 +738,16 @@ test "sniff keeps a pinned dimension and settles the rest" {
     try std.testing.expectEqual(@as(?u8, null), v.dialect.quote);
     try std.testing.expectEqual(Dialect.Newline.crlf, v.dialect.newline);
     try std.testing.expect(!v.dialect.header);
+}
+
+test "sniff scores a pinned quote it would not guess, and refuses pins that leave nothing" {
+    const data = "id,name\n1,~pear, green~\n2,apple\n";
+    const v = try sniffed(data, .{ .pins = .{ .quote = .{ .byte = '~' } } });
+    try std.testing.expectEqual(@as(u8, ','), v.dialect.delimiter);
+    try std.testing.expectEqual(@as(?u8, '~'), v.dialect.quote);
+    try std.testing.expectEqual(@as(usize, 2), v.fields);
+    try std.testing.expectError(error.Unscorable, sniffed(data, .{ .pins = .{ .quote = .none, .escape = .backslash } }));
+    try std.testing.expectError(error.Unscorable, sniffed(data, .{ .pins = .{ .delimiter = '~', .quote = .{ .byte = '~' } } }));
 }
 
 test "sniff picks backslash escaping when the escaped quotes need it" {

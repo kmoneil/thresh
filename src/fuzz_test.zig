@@ -114,18 +114,51 @@ fn scannerOne(_: void, smith: *Smith) anyerror!void {
     }
 }
 
+/// The pins the sniffer is fuzzed under, chosen by a byte: a quote it
+/// guesses and one it never does, an escape, a delimiter and a header.
+fn pinsOf(bits: u8) dialect.Pins {
+    const quotes = [_]?dialect.Pins.Quote{ null, .none, .{ .byte = '"' }, .{ .byte = '~' } };
+    return .{
+        .quote = quotes[bits & 3],
+        .escape = ([_]?Dialect.Escape{ null, .doubled, .backslash, null })[(bits >> 2) & 3],
+        .delimiter = ([_]?u8{ null, ',', '~', '|' })[(bits >> 4) & 3],
+        .header = ([_]dialect.HeaderMode{ .auto, .auto, .yes, .no })[bits >> 6],
+    };
+}
+
+/// Pins that leave the sniffer no dialect to score.
+fn contradicts(p: dialect.Pins) bool {
+    const q = p.quote orelse return false;
+    return switch (q) {
+        .none => p.escape == .backslash,
+        .byte => |b| p.delimiter == b,
+    };
+}
+
 fn sniffOne(_: void, smith: *Smith) anyerror!void {
     const gpa = testing.allocator;
     var buf: [max_input]u8 = undefined;
     const input = buf[0..smith.slice(&buf)];
     const knobs = smith.value(u8);
+    const pins = pinsOf(smith.value(u8));
     const v = dialect.sniff(gpa, input, knobs & 1 == 0, .{
+        .pins = pins,
         .sample_bytes = ([_]usize{ 64 << 10, 16, 100, 1024 })[(knobs >> 1) & 3],
         .max_sample = 4096,
     }) catch |e| switch (e) {
         error.Utf16, error.Binary => return,
+        error.Unscorable => return testing.expect(contradicts(pins)),
         error.OutOfMemory => return e,
     };
+    try testing.expect(!contradicts(pins));
+    // A pinned dimension is the verdict's.
+    if (pins.quote) |q| try testing.expectEqual(@as(?u8, switch (q) {
+        .none => null,
+        .byte => |b| b,
+    }), v.dialect.quote);
+    if (pins.escape) |e| try testing.expectEqual(e, v.dialect.escape);
+    if (pins.delimiter) |d| try testing.expectEqual(d, v.dialect.delimiter);
+    if (pins.header != .auto) try testing.expectEqual(pins.header == .yes, v.dialect.header);
     try testing.expect(v.start <= input.len);
     // Whatever it settles, the scanner reads.
     var got = try parseScanner(gpa, input, v.dialect, .{ .reference = .{ .start = v.start } }, 0);

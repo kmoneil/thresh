@@ -204,6 +204,18 @@ const cli_checks = [_]struct {
         .stdout = "test/cli/orders.csv: delimiter=; quote=\" escape=doubled newline=lf header=no confidence=high warnings=quote_in_unquoted\n",
     },
     .{
+        // A pinned quote the sniffer would not guess is the one scored.
+        .args = &.{ "sniff", "test/cli/orders.csv", "--quote", "~" },
+        .stdout = "test/cli/orders.csv: delimiter=, quote=~ escape=doubled newline=lf header=yes confidence=low\n",
+        .stderr = "thresh: test/cli/orders.csv: the dialect is not settled (confidence low, score 0.92); pin it with --delimiter, --quote, --escape, --newline and --header\n",
+        .code = 2,
+    },
+    .{
+        .args = &.{ "sniff", "test/cli/orders.csv", "--quote", "none", "--escape", "backslash" },
+        .stderr = "thresh: --quote none and --escape backslash together\n(thresh --help lists the commands and options)\n",
+        .code = 3,
+    },
+    .{
         .args = &.{ "sniff", "test/cli/missing.csv", "test/cli/orders.csv" },
         .stdout = "test/cli/orders.csv: delimiter=, quote=\" escape=doubled newline=lf header=yes confidence=high\n",
         .stderr = "thresh: test/cli/missing.csv: no such file\n",
