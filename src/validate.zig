@@ -171,7 +171,8 @@ pub const Validator = struct {
         } else v.width = width;
 
         if (by_name) {
-            const h = v.names;
+            // Named as infer names them, so its schema matches its files.
+            const h = try schema_mod.headerNames(a, v.names);
             const used = try v.gpa.alloc(bool, h.len);
             defer v.gpa.free(used);
             @memset(used, false);
@@ -516,6 +517,21 @@ test "structure: a missing column fails the file, an extra one only under --stri
     var strict = try run("id,amount,status,note\n1,2,open,x\n", &orders, .{ .strict = true }, &rejects);
     defer strict.deinit();
     try testing.expect(!strict.passed());
+}
+
+test "a header's blank and repeated names match the columnN infer gives them" {
+    const s: Schema = .{ .columns = &.{
+        .{ .name = "zv_id", .type = .int64 },
+        .{ .name = "column2", .type = .string },
+        .{ .name = "zv_vol", .type = .int64 },
+        .{ .name = "column4", .type = .string },
+    } };
+    var rejects: Io.Writer.Allocating = .init(testing.allocator);
+    defer rejects.deinit();
+    var v = try run("zv_id,,zv_vol,ZV_ID\n1,a,2,b\n3,c,4,d\n", &s, .{}, &rejects);
+    defer v.deinit();
+    try testing.expect(v.passed());
+    try testing.expectEqual(@as(u64, 2), v.rows);
 }
 
 test "the threshold lets a little dirt through" {

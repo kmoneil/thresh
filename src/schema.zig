@@ -45,6 +45,25 @@ pub const NameContext = struct {
     }
 };
 
+/// The names a header gives its columns, read alike by infer and
+/// validate: each trimmed, and a blank one, or one a name before it took
+/// already (ASCII case aside), columnN by its place.
+pub fn headerNames(arena: Allocator, raw: []const []const u8) Allocator.Error![]const []const u8 {
+    const out = try arena.alloc([]const u8, raw.len);
+    var taken: NameMap(void) = .empty;
+    defer taken.deinit(arena);
+    try taken.ensureTotalCapacity(arena, @intCast(raw.len));
+    for (out, raw, 0..) |*n, r, i| {
+        const name = std.mem.trim(u8, r, " \t");
+        n.* = if (name.len == 0 or taken.contains(name))
+            try std.fmt.allocPrint(arena, "column{d}", .{i + 1})
+        else
+            try arena.dupe(u8, name);
+        taken.putAssumeCapacity(n.*, {});
+    }
+    return out;
+}
+
 /// A map keyed by column name, compared as NameContext does: a file of
 /// thousands of columns is matched in a pass, not a pass per column.
 pub fn NameMap(comptime V: type) type {
@@ -360,6 +379,14 @@ test "inline errors" {
     try testing.expectError(error.InvalidSchema, parseInline(testing.allocator, "id:integer", &diag));
     try testing.expectEqualStrings("--columns: id:integer: no type 'integer'", diag.message);
     try testing.expectError(error.InvalidSchema, parseInline(testing.allocator, "a:decimal(18", &diag));
+}
+
+test headerNames {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const got = try headerNames(arena.allocator(), &.{ " zv_id ", "", "ZV_ID", "column2", "zv_vol" });
+    const want = [_][]const u8{ "zv_id", "column2", "column3", "column4", "zv_vol" };
+    for (want, got) |w, g| try testing.expectEqualStrings(w, g);
 }
 
 fn parseAndFree(gpa: Allocator, json: bool, text: []const u8) !void {

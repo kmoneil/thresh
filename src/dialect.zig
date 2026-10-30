@@ -665,12 +665,19 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
     defer names.deinit(gpa);
     const ends = try gpa.alloc(usize, first.len);
     defer gpa.free(ends);
-    for (first, ends) |f, *e| {
+    // A few may be blank, a column left unnamed; most must be names.
+    const blank = try gpa.alloc(bool, first.len);
+    defer gpa.free(blank);
+    var blanks: usize = 0;
+    for (first, ends, blank) |f, *e, *b| {
         const v = try value(gpa, &scratch, sample, d, f);
-        if (v.len == 0 or looksTyped(v)) return .no;
-        try names.appendSlice(gpa, std.mem.trim(u8, v, " \t"));
+        const name = std.mem.trim(u8, v, " \t");
+        b.* = name.len == 0;
+        if (b.*) blanks += 1 else if (looksTyped(v)) return .no;
+        try names.appendSlice(gpa, name);
         e.* = names.items.len;
     }
+    if (blanks * 2 >= first.len) return .no;
     // Per column: still typed (every non-empty value so far), and seen one;
     // over the rows as wide as row 1, and apart over those a field or two
     // wider, on row 1's columns, with whether any holds a value past them.
@@ -718,11 +725,12 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
             if (!looksTyped(v)) typed[col] = false;
         }
     }
-    for (typed[0..first.len], seen) |t, s| if (t and s) return .yes;
+    // A blank name over data says nothing either way.
+    for (typed[0..first.len], seen, blank) |t, s, b| if (t and s and !b) return .yes;
     // No row as wide as row 1, and rows a field or two wider with values
     // past it: a header a name short. (A trailing delimiter on every row,
     // nothing past it, is not that.)
-    if (same == 0 and past) for (wide_typed, wide_seen) |t, s| if (t and s) return .{ .short = first.len };
+    if (same == 0 and past) for (wide_typed, wide_seen, blank) |t, s, b| if (t and s and !b) return .{ .short = first.len };
     // Row 1 alone, nothing under it: an empty extract's header, when its
     // values (none empty or typed, as above) are distinct names.
     if (complete == 0) {
@@ -730,6 +738,7 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
         defer taken.deinit(gpa);
         for (ends, 0..) |end, col| {
             const start = if (col == 0) 0 else ends[col - 1];
+            if (end == start) continue;
             if ((try taken.getOrPut(gpa, names.items[start..end])).found_existing) return .no;
         }
         return .yes;
@@ -763,15 +772,19 @@ fn textHeader(gpa: Allocator, sample: []const u8, d: Dialect, names: []const u8,
         const rec = try p.next(gpa, fields) orelse break;
         if (rec.end == sample.len and sample[sample.len - 1] != '\n' and sample[sample.len - 1] != '\r') break;
         if (fields.items.len != n) continue;
-        var matches: usize = 0;
+        var whole = true;
+        var recurs = false;
         for (fields.items, 0..) |f, col| {
             const v = std.mem.trim(u8, try value(gpa, &scratch, sample, d, f), " \t");
             const start = if (col == 0) 0 else ends[col - 1];
-            if (std.ascii.eqlIgnoreCase(v, names[start..ends[col]])) matches += 1;
+            const name = names[start..ends[col]];
+            if (!std.ascii.eqlIgnoreCase(v, name)) {
+                whole = false;
+            } else if (name.len > 0) recurs = true;
         }
         // Row 1 again whole, as joined files have it: no evidence.
-        if (matches == n) continue;
-        if (matches > 0) return false;
+        if (whole) continue;
+        if (recurs) return false;
         for (fields.items, 0..) |f, col| {
             const v = std.mem.trim(u8, try value(gpa, &scratch, sample, d, f), " \t");
             if (v.len == 0) continue;
@@ -779,7 +792,10 @@ fn textHeader(gpa: Allocator, sample: []const u8, d: Dialect, names: []const u8,
             if (distinct[col].count() <= 32) try distinct[col].put(a, try a.dupe(u8, v), {});
         }
     }
-    for (distinct, filled) |m, k| if (k >= 8 and m.count() * 4 <= k) return true;
+    for (distinct, filled, 0..) |m, k, col| {
+        const start = if (col == 0) 0 else ends[col - 1];
+        if (k >= 8 and m.count() * 4 <= k and ends[col] > start) return true;
+    }
     return false;
 }
 
@@ -981,6 +997,19 @@ test "a header a name short of its rows is said; a trailing delimiter is not tha
     try std.testing.expect(!trailing.warnings.header_short);
     // Pinned, the header is taken as it is.
     try std.testing.expect(!(try sniffed(short, .{ .pins = .{ .header = .yes } })).warnings.header_short);
+}
+
+test "a header may leave a few columns unnamed" {
+    var buf: [1024]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try w.writeAll("zv_id,zv_plim,,zv_vol,\r\n");
+    for (0..20) |i| try w.print("{d},ab{d},x,{d},y\r\n", .{ i, i, i * 3 });
+    try std.testing.expect((try sniffed(w.buffered(), .{})).dialect.header);
+    // A row 1 mostly blank is not names.
+    w = .fixed(&buf);
+    try w.writeAll(",,zv_plim,,\r\n");
+    for (0..20) |i| try w.print("{d},ab{d},x,{d},y\r\n", .{ i, i, i * 3 });
+    try std.testing.expect(!(try sniffed(w.buffered(), .{})).dialect.header);
 }
 
 test "over columns of text, a header is told by values it does not share" {

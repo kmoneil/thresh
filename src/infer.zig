@@ -167,21 +167,12 @@ pub const Inferrer = struct {
     /// Names the columns: the header's (trimmed, a blank or repeated one
     /// numbered), or column1, column2... for width columns without one.
     pub fn header(f: *Inferrer, names: ?[]const []const u8, width: usize) Allocator.Error!void {
-        const n = if (names) |ns| ns.len else width;
-        if (names != null) f.named = true;
-        // The names taken, so a repeated one is told apart.
-        var taken: schema.NameMap(void) = .empty;
-        defer taken.deinit(f.arena);
-        try taken.ensureTotalCapacity(f.arena, @intCast(f.columns.items.len + n));
-        for (f.columns.items) |c| taken.putAssumeCapacity(c.name, {});
-        for (0..n) |i| {
-            var name: []const u8 = if (names) |ns| std.mem.trim(u8, ns[i], " \t") else "";
-            if (name.len == 0 or taken.contains(name)) {
-                name = try std.fmt.allocPrint(f.arena, "column{d}", .{i + 1});
-            } else name = try f.arena.dupe(u8, name);
-            taken.putAssumeCapacity(name, {});
-            try f.columns.append(f.arena, .{ .name = name });
+        if (names) |ns| {
+            f.named = true;
+            for (try schema.headerNames(f.arena, ns)) |name| try f.columns.append(f.arena, .{ .name = name });
+            return;
         }
+        for (0..width) |i| try f.columns.append(f.arena, .{ .name = try std.fmt.allocPrint(f.arena, "column{d}", .{i + 1}) });
     }
 
     /// One record's values, in the header's order. A record wider than a
