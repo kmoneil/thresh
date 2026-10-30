@@ -1,0 +1,5 @@
+# Every file is checked out byte for byte as committed. Fixtures and the
+# outputs tests compare against carry their line endings on purpose
+# (examples/data/windows.csv is CRLF, the rest LF), and Git for Windows'
+# core.autocrlf would otherwise turn LF into CRLF on checkout.
+* -text

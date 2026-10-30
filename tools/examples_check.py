@@ -75,11 +75,13 @@ def main():
         here = os.path.join(work, "w")
         shutil.copytree(run_dir or os.path.dirname(doc), here)
         env = dict(os.environ, PATH=os.path.dirname(thresh) + os.pathsep + os.environ.get("PATH", ""))
+        # Windows has no /bin/sh; Git for Windows puts its sh on PATH.
+        sh = shutil.which("sh") or "/bin/sh"
         failed, rewritten, last = 0, [], 0
         for start, end in blocks(lines):
             rewritten += lines[last:start]
             for cmd, want, code in steps(lines[start:end]):
-                p = subprocess.run(["/bin/sh", "-c", cmd], cwd=here, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                p = subprocess.run([sh, "-c", cmd], cwd=here, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
                 got = p.stdout.decode("utf-8", "replace").rstrip("\n")
                 got = got.split("\n") if got else []
                 rewritten.append("$ " + cmd)
