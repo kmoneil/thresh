@@ -515,6 +515,10 @@ fn quoteIndex(q: ?u8) ?usize {
 /// AB_CD_EF, whose header has no `_` (one field) or, with names like
 /// emp_id, many more than the rows' steady few. A header one name short
 /// of its rows is not half or twice them, and keeps its delimiter.
+///
+/// Less 2.0 for space when most of the fields it makes are empty: that is
+/// padding, between and after the values of fixed-length records, and
+/// each run of it is many fields, as consistent as the records' length.
 fn score(
     gpa: Allocator,
     sample: []const u8,
@@ -530,6 +534,8 @@ fn score(
     var quoted_fields: usize = 0;
     var bare: [2]usize = .{ 0, 0 };
     var dirty = false;
+    var all_fields: usize = 0;
+    var empty_fields: usize = 0;
     while (counts.items.len < options.records) {
         const rec = try p.next(gpa, fields) orelse break;
         if (!whole and rec.end == sample.len) {
@@ -542,7 +548,9 @@ fn score(
         }
         if (rec.problem == .unterminated_quote) unbalanced = true;
         if (rec.problem != null or rec.stray_quotes > 0) dirty = true;
+        all_fields += fields.items.len;
         for (fields.items) |f| {
+            empty_fields += @intFromBool(f.len == 0);
             quoted_fields += @intFromBool(f.flags.quoted);
             if (f.flags.quoted or f.len < 2) continue;
             const v = sample[@intCast(f.start)..][0..f.len];
@@ -579,6 +587,7 @@ fn score(
     if (mode == 1) s -= 0.5;
     if (mode >= 2 and first_width > 0 and (first_width * 2 <= mode or first_width >= mode * 2)) s -= 1.0;
     if (unbalanced) s -= 0.3;
+    if (d.delimiter == ' ' and empty_fields * 2 > all_fields) s -= 2.0;
     if (options.schema) |cols| if (mode == cols.len) {
         s += 1.0;
     };
@@ -673,7 +682,7 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
         const v = try value(gpa, &scratch, sample, d, f);
         const name = std.mem.trim(u8, v, " \t");
         b.* = name.len == 0;
-        if (b.*) blanks += 1 else if (looksTyped(v)) return .no;
+        if (b.*) blanks += 1 else if (looksTyped(name)) return .no;
         try names.appendSlice(gpa, name);
         e.* = names.items.len;
     }
@@ -698,7 +707,7 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
         complete += 1;
         if (fields.items.len > first.len and fields.items.len <= first.len + 2) {
             for (fields.items, 0..) |f, col| {
-                const v = try value(gpa, &scratch, sample, d, f);
+                const v = std.mem.trim(u8, try value(gpa, &scratch, sample, d, f), " \t");
                 if (v.len == 0) continue;
                 if (col >= first.len) {
                     past = true;
@@ -718,8 +727,9 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
             if (!std.ascii.eqlIgnoreCase(v, names.items[start..end])) break false;
         } else true;
         if (again) continue;
+        // Trimmed: a fixed-length record pads its numbers with spaces.
         for (fields.items, 0..) |f, col| {
-            const v = try value(gpa, &scratch, sample, d, f);
+            const v = std.mem.trim(u8, try value(gpa, &scratch, sample, d, f), " \t");
             if (v.len == 0) continue;
             seen[col] = true;
             if (!looksTyped(v)) typed[col] = false;
@@ -997,6 +1007,19 @@ test "a header a name short of its rows is said; a trailing delimiter is not tha
     try std.testing.expect(!trailing.warnings.header_short);
     // Pinned, the header is taken as it is.
     try std.testing.expect(!(try sniffed(short, .{ .pins = .{ .header = .yes } })).warnings.header_short);
+}
+
+test "fixed-length records: their padding is not a delimiter, nor hides a header" {
+    var buf: [8192]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try w.writeAll("zv_id|zv_plim|zv_vol\n");
+    // Every value and the record's end padded: as many spaces on every line.
+    const pad: [60]u8 = @splat(' ');
+    for (1..40) |i| try w.print("{d:<6}|ab{d:<4}|{d:<5}{s}\n", .{ i, i, i * 3, &pad });
+    const v = try sniffed(w.buffered(), .{});
+    try std.testing.expectEqual(@as(u8, '|'), v.dialect.delimiter);
+    try std.testing.expect(v.dialect.header);
+    try std.testing.expectEqual(Confidence.high, v.confidence);
 }
 
 test "a header may leave a few columns unnamed" {
