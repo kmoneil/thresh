@@ -5,8 +5,20 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     // Releases are ReleaseSafe: thresh reads files nobody vouches for, and
     // a broken invariant must stop it with a panic, not run on undefined
-    // (docs/PERF.md, "Shipped build"). `zig build --release` picks it.
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
+    // (docs/PERF.md, "Shipped build"). A bare `zig build --release` builds
+    // it; -Doptimize and --release=fast still choose any mode, as CI's
+    // matrix and the scale test do. (standardOptimizeOption with a
+    // preferred mode would drop -Doptimize and make every --release it.)
+    const optimize: std.builtin.Optimize = b.option(
+        std.builtin.Optimize,
+        "optimize",
+        "Prioritize performance, safety, or binary size (default Debug; --release: ReleaseSafe)",
+    ) orelse switch (b.graph.release_mode) {
+        .off => .debug,
+        .any, .safe => .safe,
+        .fast => .fast,
+        .small => .small,
+    };
 
     const dateparsa = b.dependency("dateparsa", .{ .target = target, .optimize = optimize });
     const options = b.addOptions();
