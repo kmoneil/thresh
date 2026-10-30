@@ -15,6 +15,11 @@
 //! and a column at string is not looked at again. So the type a column
 //! ends with takes every value it saw: validating the file against the
 //! inferred schema finds no mismatch, which the corpus tests check.
+//!
+//! A number spelled with a leading zero (0614141000012, 02134, 00.5) sends
+//! its column to string. It is an identifier, a ZIP code or a padded field,
+//! and as an int64 it would lose the zero in Arrow, where only the value is
+//! kept: inference never proposes a type that loses text.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -155,6 +160,7 @@ pub const Inferrer = struct {
 
     /// The type the column moves to for v, recording what that type keeps.
     fn narrow(f: *Inferrer, c: *ColumnState, v: []const u8) Kind {
+        if (zeroPadded(v)) return .string;
         switch (c.kind) {
             .null => return f.first(c, v),
             .bool => {
@@ -212,6 +218,14 @@ pub const Inferrer = struct {
 
 fn isBoolDigit(v: []const u8) bool {
     return std.mem.eql(u8, v, "0") or std.mem.eql(u8, v, "1");
+}
+
+/// A number whose integer part has a zero before another digit: 007,
+/// -0123, 00.5. Not 0, 0.5 or 10.
+fn zeroPadded(v: []const u8) bool {
+    if (decimalShape(v) == null) return false;
+    const digits = if (v.len > 0 and (v[0] == '-' or v[0] == '+')) v[1..] else v;
+    return digits.len > 1 and digits[0] == '0' and std.ascii.isDigit(digits[1]);
 }
 
 fn hasTimeDirective(format: []const u8) bool {
@@ -395,6 +409,22 @@ test "the lattice moves down and only down" {
     try testing.expectEqual(Kind.string, (try inferOne(a, &.{ "12", "N/A" })).kind);
     try testing.expectEqual(Kind.string, (try inferOne(a, &.{ "12", "2024-01-02" })).kind);
     try testing.expectEqual(Kind.null, (try inferOne(a, &.{ "", "" })).kind);
+}
+
+test "a number with a leading zero keeps its column a string" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // GS1's example GLN, a ZIP code, a padded sequence number.
+    try testing.expectEqual(Kind.string, (try inferOne(a, &.{ "4006381333931", "0614141000012" })).kind);
+    try testing.expectEqual(Kind.string, (try inferOne(a, &.{"02134"})).kind);
+    try testing.expectEqual(Kind.string, (try inferOne(a, &.{ "0", "1", "0000000042" })).kind);
+    try testing.expectEqual(Kind.string, (try inferOne(a, &.{ "1.5", "-00.5" })).kind);
+    // A lone zero, and a zero before the point, are numbers.
+    try testing.expectEqual(Kind.int64, (try inferOne(a, &.{ "0", "10", "-3" })).kind);
+    try testing.expectEqual(Kind.decimal, (try inferOne(a, &.{ "0.5", "-0.25" })).kind);
+    // Not a number at all: dates are read as dates.
+    try testing.expectEqual(Kind.date, (try inferOne(a, &.{ "01/02/2026", "03/04/2026" })).kind);
 }
 
 test "dates, timestamps and their format" {

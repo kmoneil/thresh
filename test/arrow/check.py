@@ -23,6 +23,7 @@ import io
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -115,6 +116,10 @@ def check(thresh, corpus, name, out, mode):
             w = expected(row[i], field.type)
             if not same(g, w):
                 raise AssertionError("%s (%s): row %d, %s (%s): Arrow %r, CSV %r" % (name, mode, r, field.name, field.type, g, w))
+            # int() of "007" is 7, so the comparison above cannot see a
+            # lost zero: an inferred integer must have had none to lose.
+            if mode == "convert" and pa.types.is_int64(field.type) and re.fullmatch(r"[+-]?0\d+", row[i].strip(" \t")):
+                raise AssertionError("%s (%s): row %d, %s: inferred int64 for %r, which Arrow holds as %r" % (name, mode, r, field.name, row[i], g))
     if DUCK is not None:
         for ext in (".arrows", ".arrow"):
             p = os.path.join(d, stem + ext)
