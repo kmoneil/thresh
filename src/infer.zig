@@ -20,6 +20,11 @@
 //! its column to string. It is an identifier, a ZIP code or a padded field,
 //! and as an int64 it would lose the zero in Arrow, where only the value is
 //! kept: inference never proposes a type that loses text.
+//!
+//! An empty date as fixed-format exports write one ("  /  /    ") is set
+//! aside. A column that ends a date or timestamp takes it as a null, its
+//! spelling one of the column's nulls in the schema; any other column takes
+//! it as a value, which only a string can.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -77,6 +82,9 @@ pub const ColumnState = struct {
     invalid_row: u64 = 0,
     samples: [3]?[]const u8 = .{ null, null, null },
     widened_by: ?[]const u8 = null,
+    /// The spellings of an empty date the column has held, at most two (a
+    /// date's and a timestamp's): its nulls if it ends one, values if not.
+    blanks: [2]?[]const u8 = .{ null, null },
 };
 
 pub const Options = struct {
@@ -136,6 +144,7 @@ pub const Inferrer = struct {
             c.nulls += 1;
             return;
         }
+        if ((c.kind == .null or c.kind.temporal()) and blankDate(v) and try keepBlank(f.arena, c, v)) return;
         c.values += 1;
         c.max_len = @max(c.max_len, v.len);
         try f.sample(c, v);
@@ -221,6 +230,34 @@ pub const Inferrer = struct {
     }
 };
 
+/// An empty date as fixed-format exports (FoxPro, dBase, COBOL) write one:
+/// its separators, with spaces where the digits go, as "  /  /    " or
+/// "  /  /       :  :  ". At least one / or :, and nothing else but
+/// spaces, - and .: so a lone "-" is not one.
+fn blankDate(v: []const u8) bool {
+    var separator = false;
+    for (v) |ch| switch (ch) {
+        '/', ':' => separator = true,
+        ' ', '-', '.' => {},
+        else => return false,
+    };
+    return separator;
+}
+
+/// Sets v aside as one of c's empty dates, or says it is a third spelling,
+/// which the column must take as a value.
+fn keepBlank(arena: Allocator, c: *ColumnState, v: []const u8) Allocator.Error!bool {
+    for (&c.blanks) |*slot| {
+        if (slot.*) |have| {
+            if (std.mem.eql(u8, have, v)) return true;
+            continue;
+        }
+        slot.* = try arena.dupe(u8, v);
+        return true;
+    }
+    return false;
+}
+
 fn isBoolDigit(v: []const u8) bool {
     return std.mem.eql(u8, v, "0") or std.mem.eql(u8, v, "1");
 }
@@ -301,9 +338,23 @@ pub fn columnsOf(arena: Allocator, states: []const ColumnState) Allocator.Error!
     for (out, states) |*o, s| {
         var samples: std.ArrayList([]const u8) = .empty;
         for (s.samples) |x| if (x) |v| try samples.append(arena, v);
+        var blanks: std.ArrayList([]const u8) = .empty;
+        var blank_time = false;
+        for (s.blanks) |x| if (x) |v| {
+            try blanks.append(arena, v);
+            blank_time = blank_time or std.mem.findScalar(u8, v, ':') != null;
+        };
+        const kind: Kind = if (blanks.items.len == 0) s.kind else switch (s.kind) {
+            // Nothing but empty dates: a date column, a timestamp's if
+            // they have a time's colons.
+            .null => if (blank_time) .timestamp else .date,
+            .date, .timestamp, .string => s.kind,
+            // Numbers and empty dates: only a string takes both.
+            else => .string,
+        };
         o.* = .{
             .name = s.name,
-            .type = switch (s.kind) {
+            .type = switch (kind) {
                 // A column of nothing but nulls: a string, the type that
                 // takes anything a later file has.
                 .null, .string => .string,
@@ -319,13 +370,14 @@ pub fn columnsOf(arena: Allocator, states: []const ColumnState) Allocator.Error!
             .samples = try samples.toOwnedSlice(arena),
             .widened_by = s.widened_by,
         };
-        switch (s.kind) {
+        switch (kind) {
             .decimal => {
                 o.precision = @max(1, s.int_digits + s.scale);
                 o.scale = s.scale;
             },
-            .date, .timestamp => if (!s.format_mixed) {
-                o.format = s.format;
+            .date, .timestamp => {
+                if (!s.format_mixed) o.format = s.format;
+                o.nulls = blanks.items;
             },
             .string => if (s.invalid_utf8) {
                 o.utf8 = .replace;
@@ -351,8 +403,21 @@ pub fn merge(a: *ColumnState, b: ColumnState, file: []const u8) void {
             break;
         }
     };
+    // b's empty dates join a's; a third spelling is a value no date takes.
+    var blank_overflow = false;
+    for (b.blanks) |x| if (x) |v| {
+        const kept = for (&a.blanks) |*slot| {
+            if (slot.*) |have| {
+                if (std.mem.eql(u8, have, v)) break true;
+                continue;
+            }
+            slot.* = v;
+            break true;
+        } else false;
+        if (!kept) blank_overflow = true;
+    };
     const a_temporal = before.temporal();
-    a.kind = join(a, b);
+    a.kind = if (blank_overflow) .string else join(a, b);
     if (a.kind.temporal() and b.kind.temporal()) {
         // One format between them, or none: a column read in two formats
         // keeps no format and is detected value by value.
@@ -430,6 +495,39 @@ test "a number with a leading zero keeps its column a string" {
     try testing.expectEqual(Kind.decimal, (try inferOne(a, &.{ "0.5", "-0.25" })).kind);
     // Not a number at all: dates are read as dates.
     try testing.expectEqual(Kind.date, (try inferOne(a, &.{ "01/02/2026", "03/04/2026" })).kind);
+}
+
+test "an empty date is a null in a date column, and a value in any other" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const blank = "  /  /       :  :  ";
+    var f: Inferrer = .init(a, .{});
+    try f.header(&.{ "at", "only", "qty", "dash", "day" }, 5);
+    try f.record(&.{ "06/14/2025 07:43:20", blank, blank, "-", "  /  /    " });
+    try f.record(&.{ blank, blank, "12", "3", "01/02/2024" });
+    try f.record(&.{ "01/02/2024 10:00:00", blank, "7", "4", "  /  /    " });
+    const cols = try columnsOf(a, f.columns.items);
+    try testing.expectEqual(schema.Type.timestamp, cols[0].type);
+    try testing.expectEqualStrings("%m/%d/%Y %H:%M:%S", cols[0].format.?);
+    try testing.expectEqual(@as(usize, 1), cols[0].nulls.len);
+    try testing.expectEqualStrings(blank, cols[0].nulls[0]);
+    // Nothing but empty ones: a timestamp column, as their colons say.
+    try testing.expectEqual(schema.Type.timestamp, cols[1].type);
+    // In a column of numbers they are values, and only a string takes them.
+    try testing.expectEqual(schema.Type.string, cols[2].type);
+    // A lone "-" is not an empty date.
+    try testing.expectEqual(schema.Type.string, cols[3].type);
+    try testing.expectEqual(schema.Type.date, cols[4].type);
+    try testing.expectEqualStrings("  /  /    ", cols[4].nulls[0]);
+
+    // Across files: a file of only empty dates gives its spelling to the
+    // column the other file settled.
+    var acc = try inferOne(a, &.{ "06/14/2025 07:43:20", "01/02/2024 10:00:00" });
+    merge(&acc, try inferOne(a, &.{ blank, blank }), "b.csv");
+    const merged = try columnsOf(a, &.{acc});
+    try testing.expectEqual(schema.Type.timestamp, merged[0].type);
+    try testing.expectEqualStrings(blank, merged[0].nulls[0]);
 }
 
 test "dates, timestamps and their format" {

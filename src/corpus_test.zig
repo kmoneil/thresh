@@ -465,7 +465,9 @@ test "convert --to csv: every corpus file comes out RFC 4180, re-sniffs as it, a
             return error.TestUnexpectedResult;
         }
 
-        // The output's records, header aside, against the input's.
+        // The output's records, header aside, against the input's: the same
+        // text, but a value the inferred schema calls a column's null (an
+        // empty date, "  /  /    ") written empty, as every null is.
         var want = try recordsOf(a, fx.bytes, e.dialect(), if (e.bom) 3 else 0, encoding);
         if (e.header) want = want[1..];
         const got = (try recordsOf(a, written, .rfc4180, 0, .utf8))[1..];
@@ -475,10 +477,15 @@ test "convert --to csv: every corpus file comes out RFC 4180, re-sniffs as it, a
                 std.debug.print("{s}: record {d} has {d} fields, the output {d}\n", .{ name, row, w.len, g.len });
                 return error.TestUnexpectedResult;
             }
-            for (w, g) |wv, gv| if (!std.mem.eql(u8, wv, gv)) {
+            for (w, g, s.columns) |wv, gv, col| {
+                const null_spelling = for (col.nulls) |n| {
+                    if (std.mem.eql(u8, n, wv)) break true;
+                } else false;
+                const expect = if (null_spelling) "" else wv;
+                if (std.mem.eql(u8, expect, gv)) continue;
                 std.debug.print("{s}: record {d}: \"{f}\" came out \"{f}\"\n", .{ name, row, std.zig.fmtString(wv[0..@min(wv.len, 60)]), std.zig.fmtString(gv[0..@min(gv.len, 60)]) });
                 return error.TestUnexpectedResult;
-            };
+            }
         }
     }
 }
