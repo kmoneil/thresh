@@ -37,7 +37,10 @@ with embedded delimiters, quotes and line breaks). Header and encoding
 (UTF-8, UTF-8 with a BOM, Latin-1) cycle through each product, so each
 value of every dimension appears with each of the others' values somewhere.
 Backslash escaping gets eight files of its own. Then the adversarial set:
-files built to make a sniffer guess wrong.
+files built to make a sniffer guess wrong. Then the export set: files in
+the shapes of real exports (product masters, lookup lists, mainframe and
+FoxPro dumps, CRM reports), written from this script's own words and
+numbers.
 
 A file can only have one right answer if its bytes rule out the others,
 so the generator makes sure they do: a quoted file has fields that need
@@ -135,7 +138,9 @@ class Writer:
     def __init__(self, dialect, encoding, policy):
         self.d = dialect
         self.codec = "latin-1" if encoding == "latin1" else "utf-8"
-        self.policy = policy  # "minimal": quote when needed; "strings": quote every string
+        # "minimal": quote when needed; "strings": quote every string;
+        # "all": quote every field but the header's, an empty one as "".
+        self.policy = policy
         self.out = bytearray(b"\xef\xbb\xbf" if encoding == "utf8-bom" else b"")
         self.fields = []
         self.records = []
@@ -173,8 +178,10 @@ class Writer:
             v = "" if v is None else v
             quoted = False
             if d.quote is not None:
-                quoted = self.needs_quotes(v) or (
-                    self.policy == "strings" and kind == "s" and values[col] is not None
+                quoted = (
+                    self.needs_quotes(v)
+                    or (self.policy == "strings" and kind == "s" and values[col] is not None)
+                    or (self.policy == "all" and kind != "h")
                 )
                 # A field holding the quote character mid-value is data to
                 # an unquoted reader, but csv quotes it, and so do we.
@@ -194,6 +201,10 @@ class Writer:
                 self.fields.append((row, col, start, len(self.out) - start, 0))
         self.out += d.newline.encode(self.codec)
 
+    def blank(self):
+        """An empty line between records: no record, and no field."""
+        self.out += self.d.newline.encode(self.codec)
+
     def check(self):
         """Reads the file back with csv, and every field from its offsets."""
         d = self.d
@@ -206,7 +217,8 @@ class Writer:
             kw.update(quotechar=d.quote, doublequote=False, escapechar="\\")
         else:
             kw.update(quotechar=d.quote, doublequote=True)
-        got = list(csv.reader(io.StringIO(text, newline=""), **kw))
+        # csv reads an empty line as a record of no fields; thresh skips it.
+        got = [r for r in csv.reader(io.StringIO(text, newline=""), **kw) if r]
         if got != self.records:
             for i, (a, b) in enumerate(zip(got, self.records)):
                 if a != b:
@@ -451,6 +463,295 @@ def adversarial(name):
 
 ADVERSARIAL = ["adv-comma-rich-tsv", "adv-pipe-text", "adv-giant-first-field", "adv-decimal-comma"]
 
+# Export files: the shapes of real feeds (work samples seen 2026-10-30, card
+# t19) with none of their values. Each is a table: per column its name, its
+# schema, its kind for quoting, and a function of the row number giving its
+# value, None for an empty field.
+
+BLANK_DATE = "  /  /    "
+BLANK_DATETIME = "  /  /       :  :  "
+STRING = {"type": "string"}
+INT = {"type": "int64"}
+BOOL = {"type": "bool"}
+US_DATE = {"type": "date", "format": "%m/%d/%Y"}
+US_TIMESTAMP = {"type": "timestamp", "format": "%m/%d/%Y %H:%M:%S"}
+PLACES = ["north", "harbor", "maple", "cedar", "river", "summit", "oak", "bay"]
+
+
+def digits(rng, n):
+    return "".join(str(rng.below(10)) for _ in range(n))
+
+
+def padded_id(rng, n, zeros):
+    """n digits, an identifier's shape (a GS1 number, a ZIP code): zeros is
+    the chance, as (num, den), that it starts with 0."""
+    return ("0" if rng.chance(*zeros) else str(rng.between(1, 9))) + digits(rng, n - 1)
+
+
+def us_date(rng):
+    return "%02d/%02d/%04d" % (rng.between(1, 12), rng.between(1, 28), rng.between(2019, 2026))
+
+
+def us_timestamp(rng):
+    return us_date(rng) + " %02d:%02d:%02d" % (rng.below(24), rng.below(60), rng.below(60))
+
+
+def fox_id(rng):
+    """A FoxPro SYS(2015) key: an underscore and nine base-36 characters."""
+    return "_" + "".join(rng.choice("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ") for _ in range(9))
+
+
+def some(rng, num, den, f):
+    """f() in num of den rows, None in the rest."""
+    return f() if rng.chance(num, den) else None
+
+
+def table(d, policy, spec, rows, header=None, blank_every=0):
+    """A header (never quoted unless it must be) and rows of spec."""
+    w = Writer(d, "utf8", policy)
+    w.record(header or [n for n, _, _, _ in spec], "h" * len(spec))
+    kinds = [k for _, _, k, _ in spec]
+    for i in range(rows):
+        w.record([f(i) for _, _, _, f in spec], kinds)
+        if blank_every and i % blank_every == blank_every - 1:
+            w.blank()
+    return w, [dict({"name": n}, **c) for n, c, _, _ in spec]
+
+
+def export(name):
+    """Files in the shapes of real exports, each returning (writer, columns)."""
+    rng = Rng(name)
+    if name == "exp-pipe-crlf-product":
+        # A product master: every text field quoted, numbers and dates not;
+        # ids of 13 and 14 digits, some with a leading zero; US timestamps;
+        # Yes/No; measures with their units; most columns empty in most
+        # rows, and twenty in every row.
+        d = Dialect("|", '"', "\r\n", True)
+
+        def measure():
+            return "%d.%03d" % (rng.below(100), rng.below(1000))
+
+        def unit():
+            return rng.choice(["KG", "LB", "G", "OZ", "EA"])
+
+        spec = [
+            ("Article Code", STRING, "s", lambda i: "%06d-%05d" % (100000 + i, rng.below(10**5))),
+            ("Barcode 14", STRING, "s", lambda i: padded_id(rng, 14, (1, 3))),
+            ("Site Code 13", STRING, "s", lambda i: some(rng, 2, 3, lambda: padded_id(rng, 13, (1, 3)))),
+            ("Added At", US_TIMESTAMP, "n", lambda i: us_timestamp(rng)),
+            ("Added By", STRING, "s", lambda i: rng.choice(["batch", "loader_job", "admin"])),
+            ("Revised At", US_TIMESTAMP, "n", lambda i: us_timestamp(rng)),
+            ("Facts Supplied", BOOL, "s", lambda i: some(rng, 1, 2, lambda: rng.choice(["Yes", "No"]))),
+            ("Brand House", STRING, "s", lambda i: some(rng, 1, 2, lambda: rng.choice(LAST) + " " + rng.choice(["Foods", "Brands Inc.", "Ltd."]))),
+            ("Mass Net", {"type": "decimal", "precision": 9, "scale": 3}, "n", lambda i: some(rng, 1, 2, measure)),
+            ("Mass Net Unit", STRING, "s", lambda i: some(rng, 1, 2, unit)),
+            ("Mass Gross", {"type": "decimal", "precision": 9, "scale": 3}, "n", lambda i: some(rng, 1, 2, measure)),
+            ("Box/size", STRING, "s", lambda i: some(rng, 1, 3, lambda: "%d X %d CM" % (rng.between(1, 99), rng.between(1, 99)))),
+            ("Tax/levy exempt", BOOL, "s", lambda i: None),
+            ("Layer Count", INT, "n", lambda i: some(rng, 1, 2, lambda: str(rng.between(1, 12)))),
+            ("Retired", BOOL, "s", lambda i: some(rng, 1, 2, lambda: rng.choice(["Yes", "No"]))),
+            ("Tree Path", STRING, "s", lambda i: "%d-%d-%d" % (rng.between(1, 9), rng.between(10, 99), rng.between(1, 9))),
+            ("Listing ID", INT, "n", lambda i: str(rng.between(10**9, 2 * 10**9))),
+        ] + [("Attribute %02d" % k, STRING, "s", lambda i: None) for k in range(1, 21)]
+        return table(d, "strings", spec, 120)
+    if name == "exp-pipe-crlf-lookup":
+        # A lookup list: dotted and bracketed codes, quotes only around a
+        # value that holds one (doubled), True/False, and labels in a second
+        # language for a few rows only.
+        d = Dialect("|", '"', "\r\n", True)
+        groups = ["[Order_Status]", "[Ship_Mode]", "Pack_Type", "[Region]"]
+
+        def label():
+            w = rng.choice(WORDS)
+            return "[%s]" % w.title() if rng.chance(1, 2) else w
+
+        spec = [
+            ("Entry.List", STRING, "s", lambda i: "%s.%s.%s" % (rng.choice(groups), rng.choice(["Main", "Alt"]), rng.choice(["Kind", "Value", "Code"]))),
+            ("Entry.Code", STRING, "s", lambda i: ".".join(rng.choice(["ab", "cd", "ef", "gh", "x1"]) for _ in range(rng.between(2, 5)))),
+            ("Entry.Active", BOOL, "n", lambda i: rng.choice(["True", "False"])),
+            ("Entry.Rank", INT, "n", lambda i: str(rng.between(0, 99999))),
+            ("EntryText.Label(en)", STRING, "s", lambda i: some(rng, 99, 100, label)),
+            ("EntryText.Label(fr)", STRING, "s", lambda i: some(rng, 1, 30, lambda: rng.choice(["café", "crème brûlée", "façade", "déjà vu"]))),
+            ("EntryText.Note(en)", STRING, "s", lambda i: some(rng, 1, 50, lambda: words(rng, rng.between(4, 20), d, False, True))),
+        ]
+        return table(d, "minimal", spec, 400)
+    if name == "exp-pipe-crlf-units":
+        # Units of measure, an empty line after every five records.
+        d = Dialect("|", '"', "\r\n", True)
+        spec = [
+            ("Part Number", INT, "n", lambda i: str(1000000 + 7 * i)),
+            ("Unit Text", STRING, "s", lambda i: rng.choice(["each", "case of twelve", "pallet", "inner pack (6)", "kilogram"])),
+            ("Unit Code", STRING, "s", lambda i: rng.choice(["EA", "CS", "PL", "IP", "KG"])),
+            ("Per Pack", INT, "n", lambda i: str(rng.between(1, 48))),
+            ("Of Units", INT, "n", lambda i: str(rng.choice([1, 1, 1, 2, 10]))),
+        ]
+        return table(d, "strings", spec, 50, blank_every=5)
+    if name == "exp-pipe-lf-padded":
+        # A mainframe dump: every field padded to its width, text and numbers
+        # alike; upper-case names with underscores; a zero-padded sequence
+        # number; Y/N flags; a wide field of spaces. No quote character
+        # anywhere, so the first in the prior order is the right answer.
+        d = Dialect("|", '"', "\n", True)
+
+        def description():
+            return words(rng, rng.between(1, 4), d, False, False)[:40] if rng.chance(1, 2) else ""
+
+        spec = [
+            ("DEAL_ID", STRING, "s", lambda i: ("C%d" % (4000 + i)).ljust(10)),
+            ("LABEL_TEXT", STRING, "s", lambda i: description().ljust(40)),
+            ("AGENT", STRING, "s", lambda i: rng.choice(["AB", "CDE", ""]).ljust(4)),
+            ("PRICE_FLAG", STRING, "s", lambda i: rng.choice(["Y", "N"])),
+            ("FEE", {"type": "decimal", "precision": 5, "scale": 2}, "n", lambda i: rng.choice(["0", "2.5", "12.75", "5"]).ljust(5)),
+            ("FLOOR_QTY", INT, "n", lambda i: str(rng.choice([0, 50, 100, 250])).ljust(6)),
+            ("SPARE_1", STRING, "s", lambda i: " " * 120),
+            ("VOID_FLAG", STRING, "s", lambda i: " "),
+            ("LINE_SEQ", STRING, "s", lambda i: "%010d" % (i + 1)),
+        ]
+        return table(d, "minimal", spec, 40)
+    if name == "exp-comma-lf-plan":
+        # A planning extract: no quoting, snake_case names, codes with four
+        # underscores apiece, two quantities of which a row fills one, and a
+        # decimal of up to eighteen places.
+        d = Dialect(",", '"', "\n", True)
+        rows = 3000
+        makes = [rng.chance(2, 3) for _ in range(rows)]
+
+        def step():
+            return "%s_%s_%d_%s_%d" % (rng.choice(["MAKE", "MOVE", "BUY"]), rng.choice("ABC"), rng.between(1, 99), rng.choice("XY"), rng.between(1, 9))
+
+        spec = [
+            ("is_live", INT, "n", lambda i: "1"),
+            ("Scenario", STRING, "s", lambda i: rng.choice(["Baseline", "Upside"])),
+            ("Site", INT, "n", lambda i: str(rng.between(1000, 1999))),
+            ("Source_Site", INT, "n", lambda i: str(rng.between(100000000, 199999999))),
+            ("Step_3", INT, "n", lambda i: str(rng.between(100000, 999999))),
+            ("Step_1", STRING, "s", lambda i: step()),
+            ("Part", INT, "n", lambda i: str(rng.between(100000, 999999))),
+            ("Line_ID", STRING, "s", lambda i: "%dAB_%s" % (rng.between(10000, 99999), rng.choice(["CD", "EF"]))),
+            ("Week_Start", US_DATE, "n", lambda i: us_date(rng)),
+            ("Step_2", STRING, "s", lambda i: rng.choice(["Plant", "DC", "Vendor"])),
+            ("Prod_Qty", INT, "n", lambda i: str(rng.between(1, 99999)) if makes[i] else None),
+            ("Cons_Qty", INT, "n", lambda i: None if makes[i] else str(rng.between(1, 9999))),
+            ("Demand_Qty", {"type": "decimal", "precision": 24, "scale": 18}, "n", lambda i: some(rng, 3, 4, lambda: "%d.%s" % (rng.below(10**5), digits(rng, rng.between(1, 18))))),
+        ]
+        return table(d, "minimal", spec, rows)
+    if name == "exp-comma-lf-codes":
+        # Three columns, one of codes like AB_CD_EF_GH_AB: read at _ they
+        # are six columns, nearly as consistent, and the header has no _
+        # (card t20).
+        d = Dialect(",", '"', "\n", True)
+        spec = [
+            ("id", INT, "n", lambda i: str(i)),
+            ("code", STRING, "s", lambda i: "_".join(rng.choice(["AB", "CD", "EF", "GH"]) for _ in range(5))),
+            ("name", STRING, "s", lambda i: rng.choice(["red", "blue", "green"])),
+        ]
+        return table(d, "minimal", spec, 200)
+    if name == "exp-comma-crlf-leads":
+        # A CRM report: every field quoted, an empty one as "", but not the
+        # header, whose names after the first start with a space. ZIP codes,
+        # some with a leading zero; US dates; e-mail and web addresses; a
+        # contact of one space when unknown; eight columns empty in every row.
+        d = Dialect(",", '"', "\r\n", True)
+
+        def notes():
+            return ", ".join(words(rng, rng.between(2, 8), d, False, True) for _ in range(rng.between(1, 4)))
+
+        spec = [
+            ("RefNo", INT, "n", lambda i: str(1000000 + 13 * i)),
+            ("Business", STRING, "s", lambda i: "%s %s" % (rng.choice(PLACES).title(), rng.choice(["Bistro", "Grill", "Cafe & Bar", "Kitchen"]))),
+            ("Kind", STRING, "s", lambda i: rng.choice(["New", "Reno"])),
+            ("Stage", STRING, "s", lambda i: rng.choice(["Planning", "Under Construction", "Opening Soon"])),
+            ("Given Name", STRING, "s", lambda i: some(rng, 3, 5, lambda: rng.choice(FIRST))),
+            ("Family Name", STRING, "s", lambda i: some(rng, 3, 5, lambda: rng.choice(LAST))),
+            ("Contact", STRING, "s", lambda i: rng.choice(FIRST) + " " + rng.choice(LAST) if rng.chance(3, 5) else " "),
+            ("Role", STRING, "s", lambda i: some(rng, 1, 2, lambda: rng.choice(["Owner", "Chef", "GM"]))),
+            ("E-mail Address", STRING, "s", lambda i: some(rng, 3, 4, lambda: "%s.%s@%s-%s.com" % tuple(rng.choice(PLACES) for _ in range(4)))),
+            ("Telephone", STRING, "n", lambda i: some(rng, 2, 3, lambda: str(rng.between(2, 9)) + digits(rng, 9))),
+            ("Ext", STRING, "s", lambda i: None),
+            ("Alt Contact", STRING, "s", lambda i: None),
+            ("Web", STRING, "s", lambda i: some(rng, 9, 10, lambda: rng.choice(["https://www.%s.com/", "%s.com", "http://%s.example.org/menu"]) % rng.choice(PLACES))),
+            ("Street", STRING, "s", lambda i: "%d %s %s" % (rng.between(1, 9999), rng.choice(PLACES).title(), rng.choice(["St", "Ave", "Rd."]))),
+            ("Street2", STRING, "s", lambda i: None),
+            ("Town", STRING, "s", lambda i: rng.choice(PLACES).title() + rng.choice(["", " Falls", " City"])),
+            ("Region", STRING, "s", lambda i: rng.choice(["MA", "NJ", "TX", "CA", "NY"])),
+            ("Postcode", STRING, "s", lambda i: padded_id(rng, 5, (1, 8))),
+            ("Venue Type", STRING, "s", lambda i: rng.choice(["Full Service (Sit-Down)", "Quick Service", "Bar/Tavern"])),
+            ("Price Band", STRING, "s", lambda i: some(rng, 20, 21, lambda: rng.choice(["$", "$$", "$$$", "$/$$"]))),
+            ("Cuisine", STRING, "s", lambda i: rng.choice(["American", "Italian", "Café", "Tex-Mex", "Sushi  Bar"])),
+            ("Opening", US_DATE, "n", lambda i: some(rng, 50, 51, lambda: us_date(rng))),
+            ("Published", US_DATE, "n", lambda i: us_date(rng)),
+            ("Notes", STRING, "s", lambda i: some(rng, 3, 5, notes)),
+            ("Mobile", STRING, "s", lambda i: None),
+            ("Alt Phone", STRING, "s", lambda i: None),
+            ("Second E-mail", STRING, "s", lambda i: None),
+            ("Licence", STRING, "s", lambda i: some(rng, 1, 6, lambda: rng.choice(["Beer & Wine", "Full Bar"]))),
+            ("Origin", STRING, "s", lambda i: some(rng, 99, 100, lambda: "https://news.example.com/%d/%02d/%s-%s/" % (rng.between(2019, 2026), rng.between(1, 12), rng.choice(PLACES), rng.choice(PLACES)))),
+            ("Social A", STRING, "s", lambda i: None),
+            ("Social B (old)", STRING, "s", lambda i: None),
+            ("Social C", STRING, "s", lambda i: None),
+            ("Social D", STRING, "s", lambda i: None),
+        ]
+        header = [spec[0][0]] + [" " + n for n, _, _, _ in spec[1:]]
+        return table(d, "all", spec, 300, header=header)
+    if name == "exp-comma-crlf-foxpro":
+        # A FoxPro table dump: lower-case typed names, keys like _5TF0XWQ1Z,
+        # decimals at five places, T/F logicals, 0/1 numeric flags, US dates
+        # and timestamps whose empty value is their punctuation and spaces, a
+        # code column with "-", "NA" and zero-padded codes, and three columns
+        # empty in every row.
+        d = Dialect(",", '"', "\r\n", True)
+        stamp = dict(US_TIMESTAMP, nulls=[BLANK_DATETIME])
+
+        def five():
+            return "%d.%05d" % (rng.below(100), rng.below(10**5))
+
+        spec = [
+            ("kkey", STRING, "s", lambda i: fox_id(rng)),
+            ("cownerkey", STRING, "s", lambda i: fox_id(rng)),
+            ("ctypeid", STRING, "s", lambda i: some(rng, 9, 10, lambda: fox_id(rng))),
+            ("nkind", INT, "n", lambda i: str(rng.between(1, 3))),
+            ("nline", INT, "n", lambda i: str(rng.between(1, 9999))),
+            ("cclass", STRING, "s", lambda i: some(rng, 1, 3, lambda: rng.choice(["-", "NA", "A%d" % rng.between(1, 99), "%04d" % rng.below(10000)]))),
+            ("clibelle", STRING, "s", lambda i: ", ".join(rng.choice(WORDS) for _ in range(rng.between(1, 4)))),
+            ("bfactor", {"type": "decimal", "precision": 10, "scale": 5}, "n", lambda i: five()),
+            ("bcost", {"type": "decimal", "precision": 10, "scale": 5}, "n", lambda i: ("-" if rng.chance(1, 3) else "") + five()),
+            ("lprimary", BOOL, "n", lambda i: rng.choice(["T", "F"])),
+            ("nflag", INT, "n", lambda i: rng.choice(["0", "1"])),
+            ("dposted", dict(US_DATE, nulls=[BLANK_DATE]), "n", lambda i: us_date(rng) if rng.chance(9, 10) else BLANK_DATE),
+            ("dcreated", stamp, "n", lambda i: us_timestamp(rng) if rng.chance(4, 5) else BLANK_DATETIME),
+            ("dchanged", stamp, "n", lambda i: us_timestamp(rng) if rng.chance(1, 2) else BLANK_DATETIME),
+            ("coperator", STRING, "s", lambda i: rng.choice(["ADMIN", "JD", "SYS"])),
+            ("cspare1", STRING, "s", lambda i: None),
+            ("cspare2", STRING, "s", lambda i: None),
+            ("cspare3", STRING, "s", lambda i: None),
+        ]
+        return table(d, "strings", spec, 500)
+    if name == "exp-pipe-crlf-tiny":
+        # Two records under a header of sixty columns, most of them empty:
+        # all a sniffer and inference get to go on.
+        d = Dialect("|", '"', "\r\n", True)
+        spec = [
+            ("Record ID", INT, "n", lambda i: str(500 + i)),
+            ("Changed At", US_TIMESTAMP, "n", lambda i: us_timestamp(rng)),
+            ("Owner", STRING, "s", lambda i: rng.choice(FIRST)),
+            ("Amount", {"type": "decimal", "precision": 8, "scale": 2}, "n", lambda i: "%d.%02d" % (rng.below(10000), rng.below(100))),
+        ] + [("Field %02d" % k, STRING, "s", lambda i: some(rng, 1, 4, lambda: rng.choice(WORDS))) for k in range(1, 57)]
+        return table(d, "strings", spec, 2)
+    raise KeyError(name)
+
+
+EXPORTS = [
+    "exp-pipe-crlf-product",
+    "exp-pipe-crlf-lookup",
+    "exp-pipe-crlf-units",
+    "exp-pipe-lf-padded",
+    "exp-comma-lf-plan",
+    "exp-comma-lf-codes",
+    "exp-comma-crlf-leads",
+    "exp-comma-crlf-foxpro",
+    "exp-pipe-crlf-tiny",
+]
+
 
 def plan():
     """Every file: (name, build) where build() gives (writer, columns, encoding, adversarial)."""
@@ -475,6 +776,8 @@ def plan():
         files.append((fname, d, "utf8", False, (lambda f, d: lambda: text_file(f, d, "utf8", "minimal", body=(1000, 20000)))(fname, d)))
     for name in ADVERSARIAL:
         files.append((name, None, None, True, (lambda n: lambda: adversarial(n))(name)))
+    for name in EXPORTS:
+        files.append((name, None, None, False, (lambda n: lambda: export(n))(name)))
     return files
 
 
