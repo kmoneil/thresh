@@ -53,6 +53,28 @@ first place to look for speed. On the text profile, where a long quoted field is
 mostly bytes the index skips, it is 1.7 times. CSV output costs more than
 Arrow because every field is scanned for bytes that need quoting.
 
+## Shipped build
+
+Releases are ReleaseSafe (`zig build --release`), the stages above
+ReleaseFast. ReleaseSafe keeps Zig's runtime checks, so a broken
+invariant on a file nobody vouches for is a panic where ReleaseFast would
+run on undefined: an assertion in the sniffer, a bad cast, a slice out of
+bounds. What the checks cost, end to end on one 210 MB synthetic CSV (six
+columns: integers, a date, a decimal, two strings), one worker, best of
+three, M5 Max, commit 68cab4d:
+
+| command | ReleaseFast | ReleaseSafe | cost |
+| --- | ---: | ---: | ---: |
+| infer | 288 MB/s | 223 MB/s | 29% |
+| validate | 456 MB/s | 364 MB/s | 25% |
+| convert --to csv | 285 MB/s | 229 MB/s | 25% |
+| convert --to arrow | 357 MB/s | 266 MB/s | 34% |
+
+Where that matters, the place to win it back is `@setRuntimeSafety(false)`
+in the few hot loops that are fuzzed and benchmarked (the scanner's index,
+the column builders), measured before and after; the bench and the gate
+stay ReleaseFast, since they compare runs rather than report what ships.
+
 ## Files in parallel
 
 `zig build scale -Doptimize=ReleaseFast` (test/scale/run.py) validates 32

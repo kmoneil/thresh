@@ -33,7 +33,8 @@ build arrow-check`).
 Zig 0.17.0.
 
 ```sh
-zig build                 # zig-out/bin/thresh
+zig build                 # zig-out/bin/thresh, Debug
+zig build --release       # ReleaseSafe: what a release ships
 zig build test            # unit tests, the corpus tests and the command itself
                           # (-Dcorpus=false skips the corpus, which needs python3)
 zig build fmt-check       # zig fmt --check
@@ -44,6 +45,12 @@ zig build scale -Doptimize=ReleaseFast  # 10,000 files, MB/s by --jobs, Ctrl-C
 zig build fuzz            # replay the fuzz seeds; tools/fuzz.sh [LIMIT] fuzzes
 zig build run -- sniff a.csv
 ```
+
+Releases are built ReleaseSafe, with Zig's runtime checks kept (bounds,
+overflow, assertions): thresh reads files nobody vouches for, and a broken
+invariant should stop it with a panic rather than give a wrong answer. It
+costs about a quarter to a third of the speed of ReleaseFast, which the
+benchmarks measure; see docs/PERF.md.
 
 Dates go through [dateparsa](https://github.com/kmoneil/dateparsa.zig), and
 [zigvet](https://github.com/kmoneil/zigvet) checks the sources for code Zig

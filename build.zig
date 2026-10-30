@@ -3,7 +3,10 @@ const zon = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    // Releases are ReleaseSafe: thresh reads files nobody vouches for, and
+    // a broken invariant must stop it with a panic, not run on undefined
+    // (docs/PERF.md, "Shipped build"). `zig build --release` picks it.
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
 
     const dateparsa = b.dependency("dateparsa", .{ .target = target, .optimize = optimize });
     const options = b.addOptions();
