@@ -754,6 +754,30 @@ def export(name):
             ("cmonnaie", STRING, "s", lambda i: rng.choice(["CAD", "USD", "EUR"])),
         ]
         return table(d, "strings", spec, 300, encoding="cp1252")
+    if name == "exp-tab-lf-ledger":
+        # An ERP ledger extract: tabs, no quoting, keys of 48 and 56 digits
+        # (too long for any number type: card t25), zero-padded codes,
+        # amounts with a sign, and one padded to its width with a bare
+        # point, as fixed-width numeric fields are.
+        d = Dialect("\t", '"', "\n", True)
+
+        def amount(i):
+            if i == 7:
+                return " " * 18 + "%d." % rng.between(1, 999)
+            cents = rng.between(-10**8, 10**9)
+            return "%s%d.%02d" % ("-" if cents < 0 else "", abs(cents) // 100, abs(cents) % 100)
+
+        spec = [
+            ("Batch Key", STRING, "s", lambda i: str(rng.between(1, 9)) + digits(rng, 46) + str(i % 10)),
+            ("Year", INT, "n", lambda i: str(rng.between(2019, 2026))),
+            ("Unit Code", STRING, "s", lambda i: "%010d" % rng.between(1, 99999)),
+            ("Cost Pool", STRING, "s", lambda i: some(rng, 2, 5, lambda: "%010d" % rng.between(1, 999999))),
+            ("Period", STRING, "s", lambda i: "%03d" % rng.between(1, 12)),
+            ("Local Amount", {"type": "decimal", "precision": 18, "scale": 2}, "n", amount),
+            ("Group Amount", {"type": "decimal", "precision": 18, "scale": 2}, "n", amount),
+            ("Run Key", STRING, "s", lambda i: str(rng.between(1, 9)) + digits(rng, 55)),
+        ]
+        return table(d, "minimal", spec, 2000)
     raise KeyError(name)
 
 
@@ -768,6 +792,7 @@ EXPORTS = [
     "exp-comma-crlf-foxpro",
     "exp-pipe-crlf-tiny",
     "exp-comma-crlf-cp1252",
+    "exp-tab-lf-ledger",
 ]
 
 

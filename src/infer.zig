@@ -19,7 +19,9 @@
 //! A number spelled with a leading zero (0614141000012, 02134, 00.5) sends
 //! its column to string. It is an identifier, a ZIP code or a padded field,
 //! and as an int64 it would lose the zero in Arrow, where only the value is
-//! kept: inference never proposes a type that loses text.
+//! kept: inference never proposes a type that loses text. So does a value
+//! of digits alone too long for a decimal, that float64 would round (a
+//! 48-digit key).
 //!
 //! An empty date as fixed-format exports write one ("  /  /    ") is set
 //! aside. A column that ends a date or timestamp takes it as a null, its
@@ -64,6 +66,10 @@ pub const Kind = enum(u8) {
 
 /// The most decimal digits Arrow's Decimal128 holds.
 const max_precision = 38;
+
+/// The most significant digits every integer of that length keeps as a
+/// float64 (2^53 is 9007199254740992, sixteen digits).
+const float_exact_digits = 15;
 
 /// The precision an inferred decimal has at least: an exact one, such as
 /// decimal(5,5) from 0.00000, fails the next file's first 1.5, and 18
@@ -349,8 +355,21 @@ fn numberFrom(c: *ColumnState, v: []const u8, from: Kind) Kind {
             }
         }
     }
-    if (types.float.parse(v) != null) return .float64;
+    if (types.float.parse(v) != null) {
+        // Digits alone, more than a float64 keeps: a key, not a quantity.
+        if (integerDigits(v)) |n| if (n > float_exact_digits) return .string;
+        return .float64;
+    }
     return .string;
+}
+
+/// The significant digits of v when it is an integer (a sign and digits
+/// alone), or null.
+fn integerDigits(v: []const u8) ?usize {
+    const digits = if (v.len > 0 and (v[0] == '-' or v[0] == '+')) v[1..] else v;
+    if (digits.len == 0) return null;
+    for (digits) |c| if (!std.ascii.isDigit(c)) return null;
+    return digits.len - (std.mem.findNone(u8, digits, "0") orelse digits.len);
 }
 
 /// The columns as a schema's, for infer's output: allocated in arena.
@@ -502,6 +521,20 @@ test "the lattice moves down and only down" {
     try testing.expectEqual(Kind.string, (try inferOne(a, &.{ "12", "N/A" })).kind);
     try testing.expectEqual(Kind.string, (try inferOne(a, &.{ "12", "2024-01-02" })).kind);
     try testing.expectEqual(Kind.null, (try inferOne(a, &.{ "", "" })).kind);
+}
+
+test "digits too many for a decimal keep their column a string, not a float" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const key48 = "123456789012345678901234567890123456789012345678";
+    try testing.expectEqual(Kind.string, (try inferOne(a, &.{key48})).kind);
+    try testing.expectEqual(Kind.string, (try inferOne(a, &.{ "7", key48 })).kind);
+    // A float column meeting an integer it would round.
+    try testing.expectEqual(Kind.string, (try inferOne(a, &.{ "1.5e3", "12345678901234567890" })).kind);
+    try testing.expectEqual(Kind.float64, (try inferOne(a, &.{ "1.5e3", "42", "-0.25" })).kind);
+    // Up to 38 digits a decimal holds it, exactly.
+    try testing.expectEqual(Kind.decimal, (try inferOne(a, &.{"99999999999999999999"})).kind);
 }
 
 test "a number with a leading zero keeps its column a string" {

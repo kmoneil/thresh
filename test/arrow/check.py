@@ -139,6 +139,11 @@ def check(thresh, corpus, name, out, mode):
             # lost zero: an inferred integer must have had none to lose.
             if mode == "convert" and pa.types.is_int64(field.type) and re.fullmatch(r"[+-]?0\d+", row[i].strip(" \t")):
                 raise AssertionError("%s (%s): row %d, %s: inferred int64 for %r, which Arrow holds as %r" % (name, mode, r, field.name, row[i], g))
+            # float() of a 48-digit key rounds it as Arrow does, so the two
+            # agree: an inferred float64 must have had no such integer.
+            digits = row[i].strip(" \t").lstrip("+-")
+            if mode == "convert" and pa.types.is_float64(field.type) and digits.isdigit() and len(digits.lstrip("0")) > 15:
+                raise AssertionError("%s (%s): row %d, %s: inferred float64 for %r, which Arrow holds as %r" % (name, mode, r, field.name, row[i], g))
     # Text as the source holds it, decoded by Python: a Latin-1 or
     # Windows-1252 byte thresh maps wrongly shows here, and nowhere above,
     # where Arrow and the CSV are both thresh's.
