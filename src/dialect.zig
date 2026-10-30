@@ -275,7 +275,7 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
         // (its parse stops at the window's end) and lets a wrong one win
         // with many short records. Each parse stops at options.records
         // records, so a bigger window costs little unless a record is big.
-        const clear = best.records >= options.records and confidenceOf(best, runners) == .high;
+        const clear = best.records >= options.records and confidenceOf(best, runners, options.schema) == .high;
         if (clear or whole or len == data.len or window >= options.max_sample) break;
         window = @min(window * 2, @max(options.max_sample, options.sample_bytes));
     }
@@ -292,7 +292,7 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
         .no => false,
         .auto => try isHeader(gpa, sample, d, options, &parser_fields),
     };
-    const confidence = confidenceOf(best, runners);
+    const confidence = confidenceOf(best, runners, options.schema);
     return .{
         .dialect = d,
         .confidence = confidence,
@@ -309,10 +309,15 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
 
 /// High when nearly every record has the winner's shape and the best other
 /// delimiter scores 0.2 or more below it; medium when most records do.
-fn confidenceOf(best: Scored, runners: [2]?Verdict.Runner) Confidence {
+/// When a schema's column count is the winner's and it leads by as much,
+/// at least medium however ragged the rows: the schema is the strongest
+/// evidence there is, and the ragged rows are then the file's errors to
+/// report, not a dialect left unsettled.
+fn confidenceOf(best: Scored, runners: [2]?Verdict.Runner, schema: ?[]const []const u8) Confidence {
     const margin = if (runners[0]) |r| best.score - r.score else std.math.inf(f64);
     if (best.consistency >= 0.98 and margin >= 0.2) return .high;
     if (best.consistency >= 0.9) return .medium;
+    if (schema) |cols| if (cols.len == best.mode and margin >= 0.2) return .medium;
     return .low;
 }
 
@@ -470,9 +475,11 @@ fn lines(gpa: Allocator, sample: []const u8, d: Dialect, fields: *std.ArrayList(
 }
 
 /// Whether the first record names the columns. With a schema, it does when
-/// its fields are the schema's names, trimmed and in any case. Without, it
-/// does when every field in it is a non-empty string and some column below
-/// it holds only values of another type.
+/// at least half its fields are the schema's names, trimmed and in any
+/// case: a header missing a column, or with one the schema lacks, is still
+/// a header, and validation says which column. Failing that, it does when
+/// every field in it is a non-empty string and some column below it holds
+/// only values of another type.
 fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOptions, fields: *std.ArrayList(Field)) Allocator.Error!bool {
     var p: reference.Parser = .init(sample, d, .{});
     _ = try p.next(gpa, fields) orelse return false;
@@ -481,12 +488,17 @@ fn isHeader(gpa: Allocator, sample: []const u8, d: Dialect, options: SniffOption
     const first = try fields.toOwnedSlice(gpa);
     defer gpa.free(first);
     if (options.schema) |names| {
-        if (names.len != first.len) return false;
-        for (first, names) |f, name| {
-            const v = try value(gpa, &scratch, sample, d, f);
-            if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, v, " \t"), std.mem.trim(u8, name, " \t"))) return false;
+        var named: usize = 0;
+        for (first) |f| {
+            const v = std.mem.trim(u8, try value(gpa, &scratch, sample, d, f), " \t");
+            for (names) |name| {
+                if (std.ascii.eqlIgnoreCase(v, std.mem.trim(u8, name, " \t"))) {
+                    named += 1;
+                    break;
+                }
+            }
         }
-        return true;
+        if (named * 2 >= first.len and named > 0) return true;
     }
     for (first) |f| {
         const v = try value(gpa, &scratch, sample, d, f);
@@ -626,6 +638,21 @@ test "sniff picks backslash escaping when the escaped quotes need it" {
 test "ragged records are low confidence, not a wrong high" {
     const v = try sniffed("a,b\nc\nd,e,f\ng h,i\nj,k,l,m\n", .{});
     try std.testing.expect(v.confidence != .high);
+}
+
+test "a schema whose width the winner has keeps ragged rows from unsettling it" {
+    const data = "id,name,amount\n1,apple,1.50\n,pear,2\n4,b\n";
+    try std.testing.expectEqual(Confidence.low, (try sniffed(data, .{})).confidence);
+    const v = try sniffed(data, .{ .schema = &.{ "id", "name", "amount" } });
+    try std.testing.expectEqual(Confidence.medium, v.confidence);
+    try std.testing.expect(v.dialect.header);
+}
+
+test "a header missing a schema column, or with an extra, is still a header" {
+    const names: []const []const u8 = &.{ "id", "name", "amount" };
+    try std.testing.expect((try sniffed("id,amount\nx,y\nu,v\n", .{ .schema = names })).dialect.header);
+    try std.testing.expect((try sniffed("id,name,amount,note\nx,y,z,w\n", .{ .schema = names })).dialect.header);
+    try std.testing.expect(!(try sniffed("a,b,c\nx,y,z\n", .{ .schema = names })).dialect.header);
 }
 
 test "a schema's names make row 1 a header, and its count settles the delimiter" {

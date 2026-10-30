@@ -6,6 +6,10 @@ const std = @import("std");
 const build_options = @import("build_options");
 const dialect = @import("dialect.zig");
 const Dialect = dialect.Dialect;
+const cli = @import("cli.zig");
+const schema = @import("schema.zig");
+const worker = @import("worker.zig");
+const report = @import("report.zig");
 const reference = @import("reference.zig");
 const records = @import("records.zig");
 const Field = records.Field;
@@ -236,4 +240,133 @@ test "the sniffer settles every corpus file's dialect" {
         });
     }
     try testing.expectEqual(@as(usize, 0), wrong);
+}
+
+test "validate: every clean corpus file passes, every dirty one reports what was put in it" {
+    const io = testing.io;
+    const gpa = testing.allocator;
+    const corpus_dir = std.fs.path.dirname(build_options.corpus_index).?;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [256]u8 = undefined;
+    const reports = try std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}/reports", .{tmp.sub_path});
+
+    var corpus: Corpus = try .open(io, gpa);
+    defer corpus.close(io, gpa);
+    var it = corpus.names();
+    while (it.next()) |name| {
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+        const o = (try validateOne(io, gpa, arena.allocator(), &corpus, corpus_dir, name, null)).outcome;
+        if (o.result != .pass or o.rows_rejected != 0) {
+            std.debug.print("{s}: {t}, {d} of {d} rows rejected, {?s}\n", .{ name, o.result, o.rows_rejected, o.rows, o.problem });
+            return error.TestUnexpectedResult;
+        }
+    }
+
+    const dirty = try corpus.dir.readFileAlloc(io, "dirty.txt", gpa, .unlimited);
+    defer gpa.free(dirty);
+    var names = std.mem.tokenizeScalar(u8, dirty, '\n');
+    var files: usize = 0;
+    while (names.next()) |name| : (files += 1) {
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const one = try validateOne(io, gpa, a, &corpus, corpus_dir, name, reports);
+        var rp_buf: [512]u8 = undefined;
+        const report_path = try std.fmt.bufPrint(&rp_buf, "{s}/{s}.report.json", .{ reports, name });
+        const got_text = try Io.Dir.cwd().readFileAlloc(io, report_path, a, .unlimited);
+        const want_text = try corpus.sibling(io, a, name, ".expect.json");
+        try expectReport(a, name, got_text, want_text);
+        // The counts only mean something under the file's own dialect.
+        const sniffed = try std.json.parseFromSliceLeaky(std.json.Value, a, got_text, .{});
+        const d = sniffed.object.get("dialect").?.object;
+        const q: ?u8 = if (d.get("quote").? == .string) d.get("quote").?.string[0] else null;
+        if (d.get("delimiter").?.string[0] != one.want.delimiter or q != one.want.quote) {
+            std.debug.print("{s}: sniffed {s} and {f}, want {f}\n", .{ name, d.get("delimiter").?.string, std.json.fmt(d.get("quote").?, .{}), one.want });
+            return error.TestUnexpectedResult;
+        }
+        try expectGolden(io, a, name, got_text);
+    }
+    try testing.expect(files >= 5);
+}
+
+/// Validates one corpus file against its .schema.json, under the encoding
+/// its .dialect.json names, writing its report to reports if given.
+fn validateOne(io: Io, gpa: Allocator, arena: Allocator, corpus: *const Corpus, dir: []const u8, name: []const u8, reports: ?[]const u8) !struct { outcome: report.Outcome, want: Dialect } {
+    var fx = try corpus.load(io, gpa, name);
+    defer fx.deinit(gpa);
+    const stem = name[0 .. std.mem.findScalarLast(u8, name, '.') orelse name.len];
+    const schema_path = try std.fmt.allocPrint(arena, "{s}/{s}.schema.json", .{ dir, stem });
+    var diag: schema.Diagnostic = .{};
+    var owned = try schema.load(io, gpa, schema_path, &diag);
+    defer owned.deinit();
+    const cfg: cli.Config = .{
+        .command = .validate,
+        .schema = schema_path,
+        .report_dir = reports,
+        .encoding = if (std.mem.eql(u8, fx.expected.value.encoding, "latin1")) .latin1 else .utf8,
+    };
+    const plan: worker.Plan = .{
+        .cfg = &cfg,
+        .schema = &owned.schema,
+        .nulls = try worker.nullsOf(arena, &owned.schema, null),
+        .threshold = 1.0,
+        .timing = false,
+    };
+    const path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir, name });
+    return .{
+        .outcome = try worker.validateFile(.{ .io = io, .gpa = gpa }, plan, path, arena),
+        .want = fx.expected.value.dialect(),
+    };
+}
+
+/// The report holds the counts the generator worked out.
+fn expectReport(a: Allocator, name: []const u8, got_text: []const u8, want_text: []const u8) !void {
+    const got = try std.json.parseFromSliceLeaky(std.json.Value, a, got_text, .{});
+    const want = try std.json.parseFromSliceLeaky(std.json.Value, a, want_text, .{});
+    const g = got.object;
+    const w = want.object;
+    inline for (.{ "result", "rows", "rows_rejected", "rejected_sample", "structural" }) |key| {
+        if (!jsonEql(g.get(key).?, w.get(key).?)) {
+            std.debug.print("{s}: {s} is {f}, the generator says {f}\n", .{ name, key, std.json.fmt(g.get(key).?, .{}), std.json.fmt(w.get(key).?, .{}) });
+            return error.TestUnexpectedResult;
+        }
+    }
+    for (w.get("columns").?.array.items, g.get("columns").?.array.items) |wc, gc| {
+        inline for (.{ "name", "mismatches", "nulls" }) |key| {
+            if (!jsonEql(wc.object.get(key).?, gc.object.get(key).?)) {
+                std.debug.print("{s}: column {s}: {s} is {f}, the generator says {f}\n", .{
+                    name, wc.object.get("name").?.string, key, std.json.fmt(gc.object.get(key).?, .{}), std.json.fmt(wc.object.get(key).?, .{}),
+                });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+}
+
+fn jsonEql(a: std.json.Value, b: std.json.Value) bool {
+    return switch (a) {
+        .integer => |x| b == .integer and b.integer == x,
+        .string => |x| b == .string and std.mem.eql(u8, x, b.string),
+        .array => |x| b == .array and x.items.len == b.array.items.len and for (x.items, b.array.items) |p, q| {
+            if (!jsonEql(p, q)) break false;
+        } else true,
+        else => false,
+    };
+}
+
+/// The report, its "file" written as the base name, is the checked-in
+/// test/golden one byte for byte; -Dupdate-golden writes it instead.
+fn expectGolden(io: Io, a: Allocator, name: []const u8, got_text: []const u8) !void {
+    const first_nl = std.mem.findScalar(u8, got_text, '\n').?;
+    const second_nl = first_nl + 1 + std.mem.findScalar(u8, got_text[first_nl + 1 ..], '\n').?;
+    const normal = try std.fmt.allocPrint(a, "{s}\n  \"file\": \"{s}\",{s}", .{ got_text[0..first_nl], name, got_text[second_nl..] });
+    const path = try std.fmt.allocPrint(a, "{s}/{s}.report.json", .{ build_options.golden_dir, name });
+    if (build_options.update_golden) {
+        try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = normal });
+        return;
+    }
+    const want = try Io.Dir.cwd().readFileAlloc(io, path, a, .unlimited);
+    try testing.expectEqualStrings(want, normal);
 }

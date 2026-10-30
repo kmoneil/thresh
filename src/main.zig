@@ -12,6 +12,9 @@ const build_options = @import("build_options");
 const cli = @import("cli.zig");
 const dialect = @import("dialect.zig");
 const input = @import("input.zig");
+const schema = @import("schema.zig");
+const report = @import("report.zig");
+const worker = @import("worker.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -91,11 +94,70 @@ fn execute(env: Env, args: []const []const u8, out: *Io.Writer, err: *Io.Writer)
     };
     return switch (cfg.command) {
         .sniff => sniff(env, cfg, out, err),
+        .validate => validateFiles(env, &cfg, out, err),
         else => {
             try err.print("thresh: {t} is not built yet\n", .{cfg.command});
             return .usage;
         },
     };
+}
+
+/// The schema --schema or --columns names; null, with the reason printed,
+/// when it cannot be read.
+fn loadSchema(env: Env, cfg: *const cli.Config, err: *Io.Writer) !?schema.Owned {
+    var diag: schema.Diagnostic = .{};
+    if (cfg.columns) |spec| return schema.parseInline(env.gpa, spec, &diag) catch |e| switch (e) {
+        error.InvalidSchema => {
+            try err.print("thresh: {s}\n", .{diag.message});
+            return null;
+        },
+        error.OutOfMemory => return e,
+    };
+    const path = cfg.schema.?;
+    return schema.load(env.io, env.gpa, path, &diag) catch |e| switch (e) {
+        error.InvalidSchema => {
+            try err.print("thresh: {s}: {s}\n", .{ path, diag.message });
+            return null;
+        },
+        error.OutOfMemory => return e,
+        else => {
+            try err.print("thresh: {s}: {s}\n", .{ path, worker.describe(e) });
+            return null;
+        },
+    };
+}
+
+/// validate: each file against the schema, a line apiece on stderr (or a
+/// JSON object on stdout under --json), reports and reject files as asked.
+fn validateFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
+    var owned = (try loadSchema(env, cfg, err)) orelse return .usage;
+    defer owned.deinit();
+    const s = &owned.schema;
+    const plan: worker.Plan = .{
+        .cfg = cfg,
+        .schema = s,
+        .nulls = try worker.nullsOf(env.arena, s, cfg.nulls),
+        .threshold = cfg.threshold orelse s.threshold orelse 1.0,
+    };
+    var outcomes: std.ArrayList(report.Outcome) = .empty;
+    var code: Exit = .ok;
+    for (cfg.files) |path| {
+        const o = try worker.validateFile(.{ .io = env.io, .gpa = env.gpa }, plan, path, env.arena);
+        try outcomes.append(env.arena, o);
+        code = code.worst(@fromBackingInt(o.result.exitCode()));
+        if (cfg.json) {
+            try report.writeJsonLine(out, o);
+        } else if (!cfg.quiet) {
+            try report.writeLine(err, o);
+        }
+    }
+    if (cfg.report_dir) |dir| {
+        var sink: worker.Sink = try .create(env.io, env.gpa, dir, "summary", ".json");
+        defer sink.close(env.io, env.gpa);
+        try report.writeSummary(&sink.writer.interface, outcomes.items, @backingInt(code));
+        try sink.writer.interface.flush();
+    }
+    return code;
 }
 
 /// Each file's dialect, a line apiece: text, or JSON under --json.
@@ -166,6 +228,12 @@ test {
     _ = @import("reference.zig");
     _ = @import("scan.zig");
     _ = @import("input.zig");
+    _ = @import("schema.zig");
+    _ = @import("types.zig");
+    _ = @import("validate.zig");
+    _ = @import("write/csv.zig");
+    _ = report;
+    _ = worker;
 }
 
 test "worst keeps the higher status" {

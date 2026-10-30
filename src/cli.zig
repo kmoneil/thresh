@@ -31,7 +31,8 @@ pub const usage =
     \\      --null LIST        comma-separated strings read as null
     \\      --day-first        read ambiguous numeric dates as DD/MM
     \\      --encoding E       utf8 (the default) or latin1
-    \\      --threshold F      minimum conforming fraction per column (default 1.0)
+    \\      --threshold F      minimum conforming fraction per column (default:
+    \\                         the schema's, or 1.0)
     \\      --strict           extra columns, ragged rows and ambiguous dates fail
     \\      --keep-empty       an empty line is a one-field record, not skipped
     \\      --pad              fill a short row's missing fields with null
@@ -87,7 +88,8 @@ pub const Config = struct {
     nulls: ?[]const u8 = null,
     day_first: bool = false,
     encoding: Encoding = .utf8,
-    threshold: f64 = 1.0,
+    /// Null: the schema's, or 1.0.
+    threshold: ?f64 = null,
     strict: bool = false,
     keep_empty: bool = false,
     ragged: Ragged = .reject,

@@ -155,14 +155,21 @@ class Writer:
             return v.replace("\\", "\\\\").replace(q, "\\" + q)
         return v.replace(q, q + q)
 
-    def record(self, values, kinds):
-        """values: str or None (null, written empty); kinds: "s" string, "n" not."""
+    def record(self, values, kinds, raw_last=None):
+        """values: str or None (null, written empty); kinds: "s" string, "n" not.
+        raw_last: written as it is for the last value, quoting and all (a
+        dirty file's broken quote). A lone surrogate is written as the byte
+        it escapes, for a dirty file's invalid UTF-8."""
         d = self.d
         self.records.append(["" if v is None else v for v in values])
         row = len(self.records) - 1
+        kinds = list(kinds) + ["s"] * (len(values) - len(kinds))
         for col, (v, kind) in enumerate(zip(values, kinds)):
             if col:
                 self.out += d.delimiter.encode(self.codec)
+            if raw_last is not None and col == len(values) - 1:
+                self.out += raw_last.encode(self.codec)
+                continue
             v = "" if v is None else v
             quoted = False
             if d.quote is not None:
@@ -178,12 +185,12 @@ class Writer:
                 body = self.escape(v)
                 self.out += d.quote.encode(self.codec)
                 start = len(self.out)
-                self.out += body.encode(self.codec)
+                self.out += body.encode(self.codec, "surrogateescape")
                 self.fields.append((row, col, start, len(self.out) - start, 1 | (2 if body != v else 0)))
                 self.out += d.quote.encode(self.codec)
             else:
                 start = len(self.out)
-                self.out += v.encode(self.codec)
+                self.out += v.encode(self.codec, "surrogateescape")
                 self.fields.append((row, col, start, len(self.out) - start, 0))
         self.out += d.newline.encode(self.codec)
 
@@ -471,6 +478,124 @@ def plan():
     return files
 
 
+# Dirty files: short-profile records with one error put into some of them,
+# and what validating them against their schema must find (.expect.json),
+# worked out here as the errors are made. Each error is one of these, a
+# cell's (counted against its column) or a row's (counted against every
+# column, and the row's cells not looked at).
+INJECTIONS = [
+    ("id", "12a"),
+    ("id", None),
+    ("id", "99999999999999999999"),
+    ("code", "OPEN"),
+    ("amount", "1234567890123.45"),
+    ("amount", "1.234"),
+    ("amount", "12,50"),
+    ("ratio", "abc"),
+    ("flag", "maybe"),
+    ("name", "x" * 60),
+    ("name", "caf\udce9"),
+    ("*", "short"),
+    ("*", "long"),
+    ("*", "bad_quote"),
+]
+
+DIRTY = [
+    ("dirty-comma-dq-lf-h-utf8", Dialect(",", '"', "\n", True), "utf8", None),
+    ("dirty-tab-sq-crlf-h-latin1", Dialect("\t", "'", "\r\n", True), "latin1", None),
+    ("dirty-pipe-noquote-lf-nh-utf8", Dialect("|", None, "\n", False), "utf8", None),
+    ("dirty-semicolon-dq-cr-h-utf8-bom", Dialect(";", '"', "\r", True), "utf8-bom", None),
+    ("dirty-comma-dq-lf-h-missing-column", Dialect(",", '"', "\n", True), "utf8", "flag"),
+]
+
+
+def dirty_file(fname, d, encoding, missing):
+    rng = Rng(fname)
+    columns = [
+        {"name": "id", "type": "int64", "nullable": False},
+        {"name": "code", "type": "enum", "values": CODES},
+        {"name": "amount", "type": "decimal", "precision": 12, "scale": 2},
+        {"name": "ratio", "type": "float64"},
+        {"name": "flag", "type": "bool"},
+        {"name": "created", "type": "date", "format": "%Y-%m-%d"},
+        {"name": "updated", "type": "timestamp", "format": "%Y-%m-%d %H:%M:%S"},
+        {"name": "name", "type": "string", "max_len": 40},
+    ]
+    names = [c["name"] for c in columns]
+    kinds = ["n", "s", "n", "n", "n", "n", "n", "s"]
+    # The file's columns: the schema's, less the one it is missing.
+    keep = [i for i, n in enumerate(names) if n != missing]
+    w = Writer(d, encoding, "minimal")
+    if d.header:
+        w.record([names[i] for i in keep], ["s"] * len(keep))
+    stats = {n: {"mismatches": 0, "nulls": 0} for n in names}
+    rejected = []
+    rows = 60
+    unquoted_special = [5 * k + 2 for k in range(6)]
+    shift = rng.below(len(INJECTIONS))
+    injected = 0
+    for i in range(rows):
+        line = i + (2 if d.header else 1)
+        cents = rng.between(-500000, 2000000)
+        values = [
+            str(i + 1),
+            rng.choice(CODES),
+            "%s%d.%02d" % ("-" if cents < 0 else "", abs(cents) // 100, abs(cents) % 100),
+            None if rng.chance(1, 8) else "%.4f" % (rng.below(10**4) / 10**4),
+            rng.choice(["true", "false"]),
+            date(rng),
+            date(rng) + " %02d:%02d:%02d" % (rng.below(24), rng.below(60), rng.below(60)),
+            # Some names need their quotes, so the file's quote is the one
+            # the sniffer settles: one nothing needs reads as data. An
+            # unquoted file opens quotes it never closes, as the clean ones do.
+            name(rng, d, d.quote is not None and i % 5 == 1).replace("'", "").replace('"', ""),
+        ]
+        if d.quote is None and i in unquoted_special:
+            values[-1] = unclosed(rng, unquoted_special, i)
+        col, bad = (None, None)
+        if missing is None and i % 4 == 3:
+            col, bad = INJECTIONS[(shift + injected) % len(INJECTIONS)]
+            injected += 1
+            # Errors some files cannot hold: an invalid byte in Latin-1 (every
+            # byte is one), a broken quote where nothing is quoted.
+            if (bad == "caf\udce9" and encoding == "latin1") or (bad == "bad_quote" and d.quote is None):
+                col, bad = ("ratio", "1.2.3")
+        raw = None
+        if col == "*":
+            if bad == "short":
+                values = values[:-1]
+            elif bad == "long":
+                values = values + ["extra"]
+            else:
+                raw = "%sBad%s quote" % (d.quote, d.quote)
+                values[-1] = raw
+            for n in names:
+                if n != missing:
+                    stats[n]["mismatches"] += 1
+            rejected.append(line)
+        else:
+            if col is not None:
+                values[names.index(col)] = bad
+                stats[col]["mismatches"] += 1
+                rejected.append(line)
+            for n, v in zip(names, values):
+                if n != missing and v is None and n != "id":
+                    stats[n]["nulls"] += 1
+        out = [values[j] for j in keep if j < len(values)] + values[len(names):]
+        w.record(out, kinds, raw_last=raw)
+    expect = {
+        "result": "fail",
+        "rows": rows,
+        "rows_rejected": len(rejected),
+        "rejected_sample": rejected[:10],
+        "columns": [{"name": n, "mismatches": stats[n]["mismatches"], "nulls": stats[n]["nulls"]} for n in names],
+        "structural": ["the schema's column '%s' is not in the header" % missing] if missing else [],
+    }
+    return w, columns, expect
+
+
+
+
 def dumps(obj):
     return json.dumps(obj, indent=2, sort_keys=False, ensure_ascii=True) + "\n"
 
@@ -529,6 +654,30 @@ def main(argv):
         put(fname + ".fields", "".join("%d %d %d %d %d\n" % f for f in w.fields))
         index.append(fname + ".csv")
     put("index.txt", "".join(n + "\n" for n in index))
+
+    dirty = []
+    for fname, d, encoding, missing in DIRTY:
+        w, columns, expect = dirty_file(fname, d, encoding, missing)
+        put(fname + ".csv", bytes(w.out))
+        put(
+            fname + ".dialect.json",
+            dumps(
+                {
+                    "delimiter": d.delimiter,
+                    "quote": d.quote,
+                    "escape": d.escape,
+                    "newline": d.newline_name(),
+                    "header": d.header,
+                    "encoding": "latin1" if w.codec == "latin-1" else "utf8",
+                    "bom": w.out.startswith(b"\xef\xbb\xbf"),
+                    "adversarial": False,
+                }
+            ),
+        )
+        put(fname + ".schema.json", dumps({"columns": columns, "nulls": [""]}))
+        put(fname + ".expect.json", dumps(expect))
+        dirty.append(fname + ".csv")
+    put("dirty.txt", "".join(n + "\n" for n in dirty))
 
     lines = "".join("%s  %s\n" % (written[n], n) for n in sorted(written))
     if manifest:

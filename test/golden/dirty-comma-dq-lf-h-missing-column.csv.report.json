@@ -1,0 +1,92 @@
+{
+  "file": "dirty-comma-dq-lf-h-missing-column.csv",
+  "bytes": 4188,
+  "rows": 60,
+  "result": "fail",
+  "dialect": {
+    "delimiter": ",",
+    "quote": "\"",
+    "escape": "doubled",
+    "newline": "lf",
+    "header": true,
+    "confidence": "high",
+    "score": 2.08,
+    "runners_up": [
+      {
+        "delimiter": "-",
+        "score": 1.34
+      },
+      {
+        "delimiter": ":",
+        "score": 1.34
+      }
+    ]
+  },
+  "columns": [
+    {
+      "name": "id",
+      "type": "int64",
+      "nulls": 0,
+      "mismatches": 0,
+      "conformance": 1.0
+    },
+    {
+      "name": "code",
+      "type": "enum",
+      "nulls": 0,
+      "mismatches": 0,
+      "conformance": 1.0
+    },
+    {
+      "name": "amount",
+      "type": "decimal",
+      "nulls": 0,
+      "mismatches": 0,
+      "conformance": 1.0
+    },
+    {
+      "name": "ratio",
+      "type": "float64",
+      "nulls": 6,
+      "mismatches": 0,
+      "conformance": 1.0
+    },
+    {
+      "name": "flag",
+      "type": "bool",
+      "nulls": 0,
+      "mismatches": 0,
+      "conformance": 1.0
+    },
+    {
+      "name": "created",
+      "type": "date",
+      "nulls": 0,
+      "mismatches": 0,
+      "conformance": 1.0,
+      "format": "%Y-%m-%d"
+    },
+    {
+      "name": "updated",
+      "type": "timestamp",
+      "nulls": 0,
+      "mismatches": 0,
+      "conformance": 1.0,
+      "format": "%Y-%m-%d %H:%M:%S"
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "nulls": 0,
+      "mismatches": 0,
+      "conformance": 1.0
+    }
+  ],
+  "structural": [
+    "the schema's column 'flag' is not in the header"
+  ],
+  "rows_rejected": 0,
+  "rejected_sample": [],
+  "row_errors": {},
+  "warnings": []
+}

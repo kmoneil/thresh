@@ -1,0 +1,176 @@
+{
+  "file": "dirty-tab-sq-crlf-h-latin1.csv",
+  "bytes": 4596,
+  "rows": 60,
+  "result": "fail",
+  "dialect": {
+    "delimiter": "\t",
+    "quote": "'",
+    "escape": "doubled",
+    "newline": "crlf",
+    "header": true,
+    "confidence": "medium",
+    "score": 3.13,
+    "runners_up": [
+      {
+        "delimiter": "-",
+        "score": 1.46
+      },
+      {
+        "delimiter": ":",
+        "score": 1.34
+      }
+    ]
+  },
+  "columns": [
+    {
+      "name": "id",
+      "type": "int64",
+      "nulls": 0,
+      "mismatches": 6,
+      "conformance": 0.9,
+      "samples": [
+        {
+          "row": 41,
+          "value": "12a",
+          "reason": "not an int64"
+        },
+        {
+          "row": 45,
+          "value": "",
+          "reason": "null in a non-nullable column"
+        },
+        {
+          "row": 49,
+          "value": "99999999999999999999",
+          "reason": "out of int64 range"
+        }
+      ]
+    },
+    {
+      "name": "code",
+      "type": "enum",
+      "nulls": 0,
+      "mismatches": 4,
+      "conformance": 0.93333333,
+      "samples": [
+        {
+          "row": 53,
+          "value": "OPEN",
+          "reason": "not one of the enum's values"
+        }
+      ]
+    },
+    {
+      "name": "amount",
+      "type": "decimal",
+      "nulls": 0,
+      "mismatches": 7,
+      "conformance": 0.88333333,
+      "samples": [
+        {
+          "row": 5,
+          "value": "1.234",
+          "reason": "too many digits after the point for the decimal's scale"
+        },
+        {
+          "row": 9,
+          "value": "12,50",
+          "reason": "not a decimal"
+        },
+        {
+          "row": 57,
+          "value": "1234567890123.45",
+          "reason": "too many digits for the decimal's precision"
+        },
+        {
+          "row": 61,
+          "value": "1.234",
+          "reason": "too many digits after the point for the decimal's scale"
+        }
+      ]
+    },
+    {
+      "name": "ratio",
+      "type": "float64",
+      "nulls": 7,
+      "mismatches": 5,
+      "conformance": 0.91666667,
+      "samples": [
+        {
+          "row": 13,
+          "value": "abc",
+          "reason": "not a float64"
+        },
+        {
+          "row": 25,
+          "value": "1.2.3",
+          "reason": "not a float64"
+        }
+      ]
+    },
+    {
+      "name": "flag",
+      "type": "bool",
+      "nulls": 0,
+      "mismatches": 4,
+      "conformance": 0.93333333,
+      "samples": [
+        {
+          "row": 17,
+          "value": "maybe",
+          "reason": "not a bool"
+        }
+      ]
+    },
+    {
+      "name": "created",
+      "type": "date",
+      "nulls": 0,
+      "mismatches": 3,
+      "conformance": 0.95,
+      "format": "%Y-%m-%d"
+    },
+    {
+      "name": "updated",
+      "type": "timestamp",
+      "nulls": 0,
+      "mismatches": 3,
+      "conformance": 0.95,
+      "format": "%Y-%m-%d %H:%M:%S"
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "nulls": 0,
+      "mismatches": 4,
+      "conformance": 0.93333333,
+      "samples": [
+        {
+          "row": 21,
+          "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "reason": "longer than max_len"
+        }
+      ]
+    }
+  ],
+  "structural": [],
+  "rows_rejected": 15,
+  "rejected_sample": [
+    5,
+    9,
+    13,
+    17,
+    21,
+    25,
+    29,
+    33,
+    37,
+    41
+  ],
+  "row_errors": {
+    "ragged": 2,
+    "bad_quote": 1
+  },
+  "warnings": []
+}

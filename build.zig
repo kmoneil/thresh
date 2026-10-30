@@ -69,13 +69,23 @@ pub fn build(b: *std.Build) void {
         // The module compiles the tests of every file it imports; the
         // random inputs are the main module's to run.
         corpus_options.addOption(u32, "differential_cases", 0);
+        // The dirty files' reports, checked in; -Dupdate-golden rewrites them.
+        const update_golden = b.option(bool, "update-golden", "Rewrite test/golden from what validate reports now") orelse false;
+        corpus_options.addOption(bool, "update_golden", update_golden);
+        // Relative to the build root, where the test runs.
+        corpus_options.addOption([]const u8, "golden_dir", "test/golden");
         const corpus_mod = b.createModule(.{
             .root_source_file = b.path("src/corpus_test.zig"),
             .target = target,
             .optimize = optimize,
         });
         corpus_mod.addOptions("build_options", corpus_options);
-        test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = corpus_mod })).step);
+        const corpus_run = b.addRunArtifact(b.addTest(.{ .root_module = corpus_mod }));
+        corpus_run.setCwd(b.path("."));
+        if (update_golden) corpus_run.has_side_effects = true else for (dirty_files) |name| {
+            corpus_run.addFileInput(b.path(b.fmt("test/golden/{s}.csv.report.json", .{name})));
+        }
+        test_step.dependOn(&corpus_run.step);
     }
 
     // The stages' throughput, always ReleaseFast: `zig build bench --
@@ -116,6 +126,16 @@ pub fn build(b: *std.Build) void {
     b.step("vet", "Check sources with zigvet").dependOn(&vet.step);
 }
 
+/// The corpus's dirty files (test/gen/corpus.py's DIRTY), whose reports are
+/// checked in under test/golden.
+const dirty_files = [_][]const u8{
+    "dirty-comma-dq-lf-h-utf8",
+    "dirty-tab-sq-crlf-h-latin1",
+    "dirty-pipe-noquote-lf-nh-utf8",
+    "dirty-semicolon-dq-cr-h-utf8-bom",
+    "dirty-comma-dq-lf-h-missing-column",
+};
+
 /// What `zig build test` runs thresh with, and what it must write and exit
 /// with. Null leaves a stream unchecked.
 const cli_checks = [_]struct {
@@ -155,6 +175,21 @@ const cli_checks = [_]struct {
     .{
         .args = &.{ "validate", "test/cli/orders.csv" },
         .stderr = "thresh: validate needs --schema or --columns\n(thresh --help lists the commands and options)\n",
+        .code = 3,
+    },
+    .{ .args = &.{ "validate", "test/cli/orders.csv", "--columns", "id:int64,name:string,amount:decimal(6,2)", "--quiet" } },
+    .{
+        .args = &.{ "validate", "test/cli/orders.csv", "--columns", "id:int64,name:string,amount:int64", "--quiet" },
+        .code = 1,
+    },
+    .{
+        .args = &.{ "validate", "test/cli/orders.csv", "--columns", "id:int64,amount:int64", "--json" },
+        .stdout = "{\"file\":\"test/cli/orders.csv\",\"result\":\"fail\",\"rows\":2,\"rows_rejected\":2,\"problem\":null}\n",
+        .code = 1,
+    },
+    .{
+        .args = &.{ "validate", "test/cli/orders.csv", "--schema", "test/cli/missing.json" },
+        .stderr = "thresh: test/cli/missing.json: no such file\n",
         .code = 3,
     },
     .{ .args = &.{"--help"}, .stdout = null },
