@@ -497,12 +497,14 @@ pub fn values(
 }
 
 /// Records grouped for the stages after parsing: at most max_rows records
-/// or max_bytes of field content, whichever comes first.
+/// or max_bytes of fields, whichever comes first. A field's bytes are its
+/// content and the Field that marks it, so a wide row of empty fields
+/// fills a batch as surely as long ones do.
 pub const Batch = struct {
     records: std.ArrayList(Record) = .empty,
     /// Every record's fields, in order: record i's are fields[firsts[i]..firsts[i + 1]].
     fields: std.ArrayList(Field) = .empty,
-    firsts: std.ArrayList(u32) = .empty,
+    firsts: std.ArrayList(usize) = .empty,
     field_bytes: u64 = 0,
 
     pub const Limits = struct {
@@ -536,12 +538,12 @@ pub const Batch = struct {
     /// done; which of those, so the caller knows what to do next.
     pub fn fill(b: *Batch, gpa: Allocator, s: *Scanner, limits: Limits) Allocator.Error!enum { full, need_more, end } {
         while (b.len() < limits.rows and b.field_bytes < limits.bytes) {
-            const first: u32 = @intCast(b.fields.items.len);
+            const first = b.fields.items.len;
             switch (try s.next(&b.fields)) {
                 .record => |rec| {
                     try b.records.append(gpa, rec);
                     try b.firsts.append(gpa, first);
-                    for (b.fields.items[first..]) |f| b.field_bytes += f.len;
+                    for (b.fields.items[first..]) |f| b.field_bytes += f.len + @sizeOf(Field);
                 },
                 .need_more => return .need_more,
                 .end => return .end,
@@ -758,7 +760,7 @@ test "a batch stops at its row and byte limits" {
     defer b.deinit(testing.allocator);
     try testing.expectEqual(.full, try b.fill(testing.allocator, &s, .{ .rows = 3 }));
     try testing.expectEqual(@as(usize, 3), b.len());
-    try testing.expectEqual(@as(u64, 6), b.field_bytes);
+    try testing.expectEqual(@as(u64, 6 + 6 * @sizeOf(Field)), b.field_bytes);
     try testing.expectEqualStrings("c", b.recordFields(1)[0].raw(input));
     b.clear();
     try testing.expectEqual(.full, try b.fill(testing.allocator, &s, .{ .bytes = 1 }));
@@ -767,4 +769,18 @@ test "a batch stops at its row and byte limits" {
     b.clear();
     try testing.expectEqual(.end, try b.fill(testing.allocator, &s, .{}));
     try testing.expectEqual(@as(usize, 0), b.len());
+}
+
+test "a batch of wide rows of empty fields stops at its byte limit" {
+    // 100 fields a record, every one empty: no content, a Field apiece.
+    const row = @as([99]u8, @splat(',')) ++ "\n";
+    const input = row ++ row ++ row ++ row;
+    var s: Scanner = try .init(testing.allocator, .rfc4180, .{});
+    defer s.deinit();
+    s.feed(input, 0, true);
+    var b: Batch = .{};
+    defer b.deinit(testing.allocator);
+    try testing.expectEqual(.full, try b.fill(testing.allocator, &s, .{ .bytes = 150 * @sizeOf(Field) }));
+    try testing.expectEqual(@as(usize, 2), b.len());
+    try testing.expectEqual(@as(usize, 100), b.recordFields(1).len);
 }
