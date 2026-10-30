@@ -45,6 +45,11 @@ pub const OutputPlan = struct {
     dir: []const u8,
 };
 
+/// What an output file keeps of a name: all before its last dot.
+pub fn stem(name: []const u8) []const u8 {
+    return name[0 .. std.mem.findScalarLast(u8, name, '.') orelse name.len];
+}
+
 /// A file's output: written to a dot-named temporary beside where it goes
 /// and renamed there when the file is done, so a crash or a Ctrl-C leaves
 /// no partial file under the real name.
@@ -55,9 +60,9 @@ const Output = struct {
     batch: builders.Batch,
     format: union(enum) { csv: csv.Writer, arrow: arrow.Writer },
 
-    fn create(env: Env, arena: Allocator, plan: OutputPlan, cfg: *const cli.Config, s: *const Schema, source: []const u8) !Output {
-        const base = std.fs.path.basename(source);
-        const stem = base[0 .. std.mem.findScalarLast(u8, base, '.') orelse base.len];
+    /// name is the file's from pool.uniqueNames, whose stem is the run's alone.
+    fn create(env: Env, arena: Allocator, plan: OutputPlan, cfg: *const cli.Config, s: *const Schema, name: []const u8) !Output {
+        const name_stem = stem(name);
         const ext: []const u8 = switch (plan.to) {
             .csv => ".csv",
             .arrow => if (cfg.arrow_file) ".arrow" else ".arrows",
@@ -65,11 +70,11 @@ const Output = struct {
         };
         const dir = std.mem.trimEnd(u8, plan.dir, "/");
         try Io.Dir.cwd().createDirPath(env.io, dir);
-        const final_path = try std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ dir, stem, ext });
+        const final_path = try std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ dir, name_stem, ext });
         // Random, so two runs writing the same name do not share one.
         var nonce: [8]u8 = undefined;
         env.io.random(&nonce);
-        const tmp_path = try std.fmt.allocPrint(arena, "{s}/.{s}{s}.{x}.tmp", .{ dir, stem, ext, &nonce });
+        const tmp_path = try std.fmt.allocPrint(arena, "{s}/.{s}{s}.{x}.tmp", .{ dir, name_stem, ext, &nonce });
         var sink: Sink = try .open(env.io, env.gpa, tmp_path);
         errdefer sink.close(env.io, env.gpa);
         var batch: builders.Batch = try .init(env.gpa, s, encodingOf(cfg));

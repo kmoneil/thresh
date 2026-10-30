@@ -38,6 +38,7 @@ pub fn build(b: *std.Build) void {
         r.setCwd(b.path("."));
         r.addArgs(check.args);
         r.addFileInput(b.path("test/cli/orders.csv"));
+        r.addFileInput(b.path("test/cli/orders.txt"));
         if (check.stdout) |s| r.expectStdOutEqual(s);
         if (check.stderr) |s| r.expectStdErrEqual(s);
         r.expectExitCode(check.code);
@@ -296,7 +297,13 @@ const cli_checks = [_]struct {
     },
     .{
         .args = &.{ "convert", "test/cli/orders.csv", "--to", "csv", "--out", ".zig-cache/cli-out/convert", "--json" },
-        .stdout = "{\"file\":\"test/cli/orders.csv\",\"result\":\"pass\",\"rows\":2,\"rows_rejected\":0,\"problem\":null}\n",
+        .stdout = "{\"file\":\"test/cli/orders.csv\",\"result\":\"pass\",\"rows\":2,\"rows_rejected\":0,\"problem\":null,\"written\":\".zig-cache/cli-out/convert/orders.csv\"}\n",
+    },
+    .{
+        // Names unique with their extensions, alike without: each output its own.
+        .args = &.{ "convert", "test/cli/orders.csv", "test/cli/orders.txt", "--to", "csv", "--out", ".zig-cache/cli-out/stems", "--json", "--jobs", "1" },
+        .stdout = "{\"file\":\"test/cli/orders.csv\",\"result\":\"pass\",\"rows\":2,\"rows_rejected\":0,\"problem\":null,\"written\":\".zig-cache/cli-out/stems/orders.csv\"}\n" ++
+            "{\"file\":\"test/cli/orders.txt\",\"result\":\"pass\",\"rows\":1,\"rows_rejected\":0,\"problem\":null,\"written\":\".zig-cache/cli-out/stems/orders-2.csv\"}\n",
     },
     .{
         .args = &.{ "run", "test/cli/orders.csv", "--columns", "id:int64,amount:int64", "--to", "csv", "--out", ".zig-cache/cli-out/run", "--strict", "--quiet" },

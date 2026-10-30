@@ -142,21 +142,28 @@ fn one(w: *Worker, task: Task, i: usize, outcomes: []report.Outcome, lines: *Lin
     root.completeOne();
 }
 
-/// Each file's base name for its report, reject and output files: the
-/// base name of its path, or where two inputs share one, the path with
-/// its separators as underscores, so neither overwrites the other's.
+/// Each file's name for its report, reject and output files, no two
+/// alike in the run: the base name of its path, or where two inputs
+/// share one, the path with its separators as underscores. Names are
+/// compared without case, as a case-insensitive disk compares them, and
+/// by stem, since an output drops the extension; one whose stem is still
+/// taken (orders.csv beside orders.txt, the same path twice, a flattened
+/// path that is another input's base name) gets -2, -3 on its stem. A
+/// unique stem keeps the output, report and reject names apart, each
+/// being the stem or the name with a suffix.
 pub fn uniqueNames(arena: Allocator, files: []const []const u8) Allocator.Error![]const []const u8 {
     const names = try arena.alloc([]const u8, files.len);
-    var seen: std.StringHashMapUnmanaged(u32) = .empty;
-    defer seen.deinit(arena);
-    for (files) |f| {
-        const r = try seen.getOrPut(arena, std.fs.path.basename(f));
-        r.value_ptr.* = if (r.found_existing) r.value_ptr.* + 1 else 1;
-    }
-    for (names, files) |*n, f| {
+    var bases: Counts = .empty;
+    defer bases.deinit(arena);
+    for (files) |f| try tally(arena, &bases, try std.ascii.allocLowerString(arena, std.fs.path.basename(f)));
+    // The order names claim their stems in: one alone in the run, then a
+    // base name, then a flattened path, so a file keeps its own if it can.
+    const rank = try arena.alloc(u2, files.len);
+    for (names, rank, files) |*n, *r, f| {
         const base = std.fs.path.basename(f);
-        if (seen.get(base).? == 1) {
+        if (bases.get(try std.ascii.allocLowerString(arena, base)).? == 1) {
             n.* = base;
+            r.* = 1;
             continue;
         }
         var trimmed = f;
@@ -166,17 +173,69 @@ pub fn uniqueNames(arena: Allocator, files: []const []const u8) Allocator.Error!
         std.mem.replaceScalar(u8, copy, '/', '_');
         std.mem.replaceScalar(u8, copy, '\\', '_');
         n.* = copy;
+        r.* = if (std.mem.eql(u8, copy, base)) 1 else 2;
     }
+    var stems: Counts = .empty;
+    defer stems.deinit(arena);
+    for (names) |n| try tally(arena, &stems, try lowerStem(arena, n));
+    for (names, rank) |n, *r| if (stems.get(try lowerStem(arena, n)).? == 1) {
+        r.* = 0;
+    };
+    var taken: std.StringHashMapUnmanaged(void) = .empty;
+    defer taken.deinit(arena);
+    for (0..3) |pass| for (names, rank) |*n, r| {
+        if (r != pass) continue;
+        const name = n.*;
+        const s = worker.stem(name);
+        var k: u32 = 2;
+        while ((try taken.getOrPut(arena, try lowerStem(arena, n.*))).found_existing) : (k += 1) {
+            n.* = try std.fmt.allocPrint(arena, "{s}-{d}{s}", .{ s, k, name[s.len..] });
+        }
+    };
     return names;
+}
+
+const Counts = std.StringHashMapUnmanaged(u32);
+
+fn tally(arena: Allocator, counts: *Counts, key: []const u8) Allocator.Error!void {
+    const r = try counts.getOrPut(arena, key);
+    r.value_ptr.* = if (r.found_existing) r.value_ptr.* + 1 else 1;
+}
+
+fn lowerStem(arena: Allocator, name: []const u8) Allocator.Error![]const u8 {
+    return std.ascii.allocLowerString(arena, worker.stem(name));
 }
 
 test uniqueNames {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    const names = try uniqueNames(arena.allocator(), &.{ "inbox/a/orders.csv", "./inbox/b/orders.csv", "x/other.csv" });
-    try std.testing.expectEqualStrings("inbox_a_orders.csv", names[0]);
-    try std.testing.expectEqualStrings("inbox_b_orders.csv", names[1]);
-    try std.testing.expectEqualStrings("other.csv", names[2]);
+    const a = arena.allocator();
+    const Case = struct { files: []const []const u8, names: []const []const u8 };
+    const cases = [_]Case{
+        .{
+            .files = &.{ "inbox/a/orders.csv", "./inbox/b/orders.csv", "x/other.csv" },
+            .names = &.{ "inbox_a_orders.csv", "inbox_b_orders.csv", "other.csv" },
+        },
+        // Unique with their extensions, alike without: the outputs' names.
+        .{ .files = &.{ "orders.csv", "orders.txt" }, .names = &.{ "orders.csv", "orders-2.txt" } },
+        .{ .files = &.{ "x/orders.csv", "y/orders.txt" }, .names = &.{ "orders.csv", "orders-2.txt" } },
+        // A flattened path that is another input's own base name.
+        .{
+            .files = &.{ "x/orders.csv", "y/orders.csv", "x_orders.csv" },
+            .names = &.{ "x_orders-2.csv", "y_orders.csv", "x_orders.csv" },
+        },
+        .{ .files = &.{ "a.csv", "a.csv", "a.csv" }, .names = &.{ "a.csv", "a-2.csv", "a-3.csv" } },
+        .{ .files = &.{ "a.csv", "a.txt", "a.csv" }, .names = &.{ "a.csv", "a-2.txt", "a-3.csv" } },
+        .{ .files = &.{ "d/a.csv", "d/a.csv" }, .names = &.{ "d_a.csv", "d_a-2.csv" } },
+        // One file on a case-insensitive disk.
+        .{ .files = &.{ "Orders.csv", "orders.CSV" }, .names = &.{ "Orders.csv", "orders-2.CSV" } },
+        .{ .files = &.{ "orders.csv", "orders.txt", "orders-2.csv" }, .names = &.{ "orders.csv", "orders-3.txt", "orders-2.csv" } },
+        .{ .files = &.{ "readme", "readme" }, .names = &.{ "readme", "readme-2" } },
+    };
+    for (cases) |c| {
+        const names = try uniqueNames(a, c.files);
+        for (c.names, names) |want, got| try std.testing.expectEqualStrings(want, got);
+    }
 }
 
 test "a run reaches every file once, across workers" {

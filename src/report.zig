@@ -266,6 +266,11 @@ fn writeOutcome(s: *Stringify, o: Outcome) Stringify.Error!void {
     try s.write(o.rows_rejected);
     try s.objectField("problem");
     try s.write(o.problem);
+    // Its name may not be the input's: pool.uniqueNames.
+    if (o.written) |p| {
+        try s.objectField("written");
+        try s.write(p);
+    }
     try s.endObject();
 }
 
