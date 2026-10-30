@@ -998,8 +998,11 @@ def main(argv):
                 if want_map.get(n) != got_map.get(n):
                     print("corpus: %s differs from %s" % (n, check), file=sys.stderr)
             sys.exit("corpus: output does not match %s; rerun with --manifest if the change is meant" % check)
-    total = sum(os.path.getsize(os.path.join(out_dir, n)) for n in index)
-    print("corpus: %d data files, %.1f MB, in %s" % (len(index), total / 1e6, out_dir), file=sys.stderr)
+    # Under --check, as the build runs it, a pass is silent: zig build shows
+    # a step's stderr under "failed command:", even when it exits 0.
+    if not check:
+        total = sum(os.path.getsize(os.path.join(out_dir, n)) for n in index)
+        print("corpus: %d data files, %.1f MB, in %s" % (len(index), total / 1e6, out_dir), file=sys.stderr)
 
 
 if __name__ == "__main__":
