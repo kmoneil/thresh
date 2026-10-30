@@ -261,7 +261,7 @@ const cli_checks = [_]struct {
         \\    {
         \\      "name": "amount",
         \\      "type": "decimal",
-        \\      "precision": 3,
+        \\      "precision": 18,
         \\      "scale": 2,
         \\      "conformance": 1,
         \\      "samples": [
@@ -278,7 +278,8 @@ const cli_checks = [_]struct {
         \\}
         \\
         ,
-        .stderr = "infer test/cli/orders.csv  2 rows  3 columns\n",
+        .stderr = "infer test/cli/orders.csv  2 rows  3 columns\n" ++
+            "thresh: id, amount: typed from fewer than 10 values; check them before reusing the schema\n",
     },
     .{
         .args = &.{ "convert", "test/cli/orders.csv", "--to", "csv", "--out", ".zig-cache/cli-out/convert", "--json" },

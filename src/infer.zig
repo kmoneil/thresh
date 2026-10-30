@@ -25,6 +25,13 @@
 //! aside. A column that ends a date or timestamp takes it as a null, its
 //! spelling one of the column's nulls in the schema; any other column takes
 //! it as a value, which only a string can.
+//!
+//! The schema is written for the next file, not only this one, so two
+//! types are written wider than the lattice left them: a decimal gets at
+//! least 18 digits of precision (the scale stays the one seen), and a bool
+//! of nothing but 0s and 1s is an int64, a bool being for true/false,
+//! yes/no and t/f. A typed column read from fewer than few_values values is
+//! a guess the next file can break, and infer names it.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -57,6 +64,20 @@ pub const Kind = enum(u8) {
 
 /// The most decimal digits Arrow's Decimal128 holds.
 const max_precision = 38;
+
+/// The precision an inferred decimal has at least: an exact one, such as
+/// decimal(5,5) from 0.00000, fails the next file's first 1.5, and 18
+/// digits hold any amount or measure an export writes.
+const widened_precision = 18;
+
+/// Fewer non-null values than this behind a type other than string, and
+/// the type is a guess.
+pub const few_values = 10;
+
+/// Whether col, inferred from state, is typed from too few values to trust.
+pub fn thin(state: ColumnState, col: schema.Column) bool {
+    return col.type != .string and state.values < few_values;
+}
 
 /// What pass 1 knows about one column.
 pub const ColumnState = struct {
@@ -344,7 +365,7 @@ pub fn columnsOf(arena: Allocator, states: []const ColumnState) Allocator.Error!
             try blanks.append(arena, v);
             blank_time = blank_time or std.mem.findScalar(u8, v, ':') != null;
         };
-        const kind: Kind = if (blanks.items.len == 0) s.kind else switch (s.kind) {
+        var kind: Kind = if (blanks.items.len == 0) s.kind else switch (s.kind) {
             // Nothing but empty dates: a date column, a timestamp's if
             // they have a time's colons.
             .null => if (blank_time) .timestamp else .date,
@@ -352,6 +373,8 @@ pub fn columnsOf(arena: Allocator, states: []const ColumnState) Allocator.Error!
             // Numbers and empty dates: only a string takes both.
             else => .string,
         };
+        // 0s and 1s alone: a count or a flag that may yet hold a 2.
+        if (kind == .bool and !s.bool_words) kind = .int64;
         o.* = .{
             .name = s.name,
             .type = switch (kind) {
@@ -372,7 +395,7 @@ pub fn columnsOf(arena: Allocator, states: []const ColumnState) Allocator.Error!
         };
         switch (kind) {
             .decimal => {
-                o.precision = @max(1, s.int_digits + s.scale);
+                o.precision = @max(widened_precision, s.int_digits + s.scale);
                 o.scale = s.scale;
             },
             .date, .timestamp => {
@@ -576,6 +599,33 @@ test "the inferred columns are a schema validate reads" {
     try testing.expectEqualStrings("column4", cols[3].name);
     try testing.expectEqualStrings("column5", cols[4].name);
     try testing.expectEqual(schema.Type.decimal, cols[1].type);
-    try testing.expectEqual(@as(u8, 3), cols[1].precision);
+    try testing.expectEqual(@as(u8, 18), cols[1].precision);
     try testing.expectEqualStrings("%Y-%m-%d", cols[2].format.?);
+}
+
+test "the schema is written for the next file: decimals widened, 0 and 1 as int64" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f: Inferrer = .init(a, .{});
+    try f.header(&.{ "zero", "bits", "words", "wide" }, 4);
+    try f.record(&.{ "0.00000", "0", "yes", "12345678901234567.25" });
+    try f.record(&.{ "0.00000", "1", "no", "1.5" });
+    const cols = try columnsOf(a, f.columns.items);
+    // decimal(5,5) would refuse 1.5; the scale seen stays.
+    try testing.expectEqual(schema.Type.decimal, cols[0].type);
+    try testing.expectEqual(@as(u8, 18), cols[0].precision);
+    try testing.expectEqual(@as(u8, 5), cols[0].scale);
+    try testing.expectEqual(schema.Type.int64, cols[1].type);
+    try testing.expectEqual(schema.Type.bool, cols[2].type);
+    // More digits than 18: as many as were seen.
+    try testing.expectEqual(@as(u8, 19), cols[3].precision);
+    // Two values behind each: all but the strings are guesses.
+    for (f.columns.items, cols) |st, c| try testing.expect(thin(st, c));
+    var many: Inferrer = .init(a, .{});
+    try many.header(&.{ "n", "s" }, 2);
+    for (0..few_values) |_| try many.record(&.{ "4", "x" });
+    const settled = try columnsOf(a, many.columns.items);
+    try testing.expect(!thin(many.columns.items[0], settled[0]));
+    try testing.expect(!thin(many.columns.items[1], settled[1]));
 }

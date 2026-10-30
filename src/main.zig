@@ -194,6 +194,7 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
         .match = if (all_headers) .name else .position,
         .sampled = if (cfg.sample_rows != null) true else null,
     };
+    if (!cfg.quiet) try warnThin(err, merged.items, s.columns);
     if (cfg.out) |path| {
         var buf: [1 << 16]u8 = undefined;
         const file = try Io.Dir.cwd().createFile(env.io, path, .{});
@@ -203,6 +204,20 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
         try fw.interface.flush();
     } else try schema.writeJson(s, out);
     return code;
+}
+
+/// Names the typed columns read from too few values to trust, the first
+/// five, so the schema is looked at before the next file is held to it.
+fn warnThin(err: *Io.Writer, states: []const infer.ColumnState, cols: []const schema.Column) !void {
+    var n: usize = 0;
+    for (states, cols) |st, c| {
+        if (!infer.thin(st, c)) continue;
+        if (n < 5) try err.print("{s}{s}", .{ if (n == 0) "thresh: " else ", ", c.name });
+        n += 1;
+    }
+    if (n == 0) return;
+    if (n > 5) try err.print(" and {d} more", .{n - 5});
+    try err.print(": typed from fewer than {d} values; check {s} before reusing the schema\n", .{ infer.few_values, if (n == 1) "it" else "them" });
 }
 
 fn outputOf(cfg: *const cli.Config) ?worker.OutputPlan {
