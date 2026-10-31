@@ -9,6 +9,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Stringify = std.json.Stringify;
 const infer = @import("infer.zig");
+const records = @import("records.zig");
 const schema = @import("schema.zig");
 
 /// A column and how many of the run's files have it.
@@ -43,7 +44,7 @@ pub const Problem = union(enum) {
     header_width: struct { header_fields: usize, fields: usize },
     /// Quotes that are data (records.QuoteCheck): values that start with
     /// one folded lines into records, so the rows are not the file's.
-    quote_is_data: struct { records: u64, lines: u64, line: u64 },
+    quote_is_data: records.Folded,
 
     // The file against its schema: each fails it.
     match_needs_header,

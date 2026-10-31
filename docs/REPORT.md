@@ -162,7 +162,8 @@ summary.json's `results` holds, and its version.
 
 One compact JSON object per input on stdout. A file that cannot be read
 has no line; stderr says why, and the exit is 2. A file whose dialect is
-not settled has its line, and stderr says so too.
+not settled, or whose sample's quotes look like data, has its line with
+the problem in `problems`; stderr says so too, and the exit is 2.
 
 <!-- fields: sniff -->
 | Field | Type | Meaning |
@@ -183,6 +184,8 @@ not settled has its line, and stderr says so too.
 | `dialect.runners_up[].score` | `number` | |
 | `warnings` | `array` | what is unusual about the file |
 | `warnings[]` | `string` | a [warning](PROBLEMS.md#warnings) code |
+| `problems` | `array` | what stops the file at its sniff, `dialect_unsettled` or `quote_is_data`; empty when nothing does |
+| `problems[]` | `problem` | a [problem object](PROBLEMS.md#problems) |
 
 ## The schema
 

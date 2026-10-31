@@ -117,7 +117,17 @@ pub const QuoteCheck = struct {
     pub fn isData(c: QuoteCheck, stray_quotes: u64) bool {
         return c.folded > c.multiline and stray_quotes > 0;
     }
+
+    /// The folded rows when the quotes look like data, or null.
+    pub fn folding(c: QuoteCheck, stray_quotes: u64) ?Folded {
+        if (!c.isData(stray_quotes)) return null;
+        return .{ .records = c.folded, .lines = c.folded_lines, .line = c.first };
+    }
 };
+
+/// Rows folded into records by quotes that are data: the records, the
+/// lines they hold, and the line the first starts on.
+pub const Folded = struct { records: u64, lines: u64, line: u64 };
 
 test QuoteCheck {
     const d: Dialect = .{ .delimiter = '|', .quote = '"', .escape = .doubled, .newline = .crlf, .header = true };

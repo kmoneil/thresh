@@ -190,8 +190,8 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
     const in = &sniffed.in;
     const verdict = sniffed.verdict;
     details.verdict = verdict;
-    if (verdict.confidence == .low and !cfg.pins.complete()) {
-        out.problem = .{ .dialect_unsettled = .{ .score = verdict.score } };
+    if (verdictProblem(verdict, cfg)) |p| {
+        out.problem = p;
         try writeReport(env, plan, out, name, details);
         return out;
     }
@@ -272,9 +272,9 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
     out.rows_rejected = v.rejected;
     // Quotes that are data folded lines into rows: what was read is not
     // the file's rows, so none of it is kept.
-    const misread = cfg.pins.quote == null and v.quotes.isData(v.stray_quotes);
-    if (misread) try v.structural.insert(v.gpa, 0, .{ .quote_is_data = .{ .records = v.quotes.folded, .lines = v.quotes.folded_lines, .line = v.quotes.first } });
-    out.result = if (misread) .@"error" else if (v.passed()) .pass else .fail;
+    const folded = if (cfg.pins.quote == null) v.quotes.folding(v.stray_quotes) else null;
+    if (folded) |f| try v.structural.insert(v.gpa, 0, .{ .quote_is_data = f });
+    out.result = if (folded != null) .@"error" else if (v.passed()) .pass else .fail;
     if (output) |*o| {
         // A failing file's good rows are still written, unless --strict.
         const keep = out.result == .pass or (out.result == .fail and !cfg.strict);
@@ -304,6 +304,14 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
     }
     try writeReport(env, plan, out, name, details);
     return out;
+}
+
+/// Why a file stops at its sniff, before it is read, if it does: its
+/// dialect is not settled, or the sample's quotes look like data.
+pub fn verdictProblem(v: dialect.Verdict, cfg: *const cli.Config) ?Problem {
+    if (v.confidence == .low and !cfg.pins.complete()) return .{ .dialect_unsettled = .{ .score = v.score } };
+    if (v.folded) |f| return .{ .quote_is_data = f };
+    return null;
 }
 
 /// A UTF-16 file is transcoded to UTF-8 as it is read, so an --encoding
@@ -440,8 +448,8 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
     defer sniffed.in.close(io, gpa);
     const in = &sniffed.in;
     const verdict = sniffed.verdict;
-    if (verdict.confidence == .low and !cfg.pins.complete()) {
-        out.problem = .{ .dialect_unsettled = .{ .score = verdict.score } };
+    if (verdictProblem(verdict, cfg)) |p| {
+        out.problem = p;
         return .{ .outcome = out };
     }
 
@@ -511,10 +519,10 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
     out.timing.parse_ns = since(io, t1);
     out.rows = f.rows;
     // Rows folded together by quotes that are data: no schema from them.
-    if (cfg.pins.quote == null and quotes.isData(stray)) {
-        out.problem = .{ .quote_is_data = .{ .records = quotes.folded, .lines = quotes.folded_lines, .line = quotes.first } };
+    if (cfg.pins.quote == null) if (quotes.folding(stray)) |folded| {
+        out.problem = .{ .quote_is_data = folded };
         return .{ .outcome = out };
-    }
+    };
     // Read as UTF-8 and not UTF-8: a guess of replace would turn every
     // accented letter of a Windows export into U+FFFD, so say what to do.
     for (f.columns.items) |c| if (c.invalid_utf8) {

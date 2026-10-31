@@ -316,9 +316,9 @@ pub fn writeJsonLine(w: *Io.Writer, o: Outcome) Stringify.Error!void {
     try w.writeByte('\n');
 }
 
-/// sniff --json: a file's dialect, how sure, and its warnings, as one
-/// compact JSON object.
-pub fn writeSniffLine(w: *Io.Writer, file: []const u8, v: dialect.Verdict) Stringify.Error!void {
+/// sniff --json: a file's dialect, how sure, its warnings, and what stops
+/// it (worker.verdictProblem), as one compact JSON object.
+pub fn writeSniffLine(w: *Io.Writer, file: []const u8, v: dialect.Verdict, problems: []const Problem) Stringify.Error!void {
     var s: Stringify = .{ .writer = w };
     try s.beginObject();
     try s.objectField("format_version");
@@ -329,6 +329,8 @@ pub fn writeSniffLine(w: *Io.Writer, file: []const u8, v: dialect.Verdict) Strin
     try s.write(v);
     try s.objectField("warnings");
     try s.write(v.warnings);
+    try s.objectField("problems");
+    try s.write(problems);
     try s.endObject();
     try w.writeByte('\n');
 }

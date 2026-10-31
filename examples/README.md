@@ -240,6 +240,10 @@ fit. thresh sees that each folded line is a whole row without the quotes
 and stops.
 
 ```console
+$ thresh sniff data/bins.txt
+data/bins.txt: delimiter=| quote=" escape=doubled newline=lf header=yes confidence=high warnings=quote_in_unquoted
+thresh: data/bins.txt: the quotes look like data: 1 record holds 4 lines inside quotes, the first on line 13, and each of those lines is a whole row without them; pin --quote none to read quotes as data
+[exit 2]
 $ thresh infer data/bins.txt --out bins.schema.json
 error data/bins.txt  the quotes look like data: 1 record holds 4 lines inside quotes, the first on line 13, and each of those lines is a whole row without them; pin --quote none to read quotes as data
 thresh: no file to infer a schema from

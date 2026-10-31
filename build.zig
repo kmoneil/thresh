@@ -251,7 +251,7 @@ const cli_checks = [_]struct {
     .{
         .args = &.{ "sniff", "test/cli/orders.csv", "--json" },
         .stdout = "{\"format_version\":1,\"file\":\"test/cli/orders.csv\",\"dialect\":{\"delimiter\":\",\",\"quote\":\"\\\"\",\"escape\":\"doubled\",\"newline\":\"lf\",\"header\":true," ++
-            "\"confidence\":\"high\",\"score\":1.39,\"runners_up\":[{\"delimiter\":\"\\t\",\"score\":0.19},{\"delimiter\":\"|\",\"score\":0.19}]},\"warnings\":[]}\n",
+            "\"confidence\":\"high\",\"score\":1.39,\"runners_up\":[{\"delimiter\":\"\\t\",\"score\":0.19},{\"delimiter\":\"|\",\"score\":0.19}]},\"warnings\":[],\"problems\":[]}\n",
     },
     .{
         .args = &.{ "sniff", "test/cli/orders.csv", "--delimiter", ";", "--header", "no" },
@@ -424,6 +424,29 @@ const cli_checks = [_]struct {
             "\"message\":\"the quotes look like data: 1 record holds 3 lines inside quotes, the first on line 62, and each of those lines is a whole row without them; pin --quote none to read quotes as data\"," ++
             "\"records\":1,\"lines\":3,\"line\":62,\"suggest\":{\"quote\":\"none\"}}]}\n",
         .code = 2,
+    },
+    .{
+        // The fold inside the sniffer's sample: sniff says so, and the file
+        // stops there, unread.
+        .args = &.{ "sniff", "test/cli/inches.txt" },
+        .stdout = "test/cli/inches.txt: delimiter=| quote=\" escape=doubled newline=lf header=yes confidence=high warnings=quote_in_unquoted\n",
+        .stderr = "thresh: test/cli/inches.txt: the quotes look like data: 1 record holds 3 lines inside quotes, the first on line 62, and each of those lines is a whole row without them; pin --quote none to read quotes as data\n",
+        .code = 2,
+    },
+    .{
+        .args = &.{ "validate", "test/cli/inches.txt", "--columns", "lug_id:int64,bin:string,cultivar:string", "--json" },
+        .stdout = "{\"format_version\":1,\"file\":\"test/cli/inches.txt\",\"result\":\"error\",\"rows\":0,\"rows_rejected\":0,\"problems\":[{\"code\":\"quote_is_data\"," ++
+            "\"message\":\"the quotes look like data: 1 record holds 3 lines inside quotes, the first on line 62, and each of those lines is a whole row without them; pin --quote none to read quotes as data\"," ++
+            "\"records\":1,\"lines\":3,\"line\":62,\"suggest\":{\"quote\":\"none\"}}]}\n",
+        .code = 2,
+    },
+    .{
+        .args = &.{ "sniff", "test/cli/inches.txt", "--quote", "\"" },
+        .stdout = "test/cli/inches.txt: delimiter=| quote=\" escape=doubled newline=lf header=yes confidence=high warnings=quote_in_unquoted\n",
+    },
+    .{
+        .args = &.{ "sniff", "test/cli/inches.txt", "--quote", "none" },
+        .stdout = "test/cli/inches.txt: delimiter=| quote=none escape=doubled newline=lf header=yes confidence=high\n",
     },
     .{
         .args = &.{ "validate", "test/cli/inches.txt", "--columns", "lug_id:int64,bin:string,cultivar:string", "--sample-bytes", "512", "--quote", "none", "--json" },
