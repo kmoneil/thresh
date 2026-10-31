@@ -1,0 +1,7 @@
+// gnarl's classes for thresh (gnarl skill, "Thresholds and complexity.zon").
+// The build script and the benchmark are cold: held only to the critical
+// limits a test is. Everything else is normal. Tests are gnarl's own class
+// whatever their file.
+.{
+    .cold = .{ "build.zig", "bench/**" },
+}

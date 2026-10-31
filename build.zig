@@ -263,6 +263,12 @@ pub fn build(b: *std.Build) void {
     b.step("fuzz", "Replay the fuzz seeds (tools/fuzz.sh to fuzz)").dependOn(&run_fuzz.step);
     test_step.dependOn(&run_fuzz.step);
 
+    lintSteps(b);
+}
+
+/// zig fmt, zigvet and gnarl over the sources: the steps CI's "format,
+/// lint" job runs.
+fn lintSteps(b: *std.Build) void {
     const lint_paths = [_][]const u8{ "build.zig", "src", "bench" };
     var fmt_paths: [lint_paths.len]std.Build.LazyPath = undefined;
     for (lint_paths, &fmt_paths) |p, *lp| lp.* = b.path(p);
@@ -277,6 +283,24 @@ pub fn build(b: *std.Build) void {
     vet.setCwd(b.path("."));
     vet.addArgs(&lint_paths);
     b.step("vet", "Check sources with zigvet").dependOn(&vet.step);
+
+    // gnarl (github.com/kmoneil/gnarl), built from the pinned dependency:
+    // each function's complexity. It fails a function over a critical
+    // limit that complexity.baseline does not hold, or one worse than the
+    // baseline says, so the debt there is holds and none is added;
+    // complexity.zon sets which files are held how hard. Run from the
+    // build root, where it reads both. -Dupdate-baseline rewrites the
+    // baseline instead, for a change that pays debt down (or, said in its
+    // pull request, takes some on).
+    const update_baseline = b.option(bool, "update-baseline", "Rewrite complexity.baseline from the code as it is") orelse false;
+    const gnarl = b.dependency("gnarl", .{ .target = b.graph.host, .optimize = .ReleaseSafe });
+    const complexity = b.addRunArtifact(gnarl.artifact("gnarl"));
+    complexity.setCwd(b.path("."));
+    complexity.addArg(if (update_baseline) "--update-baseline" else "--check");
+    complexity.addArgs(&lint_paths);
+    // The sources are named as paths, not inputs: run every time.
+    complexity.has_side_effects = true;
+    b.step("complexity", "Hold each function's complexity to complexity.baseline (gnarl)").dependOn(&complexity.step);
 }
 
 /// The corpus's dirty files (test/gen/corpus.py's DIRTY), whose reports are

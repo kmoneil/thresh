@@ -31,6 +31,11 @@ jobs:
       # source, so a new zigvet release cannot fail an unchanged commit.
       - name: zigvet
         run: zig build vet
+      # gnarl, pinned and built the same way: no function over a critical
+      # complexity limit that complexity.baseline does not hold, and none
+      # worse than it says.
+      - name: gnarl
+        run: zig build complexity
       # The generator must still write exactly what test/gen/MANIFEST says.
       - name: fixture corpus
         run: zig build corpus

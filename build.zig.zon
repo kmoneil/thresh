@@ -9,8 +9,12 @@
             .hash = "dateparsa-0.4.1-Z2ygeLADCgA1CWNMG-CCGG6JyWHe7fEkV4_4Qp1WtAmU",
         },
         .zigvet = .{
-            .url = "git+https://github.com/kmoneil/zigvet?ref=v0.15.0#90224012ad3566af633de8ba0636b9bc437c61b6",
-            .hash = "zigvet-0.15.0-4vsyPElzCwACIo9CYDziq9k-0vKpJe_WlowTL3tFkAEw",
+            .url = "git+https://github.com/kmoneil/zigvet?ref=v0.19.0#80b416f793b5df0168d10639dd7b0288e3802fb9",
+            .hash = "zigvet-0.19.0-4vsyPJyUCwBH4UDSLz9gg2_mOcpGsVxQJHv3bv3NULul",
+        },
+        .gnarl = .{
+            .url = "git+https://github.com/kmoneil/gnarl?ref=v0.1.0#b2e9701c38d3654e88a5ad7596b8381d14d3c7c4",
+            .hash = "gnarl-0.1.0-zbFSX5idCACo6Dyyvrk2CEXqaZfiG4q6RXUJ5MpmpNF9",
         },
     },
     .paths = .{
