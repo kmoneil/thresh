@@ -14,6 +14,8 @@ const dialect = @import("dialect.zig");
 const input = @import("input.zig");
 const schema = @import("schema.zig");
 const report = @import("report.zig");
+const problem = @import("problem.zig");
+const Problem = problem.Problem;
 const worker = @import("worker.zig");
 const infer = @import("infer.zig");
 const pool = @import("pool.zig");
@@ -55,11 +57,11 @@ pub fn main(init: std.process.Init) u8 {
             error.WriteFailed => out.err orelse e,
             else => e,
         };
-        err.interface.print("thresh: {s}\n", .{worker.describe(cause)}) catch {};
+        err.interface.print("thresh: {f}\n", .{Problem.of(cause)}) catch {};
         break :blk .unreadable;
     };
     out.interface.flush() catch |e| {
-        err.interface.print("thresh: cannot write the output: {s}\n", .{worker.describe(out.err orelse e)}) catch {};
+        err.interface.print("thresh: cannot write the output: {f}\n", .{Problem.of(out.err orelse e)}) catch {};
         err.interface.flush() catch {};
         return @backingInt(Exit.unreadable);
     };
@@ -128,7 +130,7 @@ fn loadSchema(env: Env, cfg: *const cli.Config, err: *Io.Writer) !?schema.Owned 
         },
         error.OutOfMemory => return e,
         else => {
-            try err.print("thresh: {s}: {s}\n", .{ path, worker.describe(e) });
+            try err.print("thresh: {s}: {f}\n", .{ path, Problem.of(e) });
             return null;
         },
     };
@@ -158,7 +160,7 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
         .nulls = try worker.nullsOf(a, &default_nulls, cfg.nulls),
         .results = try a.alloc(worker.Inferred, cfg.files.len),
     };
-    for (ctx.results, cfg.files) |*r, f| r.* = .{ .outcome = .{ .file = f, .result = .@"error", .problem = "not reached" } };
+    for (ctx.results, cfg.files) |*r, f| r.* = .{ .outcome = .{ .file = f, .result = .@"error", .problem = .not_reached } };
     const outcomes = try runPool(env, cfg, .{ .ctx = &ctx, .files = cfg.files, .run = Ctx.run }, out, err, true);
     if (interrupt.requested()) return interrupted(err);
 
@@ -177,7 +179,7 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
     for (ctx.results, outcomes, cfg.files) |r, o, path| {
         if (o.result == .@"error") {
             code = code.worst(.unreadable);
-            if (!cfg.quiet) try err.print("error {s}  {s}\n", .{ path, o.problem orelse "" });
+            if (!cfg.quiet) try err.print("error {s}  {?f}\n", .{ path, o.problem });
             continue;
         }
         if (!r.header) all_headers = false;
@@ -189,11 +191,11 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
         }
         if (!cfg.quiet) try err.print("infer {s}  {d} rows  {d} columns\n", .{ path, o.rows, r.columns.len });
         if (r.repeated_headers > 0 and !cfg.quiet)
-            try err.print("thresh: {s}: {s}\n", .{ path, try worker.repeatedHeader(a, r.repeated_line, r.repeated_headers) });
+            try err.print("thresh: {s}: {f}\n", .{ path, Problem{ .header_repeated = .{ .line = r.repeated_line, .count = r.repeated_headers } } });
         if (r.wide_rows > 0 and !cfg.quiet)
-            try err.print("thresh: {s}: {d} row{s} wider than the header left out, the first on line {d}: ragged rows, which validate rejects\n", .{ path, r.wide_rows, if (r.wide_rows == 1) "" else "s", r.wide_line });
+            try err.print("thresh: {s}: {f}\n", .{ path, Problem{ .rows_wider = .{ .rows = r.wide_rows, .line = r.wide_line } } });
         if (r.utf16_replaced > 0 and !cfg.quiet)
-            try err.print("thresh: {s}: {d} UTF-16 code unit{s} made no character, read as U+FFFD\n", .{ path, r.utf16_replaced, if (r.utf16_replaced == 1) "" else "s" });
+            try err.print("thresh: {s}: {f}\n", .{ path, Problem{ .utf16_replaced = .{ .units = r.utf16_replaced } } });
         const columns = try a.dupe(infer.ColumnState, r.columns);
         for (columns) |*c| try restOf(err, cfg, path, c);
         for (columns) |c| {
@@ -209,11 +211,11 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
             const before = m.kind;
             infer.merge(m, c, path);
             if (m.kind != before and before != .null and !cfg.quiet)
-                try err.print("thresh: column '{s}': {t} until {s} made it {t}\n", .{ m.name, before, path, m.kind });
+                try err.print("thresh: {f}\n", .{Problem{ .column_widened = .{ .column = m.name, .from = before, .to = m.kind, .file = path } }});
         }
     }
     if (merged.items.len == 0) {
-        try err.print("thresh: no file to infer a schema from\n", .{});
+        try err.print("thresh: {f}\n", .{@as(Problem, .nothing_to_infer)});
         return code.worst(.unreadable);
     }
     const s: schema.Schema = .{
@@ -226,8 +228,8 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
         .threshold = cfg.threshold,
     };
     if (!cfg.quiet) try warnThin(err, merged.items, s.columns);
-    if (try disagreement(a, merged.items, present.items, merged_files, headless, first_headless, widths)) |why| {
-        try err.print("thresh: the files disagree: {s}\n", .{why});
+    if (try disagreement(a, merged.items, present.items, merged_files, headless, first_headless, widths)) |p| {
+        try err.print("thresh: {f}\n", .{p});
         code = code.worst(.failed);
     }
     if (cfg.out) |path| {
@@ -244,25 +246,22 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
 /// How the files of one infer run disagree, if they do: a schema merged
 /// from them then fails some of them, or matches by position where a
 /// header named the columns. present: how many files have each column.
-fn disagreement(a: Allocator, columns: []const infer.ColumnState, present: []const u32, files: u32, headless: u32, first_headless: []const u8, widths: [2]usize) Allocator.Error!?[]const u8 {
+fn disagreement(a: Allocator, columns: []const infer.ColumnState, present: []const u32, files: u32, headless: u32, first_headless: []const u8, widths: [2]usize) Allocator.Error!?Problem {
     if (headless > 0 and headless < files)
-        return try std.fmt.allocPrint(a, "{d} of {d} have no header (the first: {s}), so the schema matches columns by position; infer them apart, or pin --header", .{ headless, files, first_headless });
+        return .{ .files_mixed_headers = .{ .headless = headless, .files = files, .first = first_headless } };
     if (headless > 0) {
         if (widths[0] == widths[1]) return null;
-        return try std.fmt.allocPrint(a, "they are {d} to {d} columns wide, and validate fails a file narrower than its schema", .{ widths[0], widths[1] });
+        return .{ .files_widths = .{ .min = widths[0], .max = widths[1] } };
     }
     var missing: usize = 0;
-    var names: std.ArrayList(u8) = .empty;
+    var first: std.ArrayList(problem.Presence) = .empty;
     for (columns, present) |c, n| {
         if (n == files) continue;
         missing += 1;
-        if (missing > 3) continue;
-        if (missing > 1) try names.appendSlice(a, ", ");
-        try names.print(a, "'{s}' ({d} of {d})", .{ c.name, n, files });
+        if (missing <= 3) try first.append(a, .{ .column = c.name, .files = n });
     }
     if (missing == 0) return null;
-    if (missing > 3) try names.print(a, " and {d} more", .{missing - 3});
-    return try std.fmt.allocPrint(a, "{d} of the schema's {d} columns {s} not in every file: {s}; validate fails a file without one", .{ missing, columns.len, if (missing == 1) "is" else "are", names.items });
+    return .{ .files_columns = .{ .missing = missing, .columns = columns.len, .files = files, .first = first.items } };
 }
 
 /// What a column's rest says: under --threshold, that it took the rest's
@@ -274,27 +273,27 @@ fn restOf(err: *Io.Writer, cfg: *const cli.Config, path: []const u8, c: *infer.C
     const misfits = c.misfits;
     const row = c.misfit_row;
     if (cfg.threshold) |t| if (infer.tolerate(c, t)) {
-        if (!cfg.quiet) try err.print("thresh: {s}: column '{s}' inferred {t} with {d} of {d} values refusing it (row {d} first), as --threshold allows: validate rejects them\n", .{ path, c.name, rest, misfits, rows, row });
+        if (!cfg.quiet) try err.print("thresh: {s}: {f}\n", .{ path, Problem{ .column_tolerated = .{ .column = c.name, .type = rest, .misfits = misfits, .values = rows, .row = row } } });
         return;
     };
     if (cfg.quiet or !infer.fewMisfits(c.*)) return;
     // The threshold that takes the rest's type, to four places.
     const fit = @floor((1.0 - @as(f64, @floatFromInt(misfits)) / @as(f64, @floatFromInt(rows))) * 10_000) / 10_000;
-    try err.print("thresh: {s}: column '{s}' is {t} because of {d} of {d} values (row {d} first); the rest are {t}: --threshold {d} infers {t} and rejects them\n", .{ path, c.name, infer.typeOf(c.*), misfits, rows, row, rest, fit, rest });
+    try err.print("thresh: {s}: {f}\n", .{ path, Problem{ .column_misfits = .{ .column = c.name, .type = infer.typeOf(c.*), .misfits = misfits, .values = rows, .row = row, .rest = rest, .threshold = fit } } });
 }
 
 /// Names the typed columns read from too few values to trust, the first
 /// five, so the schema is looked at before the next file is held to it.
 fn warnThin(err: *Io.Writer, states: []const infer.ColumnState, cols: []const schema.Column) !void {
+    var first: [5][]const u8 = undefined;
     var n: usize = 0;
     for (states, cols) |st, c| {
         if (!infer.thin(st, c)) continue;
-        if (n < 5) try err.print("{s}{s}", .{ if (n == 0) "thresh: " else ", ", c.name });
+        if (n < first.len) first[n] = c.name;
         n += 1;
     }
     if (n == 0) return;
-    if (n > 5) try err.print(" and {d} more", .{n - 5});
-    try err.print(": typed from fewer than {d} values; check {s} before reusing the schema\n", .{ infer.few_values, if (n == 1) "it" else "them" });
+    try err.print("thresh: {f}\n", .{Problem{ .columns_thin = .{ .columns = first[0..@min(n, first.len)], .count = n, .few_values = infer.few_values } }});
 }
 
 fn outputOf(cfg: *const cli.Config) ?worker.OutputPlan {
@@ -460,8 +459,8 @@ fn sniff(env: Env, cfg: cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
     var code: Exit = .ok;
     for (cfg.files) |path| {
         var o: report.Outcome = .{ .file = path, .result = .@"error" };
-        var sniffed = (try worker.openSniffed(.{ .io = env.io, .gpa = env.gpa }, &cfg, path, null, &o, env.arena)) orelse {
-            try err.print("thresh: {s}: {s}\n", .{ path, o.problem.? });
+        var sniffed = (try worker.openSniffed(.{ .io = env.io, .gpa = env.gpa }, &cfg, path, null, &o)) orelse {
+            try err.print("thresh: {s}: {f}\n", .{ path, o.problem.? });
             code = code.worst(.unreadable);
             continue;
         };
@@ -486,7 +485,7 @@ fn sniff(env: Env, cfg: cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
             try out.writeByte('\n');
         }
         if (v.confidence == .low and !cfg.pins.complete()) {
-            try err.print("thresh: {s}: the dialect is not settled (confidence low, score {d:.2}); pin it with --delimiter, --quote, --escape, --newline and --header\n", .{ path, v.score });
+            try err.print("thresh: {s}: {f}\n", .{ path, Problem{ .dialect_unsettled = .{ .score = v.score } } });
             code = code.worst(.unreadable);
         }
     }
@@ -508,6 +507,8 @@ test {
     _ = @import("write/flatbuf.zig");
     _ = @import("builders.zig");
     _ = report;
+    _ = problem;
+    _ = @import("problems_doc_test.zig");
     _ = worker;
     _ = infer;
     _ = pool;

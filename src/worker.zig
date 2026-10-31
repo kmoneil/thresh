@@ -13,6 +13,7 @@ const schema_mod = @import("schema.zig");
 const Schema = schema_mod.Schema;
 const validate = @import("validate.zig");
 const report = @import("report.zig");
+const Problem = @import("problem.zig").Problem;
 const infer = @import("infer.zig");
 const builders = @import("builders.zig");
 const csv = @import("write/csv.zig");
@@ -181,7 +182,7 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
 
     const names = try arena.alloc([]const u8, plan.schema.columns.len);
     for (names, plan.schema.columns) |*n, c| n.* = c.name;
-    var sniffed = (try openSniffed(env, cfg, path, names, &out, arena)) orelse {
+    var sniffed = (try openSniffed(env, cfg, path, names, &out)) orelse {
         try writeReport(env, plan, out, name, details);
         return out;
     };
@@ -190,7 +191,7 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
     const verdict = sniffed.verdict;
     details.verdict = verdict;
     if (verdict.confidence == .low and !cfg.pins.complete()) {
-        out.problem = "the dialect is not settled (confidence low); pin it with --delimiter, --quote, --escape, --newline and --header";
+        out.problem = .{ .dialect_unsettled = .{ .score = verdict.score } };
         try writeReport(env, plan, out, name, details);
         return out;
     }
@@ -281,9 +282,9 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
         if (keep) out.written = o.final_path;
     }
     if (v.structural.items.len > 0) {
-        out.problem = try arena.dupe(u8, v.structural.items[0]);
+        out.problem = try v.structural.items[0].dupe(arena);
     } else if (v.repeated_headers > 0) {
-        out.problem = try repeatedHeader(arena, v.repeated_lines.items[0], v.repeated_headers);
+        out.problem = .{ .header_repeated = .{ .line = v.repeated_lines.items[0], .count = v.repeated_headers } };
     }
     if (in.utf16) |u| if (u.replaced > 0) {
         details.verdict.?.warnings.utf16_invalid = true;
@@ -303,9 +304,9 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
 
 /// A UTF-16 file is transcoded to UTF-8 as it is read, so an --encoding
 /// for its bytes would read the UTF-8 as something else.
-fn utf16Conflict(in: *const input.Input, cfg: *const cli.Config) ?[]const u8 {
+fn utf16Conflict(in: *const input.Input, cfg: *const cli.Config) ?Problem {
     if (in.utf16 == null or cfg.encoding == .utf8) return null;
-    return "the file is UTF-16 (it starts with a byte order mark) and is read as such; leave out --encoding";
+    return .utf16_with_encoding;
 }
 
 fn writeReport(env: Env, plan: Plan, out: report.Outcome, name: []const u8, details: report.Details) !void {
@@ -357,25 +358,6 @@ fn removeSink(io: Io, dir: []const u8, source: []const u8, ext: []const u8) !voi
     try Io.Dir.cwd().deleteFile(io, try sinkPath(&name_buf, dir, source, ext));
 }
 
-pub fn describe(e: anyerror) []const u8 {
-    return switch (e) {
-        error.FileNotFound => "no such file",
-        error.AccessDenied, error.PermissionDenied => "permission denied",
-        error.IsDir => "is a directory",
-        error.OutOfMemory => "out of memory",
-        error.BrokenPipe => "the output was closed",
-        error.Utf16 => "UTF-16 data (a UTF-16 byte order mark) where UTF-8 was expected",
-        error.Binary => "binary data (a NUL byte in the first 8 KiB)",
-        else => @errorName(e),
-    };
-}
-
-/// What a file's repeated header says, for its line and infer's stderr.
-pub fn repeatedHeader(arena: Allocator, line: u64, count: u64) Allocator.Error![]const u8 {
-    if (count == 1) return std.fmt.allocPrint(arena, "the header repeats at row {d}: files joined? It is skipped", .{line});
-    return std.fmt.allocPrint(arena, "the header repeats at row {d} and {d} more: files joined? They are skipped", .{ line, count - 1 });
-}
-
 /// One file's pass 1: its outcome and its columns as inference left them.
 /// A file open, and its dialect.
 pub const Sniffed = struct {
@@ -387,14 +369,14 @@ pub const Sniffed = struct {
 /// the one way sniff, infer and validate read a file's dialect. A problem
 /// with the file (it cannot be opened, is UTF-16 under --encoding, gives
 /// the sniffer nothing to score, or has a header a name short of its
-/// rows) goes in out.problem, allocated in arena, and gives null.
+/// rows) goes in out.problem and gives null.
 /// out.bytes and out.timing.sniff_ns are set as far as it gets. Low
 /// confidence is the caller's to judge. The caller closes the Input.
-pub fn openSniffed(env: Env, cfg: *const cli.Config, path: []const u8, schema_names: ?[]const []const u8, out: *report.Outcome, arena: Allocator) !?Sniffed {
+pub fn openSniffed(env: Env, cfg: *const cli.Config, path: []const u8, schema_names: ?[]const []const u8, out: *report.Outcome) !?Sniffed {
     const t0 = now(env.io);
     defer out.timing.sniff_ns = since(env.io, t0);
     var in = input.Input.open(env.io, env.gpa, path, .{ .no_mmap = cfg.no_mmap }) catch |e| {
-        out.problem = describe(e);
+        out.problem = Problem.of(e);
         return null;
     };
     var kept = false;
@@ -415,7 +397,7 @@ pub fn openSniffed(env: Env, cfg: *const cli.Config, path: []const u8, schema_na
     }) catch |e| switch (e) {
         error.OutOfMemory => return e,
         else => {
-            out.problem = describe(e);
+            out.problem = Problem.of(e);
             return null;
         },
     };
@@ -423,7 +405,7 @@ pub fn openSniffed(env: Env, cfg: *const cli.Config, path: []const u8, schema_na
     // Its names cannot be matched to its columns, and guessing where one
     // is missing or extra would name the columns after it wrongly.
     if (verdict.warnings.header_width) {
-        out.problem = try std.fmt.allocPrint(arena, "row 1 is a header of {d} names over rows of {d} fields, and which names go with which columns cannot be told; fix the header, or pin --header no to read row 1 as data", .{ verdict.header_fields, verdict.fields });
+        out.problem = .{ .header_width = .{ .header_fields = verdict.header_fields, .fields = verdict.fields } };
         return null;
     }
     kept = true;
@@ -450,12 +432,12 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
     const io = env.io;
     const gpa = env.gpa;
     var out: report.Outcome = .{ .file = path, .result = .@"error" };
-    var sniffed = (try openSniffed(env, cfg, path, null, &out, arena)) orelse return .{ .outcome = out };
+    var sniffed = (try openSniffed(env, cfg, path, null, &out)) orelse return .{ .outcome = out };
     defer sniffed.in.close(io, gpa);
     const in = &sniffed.in;
     const verdict = sniffed.verdict;
     if (verdict.confidence == .low and !cfg.pins.complete()) {
-        out.problem = "the dialect is not settled (confidence low); pin it with --delimiter, --quote, --escape, --newline and --header";
+        out.problem = .{ .dialect_unsettled = .{ .score = verdict.score } };
         return .{ .outcome = out };
     }
 
@@ -523,7 +505,7 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
     // Read as UTF-8 and not UTF-8: a guess of replace would turn every
     // accented letter of a Windows export into U+FFFD, so say what to do.
     for (f.columns.items) |c| if (c.invalid_utf8) {
-        out.problem = try std.fmt.allocPrint(arena, "column '{s}' is not UTF-8 (row {d}); read the file with --encoding cp1252 (Windows) or latin1", .{ c.name, c.invalid_row });
+        out.problem = .{ .column_not_utf8 = .{ .column = c.name, .row = c.invalid_row } };
         return .{ .outcome = out };
     };
     out.result = .pass;

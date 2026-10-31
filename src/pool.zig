@@ -14,6 +14,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const worker = @import("worker.zig");
 const report = @import("report.zig");
+const Problem = @import("problem.zig").Problem;
 const interrupt = @import("interrupt.zig");
 
 /// What a worker keeps from file to file.
@@ -68,7 +69,7 @@ pub const Options = struct {
 /// got to (Ctrl-C) is an error outcome saying so.
 pub fn run(io: Io, gpa: Allocator, task: Task, outcomes: []report.Outcome, lines: *Lines, options: Options) !void {
     const count = task.files.len;
-    for (outcomes, task.files) |*o, f| o.* = .{ .file = f, .result = .@"error", .problem = "not reached: interrupted" };
+    for (outcomes, task.files) |*o, f| o.* = .{ .file = f, .result = .@"error", .problem = .not_reached };
     if (count == 0) return;
     const jobs = @max(1, @min(options.jobs, count));
 
@@ -135,11 +136,11 @@ fn one(w: *Worker, task: Task, i: usize, outcomes: []report.Outcome, lines: *Lin
     var o = task.run(task.ctx, w, i) catch |e| report.Outcome{
         .file = task.files[i],
         .result = .@"error",
-        .problem = if (e == error.Interrupted) "interrupted" else worker.describe(e),
+        .problem = Problem.of(e),
     };
     // The outcome's strings outlive the file's scratch.
     const a = w.keep;
-    if (o.problem) |p| o.problem = a.dupe(u8, p) catch "out of memory";
+    if (o.problem) |p| o.problem = p.dupe(a) catch .out_of_memory;
     if (o.written) |p| o.written = a.dupe(u8, p) catch null;
     outcomes[i] = o;
     lines.put(w.env.io, o);

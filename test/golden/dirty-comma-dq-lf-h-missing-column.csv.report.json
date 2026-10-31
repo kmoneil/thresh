@@ -87,6 +87,13 @@
   "structural": [
     "the schema's column 'flag' is not in the header"
   ],
+  "problems": [
+    {
+      "code": "column_missing",
+      "message": "the schema's column 'flag' is not in the header",
+      "column": "flag"
+    }
+  ],
   "rows_rejected": 0,
   "rejected_sample": [],
   "row_errors": {},

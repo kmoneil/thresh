@@ -6,6 +6,7 @@ const std = @import("std");
 const Io = std.Io;
 const Stringify = std.json.Stringify;
 const dialect = @import("dialect.zig");
+const Problem = @import("problem.zig").Problem;
 const schema = @import("schema.zig");
 const types = @import("types.zig");
 const validate = @import("validate.zig");
@@ -41,7 +42,7 @@ pub const Outcome = struct {
     rows_rejected: u64 = 0,
     result: Result,
     /// The first structural error, or why the file could not be read.
-    problem: ?[]const u8 = null,
+    problem: ?Problem = null,
     /// convert and run: the output file written.
     written: ?[]const u8 = null,
     timing: Timing = .{},
@@ -124,6 +125,8 @@ pub fn writeFileReport(w: *Io.Writer, o: Outcome, d: Details) Stringify.Error!vo
                     try s.write(sample.row);
                     try s.objectField("value");
                     try writeText(&s, sample.value, d.encoding);
+                    try s.objectField("code");
+                    try s.write(sample.reason);
                     try s.objectField("reason");
                     try s.write(sample.reason.text());
                     try s.endObject();
@@ -133,8 +136,7 @@ pub fn writeFileReport(w: *Io.Writer, o: Outcome, d: Details) Stringify.Error!vo
             try s.endObject();
         }
         try s.endArray();
-        try s.objectField("structural");
-        try s.write(v.structural.items);
+        try writeProblems(&s, v.structural.items);
         try s.objectField("rows_rejected");
         try s.write(v.rejected);
         try s.objectField("rejected_sample");
@@ -149,10 +151,7 @@ pub fn writeFileReport(w: *Io.Writer, o: Outcome, d: Details) Stringify.Error!vo
         }
         try s.endObject();
     } else {
-        try s.objectField("structural");
-        try s.beginArray();
-        if (o.problem) |p| try s.write(p);
-        try s.endArray();
+        try writeProblems(&s, if (o.problem) |*p| p[0..1] else &.{});
     }
     try s.objectField("warnings");
     try s.beginArray();
@@ -181,6 +180,17 @@ pub fn writeFileReport(w: *Io.Writer, o: Outcome, d: Details) Stringify.Error!vo
     }
     try s.endObject();
     try w.writeByte('\n');
+}
+
+/// "structural", each problem's sentence, and "problems", each as its
+/// code, parameters and fix.
+fn writeProblems(s: *Stringify, problems: []const Problem) Stringify.Error!void {
+    try s.objectField("structural");
+    try s.beginArray();
+    for (problems) |p| try p.writeMessage(s);
+    try s.endArray();
+    try s.objectField("problems");
+    try s.write(problems);
 }
 
 /// A fraction as the report writes it: 1.0, or up to eight places.
@@ -268,7 +278,9 @@ fn writeOutcome(s: *Stringify, o: Outcome) Stringify.Error!void {
     try s.objectField("rows_rejected");
     try s.write(o.rows_rejected);
     try s.objectField("problem");
-    try s.write(o.problem);
+    if (o.problem) |p| try p.writeMessage(s) else try s.write(null);
+    try s.objectField("problems");
+    try s.write(if (o.problem) |*p| p[0..1] else &[_]Problem{});
     // Its name may not be the input's: pool.uniqueNames.
     if (o.written) |p| {
         try s.objectField("written");
@@ -283,7 +295,7 @@ pub fn writeLine(w: *Io.Writer, o: Outcome) Io.Writer.Error!void {
     try w.print("{s:<5} {s}  {d} rows  {d} rejected  {d:.0} MB/s", .{
         @tagName(o.result), o.file, o.rows, o.rows_rejected, o.throughput(),
     });
-    if (o.problem) |p| try w.print("  {s}", .{p});
+    if (o.problem) |p| try w.print("  {f}", .{p});
     try w.writeByte('\n');
 }
 

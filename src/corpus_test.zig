@@ -276,7 +276,7 @@ test "validate: every clean corpus file passes, every dirty one reports what was
         defer arena.deinit();
         const o = (try validateOne(io, gpa, arena.allocator(), &corpus, corpus_dir, name, null)).outcome;
         if (o.result != .pass or o.rows_rejected != 0) {
-            std.debug.print("{s}: {t}, {d} of {d} rows rejected, {?s}\n", .{ name, o.result, o.rows_rejected, o.rows, o.problem });
+            std.debug.print("{s}: {t}, {d} of {d} rows rejected, {?f}\n", .{ name, o.result, o.rows_rejected, o.rows, o.problem });
             return error.TestUnexpectedResult;
         }
     }
@@ -417,7 +417,7 @@ test "infer then validate: every clean corpus file passes against its own inferr
         const plan: worker.Plan = .{ .cfg = &cfg, .schema = &s, .nulls = nulls, .threshold = 1.0, .timing = false };
         const o = try worker.validateFile(.{ .io = io, .gpa = gpa }, plan, path, a);
         if (o.result != .pass or o.rows_rejected != 0) {
-            std.debug.print("{s}: {t} against its inferred schema, {d} of {d} rows rejected, {?s}\n", .{ name, o.result, o.rows_rejected, o.rows, o.problem });
+            std.debug.print("{s}: {t} against its inferred schema, {d} of {d} rows rejected, {?f}\n", .{ name, o.result, o.rows_rejected, o.rows, o.problem });
             var buf: [8192]u8 = undefined;
             var w: Io.Writer = .fixed(&buf);
             schema.writeJson(s, &w) catch {};

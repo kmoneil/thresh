@@ -23,6 +23,7 @@ const Record = records.Record;
 const Dialect = @import("dialect.zig").Dialect;
 const csv = @import("write/csv.zig");
 const builders = @import("builders.zig");
+const Problem = @import("problem.zig").Problem;
 
 /// What a short or long row becomes.
 pub const Ragged = enum { reject, pad, truncate };
@@ -74,7 +75,7 @@ pub const Validator = struct {
     rejected: u64 = 0,
     rejected_sample: std.ArrayList(u64) = .empty,
     row_errors: std.EnumArray(Reason, u64) = .initFill(0),
-    structural: std.ArrayList([]const u8) = .empty,
+    structural: std.ArrayList(Problem) = .empty,
     extra_columns: bool = false,
     /// The file had a header, and records that are it again (two exports
     /// joined): skipped, and the first lines they are on.
@@ -149,8 +150,9 @@ pub const Validator = struct {
         v.arena.deinit();
     }
 
-    fn fail(v: *Validator, comptime fmt: []const u8, args: anytype) Allocator.Error!void {
-        try v.structural.append(v.gpa, try std.fmt.allocPrint(v.arena.allocator(), fmt, args));
+    /// A problem that fails the file, its names copied.
+    fn fail(v: *Validator, p: Problem) Allocator.Error!void {
+        try v.structural.append(v.gpa, try p.dupe(v.arena.allocator()));
     }
 
     /// Settles which field each column is in. With a header and matching by
@@ -162,7 +164,7 @@ pub const Validator = struct {
     pub fn columns(v: *Validator, header: ?[]const Field, width: usize, data: []const u8, base: u64) Allocator.Error!void {
         const s = v.schema;
         const by_name = (s.match orelse if (header != null) schema_mod.Match.name else .position) == .name;
-        if (by_name and header == null) return v.fail("match by name needs a header", .{});
+        if (by_name and header == null) return v.fail(.match_needs_header);
         const a = v.arena.allocator();
         if (header) |h| {
             const names = try a.alloc([]const u8, h.len);
@@ -201,18 +203,18 @@ pub const Validator = struct {
                     used[k] = true;
                     break;
                 }
-                if (m.* == null) try v.fail("the schema's column '{s}' is not in the header", .{c.name});
+                if (m.* == null) try v.fail(.{ .column_missing = .{ .column = c.name } });
             }
             for (used, h) |u, n| if (!u) {
                 v.extra_columns = true;
-                if (v.options.strict) try v.fail("the header's column '{s}' is not in the schema", .{n});
+                if (v.options.strict) try v.fail(.{ .column_extra = .{ .column = n } });
             };
         } else {
             for (v.mapping, 0..) |*m, i| m.* = if (i < v.width) @intCast(i) else null;
-            if (v.width < s.columns.len) try v.fail("the file has {d} columns, the schema {d}", .{ v.width, s.columns.len });
+            if (v.width < s.columns.len) try v.fail(.{ .width_mismatch = .{ .columns = v.width, .schema_columns = s.columns.len } });
             if (v.width > s.columns.len) {
                 v.extra_columns = true;
-                if (v.options.strict) try v.fail("the file has {d} columns, the schema {d}", .{ v.width, s.columns.len });
+                if (v.options.strict) try v.fail(.{ .width_mismatch = .{ .columns = v.width, .schema_columns = s.columns.len } });
             }
         }
     }
@@ -258,9 +260,9 @@ pub const Validator = struct {
     /// and the file fails, since it is not all there.
     fn cutOff(v: *Validator, rec: Record, width: usize) Allocator.Error!void {
         if (rec.problem == .unterminated_quote) {
-            try v.fail("the file ends mid-record, inside a quoted field and with no line break: was it cut off?", .{});
+            try v.fail(.cut_off_in_quote);
         } else if (rec.problem == null and width < v.width) {
-            try v.fail("the file ends mid-record: its last line has no line break and {d} of {d} fields; was it cut off?", .{ width, v.width });
+            try v.fail(.{ .cut_off = .{ .fields = width, .width = v.width } });
         }
     }
 
@@ -482,7 +484,7 @@ test "structure: a file that stops mid-record says so" {
     var cut = try run("id,amount,status\n1,1.50,open\n2,3", &orders, .{}, &rejects);
     defer cut.deinit();
     try testing.expectEqual(@as(usize, 1), cut.structural.items.len);
-    try testing.expectEqualStrings("the file ends mid-record: its last line has no line break and 2 of 3 fields; was it cut off?", cut.structural.items[0]);
+    try testing.expectEqualDeep(Problem{ .cut_off = .{ .fields = 2, .width = 3 } }, cut.structural.items[0]);
     try testing.expectEqual(@as(u64, 1), cut.row_errors.get(.ragged));
     // Padding takes the row, but the file is still not all there.
     var padded = try run("id,amount,status\n1,1.50,open\n2,3", &orders, .{ .ragged = .pad }, &rejects);
@@ -491,7 +493,7 @@ test "structure: a file that stops mid-record says so" {
     try testing.expect(!padded.passed());
     var quoted = try run("id,amount,status\n1,1.50,\"op", &orders, .{}, &rejects);
     defer quoted.deinit();
-    try testing.expectEqualStrings("the file ends mid-record, inside a quoted field and with no line break: was it cut off?", quoted.structural.items[0]);
+    try testing.expectEqualDeep(@as(Problem, .cut_off_in_quote), quoted.structural.items[0]);
     // A whole last record with no line break is only that.
     var whole = try run("id,amount,status\n1,1.50,open", &orders, .{}, &rejects);
     defer whole.deinit();
@@ -509,7 +511,7 @@ test "structure: a missing column fails the file, an extra one only under --stri
     var v = try run("id,status,note\n1,open,x\n", &orders, .{}, &rejects);
     defer v.deinit();
     try testing.expectEqual(@as(usize, 1), v.structural.items.len);
-    try testing.expectEqualStrings("the schema's column 'amount' is not in the header", v.structural.items[0]);
+    try testing.expectEqualDeep(Problem{ .column_missing = .{ .column = "amount" } }, v.structural.items[0]);
     try testing.expect(v.extra_columns);
     try testing.expect(!v.passed());
 

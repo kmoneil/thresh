@@ -38,7 +38,7 @@ $ grep -E '"(name|type|format)"' harvest.schema.json
 $ thresh validate data/harvest.csv --schema harvest.schema.json
 pass  data/harvest.csv  40 rows  0 rejected  2 MB/s
 $ thresh convert data/harvest.csv --schema harvest.schema.json --to arrow --out out --json
-{"file":"data/harvest.csv","result":"pass","rows":40,"rows_rejected":0,"problem":null,"written":"out/harvest.arrows"}
+{"file":"data/harvest.csv","result":"pass","rows":40,"rows_rejected":0,"problem":null,"problems":[],"written":"out/harvest.arrows"}
 ```
 
 The Arrow stream in `out/` reads straight into pyarrow, polars or DuckDB.
@@ -125,6 +125,7 @@ $ cat reports/harvest_dirty.csv.report.json
         {
           "row": 9,
           "value": "2026-09-31",
+          "code": "not_in_format",
           "reason": "not in the column's format"
         }
       ]
@@ -146,6 +147,7 @@ $ cat reports/harvest_dirty.csv.report.json
         {
           "row": 5,
           "value": "18,5",
+          "code": "not_decimal",
           "reason": "not a decimal"
         }
       ]
@@ -167,6 +169,7 @@ $ cat reports/harvest_dirty.csv.report.json
         {
           "row": 13,
           "value": "maybe",
+          "code": "not_bool",
           "reason": "not a bool"
         }
       ]
@@ -180,6 +183,7 @@ $ cat reports/harvest_dirty.csv.report.json
     }
   ],
   "structural": [],
+  "problems": [],
   "rows_rejected": 4,
   "rejected_sample": [
     5,

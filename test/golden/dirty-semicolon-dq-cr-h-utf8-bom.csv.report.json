@@ -33,11 +33,13 @@
         {
           "row": 5,
           "value": "",
+          "code": "null_value",
           "reason": "null in a non-nullable column"
         },
         {
           "row": 9,
           "value": "99999999999999999999",
+          "code": "int_overflow",
           "reason": "out of int64 range"
         }
       ]
@@ -52,6 +54,7 @@
         {
           "row": 13,
           "value": "OPEN",
+          "code": "not_in_enum",
           "reason": "not one of the enum's values"
         }
       ]
@@ -66,16 +69,19 @@
         {
           "row": 17,
           "value": "1234567890123.45",
+          "code": "decimal_precision",
           "reason": "too many digits for the decimal's precision"
         },
         {
           "row": 21,
           "value": "1.234",
+          "code": "decimal_scale",
           "reason": "too many digits after the point for the decimal's scale"
         },
         {
           "row": 25,
           "value": "12,50",
+          "code": "not_decimal",
           "reason": "not a decimal"
         }
       ]
@@ -90,6 +96,7 @@
         {
           "row": 29,
           "value": "abc",
+          "code": "not_float",
           "reason": "not a float64"
         }
       ]
@@ -104,6 +111,7 @@
         {
           "row": 33,
           "value": "maybe",
+          "code": "not_bool",
           "reason": "not a bool"
         }
       ]
@@ -120,6 +128,7 @@
         {
           "row": 37,
           "value": "2024-02-30",
+          "code": "not_in_format",
           "reason": "not in the column's format"
         }
       ]
@@ -136,6 +145,7 @@
         {
           "row": 41,
           "value": "3 days ago",
+          "code": "not_in_format",
           "reason": "not in the column's format"
         }
       ]
@@ -150,17 +160,20 @@
         {
           "row": 45,
           "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "code": "too_long",
           "reason": "longer than max_len"
         },
         {
           "row": 49,
           "value": "caf�",
+          "code": "invalid_utf8",
           "reason": "not valid UTF-8"
         }
       ]
     }
   ],
   "structural": [],
+  "problems": [],
   "rows_rejected": 15,
   "rejected_sample": [
     5,
