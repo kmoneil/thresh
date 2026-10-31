@@ -11,6 +11,7 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const testing = std.testing;
 const dialect = @import("dialect.zig");
+const Problem = @import("problem.zig").Problem;
 const Field = @import("records.zig").Field;
 const reference = @import("reference.zig");
 const report = @import("report.zig");
@@ -236,8 +237,8 @@ test "docs/REPORT.md: the reports' fields, as thresh writes them" {
         try written(a, report.writeJsonLine, .{error_outcome}),
     });
     _ = try expectDocumented(a, "sniff", report.format_version, &.{
-        try written(a, report.writeSniffLine, .{ "a.csv", verdict('"') }),
-        try written(a, report.writeSniffLine, .{ "b.csv", verdict(null) }),
+        try written(a, report.writeSniffLine, .{ "a.csv", verdict('"'), &[_]Problem{.{ .quote_is_data = .{ .records = 1, .lines = 3, .line = 62 } }} }),
+        try written(a, report.writeSniffLine, .{ "b.csv", verdict(null), &[_]Problem{} }),
     });
 
     for ([_][]const u8{ "report", "sniff" }) |name| {

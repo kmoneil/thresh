@@ -44,6 +44,8 @@ Where they appear ([REPORT.md](REPORT.md) has every field of each):
   stopped or failed the file.
 - `summary.json`'s `results`, and each `--json` line: `problems`, the file's
   first problem (or none).
+- Each `sniff --json` line: `problems`, what stops the file at its sniff
+  (or none).
 - stderr: the sentence.
 
 ### A file thresh cannot read
@@ -66,7 +68,7 @@ The file's result is `error` (exit 2).
 | `not_reached` | | Ctrl-C before the run reached the file |
 | `dialect_unsettled` | `score` | the sniffer is not sure enough of the dialect (confidence low) to read the file; pin it |
 | `header_width` | `header_fields`, `fields` | row 1 is a header of another width than the rows, so which name goes with which column cannot be told; suggests `header: "no"` |
-| `quote_is_data` | `records`, `lines`, `line`, the first | the file's quotes look like data, as in a file that never quotes and uses `"` for inches: values that start with one folded `lines` lines into `records` records, each line a whole row without the quotes, in a file with quotes inside unquoted fields too; what was read is not the file's rows, so nothing is written. Never with `--quote` pinned; suggests `quote: "none"` |
+| `quote_is_data` | `records`, `lines`, `line`, the first | the file's quotes look like data, as in a file that never quotes and uses `"` for inches: values that start with one folded `lines` lines into `records` records, each line a whole row without the quotes, in a file with quotes inside unquoted fields too; what was read is not the file's rows, so nothing is written. Seen in the sniffer's sample, it stops the file there, sniff included, with the sample's counts; past the sample, when the whole file has been read. Never with `--quote` pinned; suggests `quote: "none"` |
 | `column_not_utf8` | `column`, `row` | infer, reading as UTF-8, found a column that is not; suggests `encoding: ["cp1252", "latin1"]` |
 
 ### A file that fails its schema

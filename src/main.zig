@@ -467,8 +467,9 @@ fn sniff(env: Env, cfg: cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
         };
         sniffed.in.close(env.io, env.gpa);
         const v = sniffed.verdict;
+        const stop = worker.verdictProblem(v, &cfg);
         if (cfg.json) {
-            try report.writeSniffLine(out, path, v);
+            try report.writeSniffLine(out, path, v, if (stop) |*p| p[0..1] else &.{});
         } else {
             try out.print("{s}: {f} confidence={t}", .{ path, v.dialect, v.confidence });
             if (@as(u8, @bitCast(v.warnings)) != 0) {
@@ -484,8 +485,8 @@ fn sniff(env: Env, cfg: cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
             }
             try out.writeByte('\n');
         }
-        if (v.confidence == .low and !cfg.pins.complete()) {
-            try err.print("thresh: {s}: {f}\n", .{ path, Problem{ .dialect_unsettled = .{ .score = v.score } } });
+        if (stop) |p| {
+            try err.print("thresh: {s}: {f}\n", .{ path, p });
             code = code.worst(.unreadable);
         }
     }

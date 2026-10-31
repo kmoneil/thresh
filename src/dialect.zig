@@ -6,7 +6,8 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const reference = @import("reference.zig");
-const Field = @import("records.zig").Field;
+const records = @import("records.zig");
+const Field = records.Field;
 const NameMap = @import("schema.zig").NameMap;
 
 pub const Dialect = struct {
@@ -176,6 +177,10 @@ pub const Verdict = struct {
     header_fields: usize = 0,
     /// The best candidates with other delimiters, best first.
     runners_up: [2]?Runner = .{ null, null },
+    /// The sample's quotes look like data (records.QuoteCheck over the
+    /// winning reading): rows folded into records. Never with --quote
+    /// pinned, which says the file quotes.
+    folded: ?records.Folded = null,
 
     pub const Runner = struct { delimiter: u8, score: f64 };
 
@@ -296,7 +301,7 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
     var d = best.dialect;
     const len = @min(window, data.len);
     const sample = data[start..len];
-    const shape = try lines(gpa, sample, d, &parser_fields);
+    const shape = try lines(gpa, sample, d, best.mode, complete and len == data.len, &parser_fields);
     d.newline = pins.newline orelse shape.newline;
     if (shape.mixed) warnings.mixed_newlines = true;
     if (shape.stray_quotes) warnings.quote_in_unquoted = true;
@@ -328,6 +333,7 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
         .warnings = warnings,
         .header_fields = header_fields,
         .runners_up = runners,
+        .folded = if (pins.quote == null and d.quote != null) shape.quotes.folding(shape.stray) else null,
     };
 }
 
@@ -602,11 +608,21 @@ fn score(
     };
 }
 
-const Shape = struct { newline: Dialect.Newline, mixed: bool, stray_quotes: bool };
+const Shape = struct {
+    newline: Dialect.Newline,
+    mixed: bool,
+    stray_quotes: bool,
+    /// Whether the quotes look like data, and the stray quotes it weighs.
+    quotes: records.QuoteCheck = .{},
+    stray: u64 = 0,
+};
 
 /// The kind of the first record's line break, and whether a later one is
-/// another kind or a field held a stray quote, over the scored records.
-fn lines(gpa: Allocator, sample: []const u8, d: Dialect, fields: *std.ArrayList(Field)) Allocator.Error!Shape {
+/// another kind or a field held a stray quote, over the scored records;
+/// and whether their quotes look like data, rows width fields wide. A
+/// record cut off by the sample's end (whole: it is the file's) is not
+/// weighed, as the rest of it is not there.
+fn lines(gpa: Allocator, sample: []const u8, d: Dialect, width: usize, whole: bool, fields: *std.ArrayList(Field)) Allocator.Error!Shape {
     var shape: Shape = .{ .newline = .lf, .mixed = false, .stray_quotes = false };
     var first: ?Dialect.Newline = null;
     var p: reference.Parser = .init(sample, d, .{});
@@ -614,6 +630,8 @@ fn lines(gpa: Allocator, sample: []const u8, d: Dialect, fields: *std.ArrayList(
     while (n < 1000) : (n += 1) {
         const rec = try p.next(gpa, fields) orelse break;
         if (rec.stray_quotes > 0) shape.stray_quotes = true;
+        shape.stray += rec.stray_quotes;
+        if (whole or rec.end < sample.len) shape.quotes.record(rec, width, d, sample, 0);
         const end: usize = @intCast(rec.end);
         if (end == 0) break;
         const kind: Dialect.Newline = switch (sample[end - 1]) {
@@ -889,6 +907,32 @@ test "format writes unprintable bytes the way --delimiter takes them" {
         "delimiter=\\x1f quote=none escape=doubled newline=crlf header=yes comment=\\t",
         w.buffered(),
     );
+}
+
+test "a fold in the sample says the quotes are data, and a record the sample cuts off is not weighed" {
+    const testing = std.testing;
+    // Inch marks, never quoting: lines 3 to 5 fold into one record.
+    var rows: std.ArrayList(u8) = .empty;
+    defer rows.deinit(testing.allocator);
+    try rows.appendSlice(testing.allocator, "lug_id|bin|cultivar\n");
+    for (1..41) |i| try rows.print(testing.allocator, "{d}|{s}|Starfall\n", .{ i, if (i == 2) "\"36" else if (i == 4) "36\"" else if (i == 6) "36\" deep" else "48 in" });
+    const whole = try sniff(testing.allocator, rows.items, true, .{});
+    try testing.expectEqual(@as(?u8, '"'), whole.dialect.quote);
+    try testing.expectEqualDeep(@as(?records.Folded, .{ .records = 1, .lines = 3, .line = 3 }), whole.folded);
+    // Pinned, the quote is the user's word.
+    const pinned = try sniff(testing.allocator, rows.items, true, .{ .pins = .{ .quote = .{ .byte = '"' } } });
+    try testing.expectEqual(@as(?records.Folded, null), pinned.folded);
+
+    // The same quote opened on the sample's last record, which runs on
+    // past it, its lines so far whole rows: not there to weigh.
+    var cut: std.ArrayList(u8) = .empty;
+    defer cut.deinit(testing.allocator);
+    try cut.appendSlice(testing.allocator, "lug_id|bin|cultivar\n");
+    for (1..41) |i| try cut.print(testing.allocator, "{d}|{s}|Starfall\n", .{ i, if (i == 6) "36\" deep" else "48 in" });
+    try cut.appendSlice(testing.allocator, "41|\"36|Starfall\n42|48 in|Starfall\n");
+    const part = try sniff(testing.allocator, cut.items, false, .{});
+    try testing.expectEqual(@as(?u8, '"'), part.dialect.quote);
+    try testing.expectEqual(@as(?records.Folded, null), part.folded);
 }
 
 test "jsonStringify matches the report's dialect object" {
