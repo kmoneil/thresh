@@ -28,8 +28,8 @@
       "name": "id",
       "type": "int64",
       "nulls": 0,
-      "mismatches": 6,
-      "conformance": 0.9,
+      "mismatches": 3,
+      "conformance": 0.94736842,
       "samples": [
         {
           "row": 53,
@@ -52,15 +52,15 @@
       "name": "code",
       "type": "enum",
       "nulls": 0,
-      "mismatches": 3,
-      "conformance": 0.95
+      "mismatches": 0,
+      "conformance": 1.0
     },
     {
       "name": "amount",
       "type": "decimal",
       "nulls": 0,
-      "mismatches": 6,
-      "conformance": 0.9,
+      "mismatches": 3,
+      "conformance": 0.94736842,
       "samples": [
         {
           "row": 5,
@@ -83,8 +83,8 @@
       "name": "ratio",
       "type": "float64",
       "nulls": 6,
-      "mismatches": 4,
-      "conformance": 0.93333333,
+      "mismatches": 1,
+      "conformance": 0.98245614,
       "samples": [
         {
           "row": 17,
@@ -97,8 +97,8 @@
       "name": "flag",
       "type": "bool",
       "nulls": 0,
-      "mismatches": 4,
-      "conformance": 0.93333333,
+      "mismatches": 1,
+      "conformance": 0.98245614,
       "samples": [
         {
           "row": 21,
@@ -111,8 +111,8 @@
       "name": "created",
       "type": "date",
       "nulls": 0,
-      "mismatches": 4,
-      "conformance": 0.93333333,
+      "mismatches": 1,
+      "conformance": 0.98245614,
       "format": "%Y-%m-%d",
       "ambiguous": 0,
       "samples": [
@@ -127,8 +127,8 @@
       "name": "updated",
       "type": "timestamp",
       "nulls": 0,
-      "mismatches": 4,
-      "conformance": 0.93333333,
+      "mismatches": 1,
+      "conformance": 0.98245614,
       "format": "%Y-%m-%d %H:%M:%S",
       "ambiguous": 0,
       "samples": [
@@ -143,8 +143,8 @@
       "name": "name",
       "type": "string",
       "nulls": 0,
-      "mismatches": 5,
-      "conformance": 0.91666667,
+      "mismatches": 2,
+      "conformance": 0.96491228,
       "samples": [
         {
           "row": 33,

@@ -55,7 +55,7 @@ value of another type than its row says.
 
 | Document | Version | Date | What changed |
 | --- | --- | --- | --- |
-| reports | 1 | 2026-10-31 | The first versioned format. Against what thresh wrote before: `format_version` added; the report's `structural`, the outcome's `problem` and a sample's `reason`, sentences that `problems[].message` and `samples[].code` now carry, removed |
+| reports | 1 | 2026-10-31 | The first versioned format. Against what thresh wrote before: `format_version` added; the report's `structural`, the outcome's `problem` and a sample's `reason`, sentences that `problems[].message` and `samples[].code` now carry, removed; a row rejected whole counts in `row_errors` and no longer as a mismatch in every column, and `conformance` is over the rows read into columns |
 | schema | 1 | 2026-10-31 | `format_version` added |
 
 ## The file report
@@ -71,7 +71,7 @@ as the file finishes. A file that could not be read has one too: its
 | `file` | `string` | the input's path, as it was given |
 | `bytes` | `integer` | the file's size on disk |
 | `rows` | `integer` | data rows read: not the header, nor a repeat of it |
-| `result` | `string` | `pass`, `fail` (it fails its schema; exit 1) or `error` (it could not be read, or its dialect could not be settled; exit 2) |
+| `result` | `string` | `pass`, `fail` (it fails its schema: a problem, a column whose `conformance` is below the threshold, or a smaller fraction of rows read whole than the threshold; exit 1) or `error` (it could not be read, or its dialect could not be settled or was wrong; exit 2) |
 | `dialect` | `object` | when the file was sniffed: how it is written, and how sure thresh is |
 | `dialect.delimiter` | `string` | the delimiter, one byte |
 | `dialect.quote` | `string` or `null` | the quote character, or `null` for none |
@@ -88,8 +88,8 @@ as the file finishes. A file that could not be read has one too: its
 | `columns[].name` | `string` | the schema's name for it |
 | `columns[].type` | `string` | its type: `bool`, `int64`, `float64`, `decimal`, `date`, `timestamp`, `time`, `string`, `enum` or `binary` |
 | `columns[].nulls` | `integer` | values read as null |
-| `columns[].mismatches` | `integer` | values that do not fit the column |
-| `columns[].conformance` | `number` | the fraction of rows whose value fits (a null the column allows fits): 1.0, or up to eight places |
+| `columns[].mismatches` | `integer` | values that do not fit the column; a row rejected whole (`row_errors`) counts in no column |
+| `columns[].conformance` | `number` | the fraction of the rows read into columns (all but those rejected whole) whose value fits, a null the column allows fitting: 1.0, or up to eight places |
 | `columns[].format` | `string` | when the schema gives one: its strftime layout |
 | `columns[].ambiguous` | `integer` | a date or timestamp column: values whose order of day, month and year is a guess |
 | `columns[].fits` | `array` | when `ambiguous` is not 0: the orders every guessed value still fits |
@@ -227,7 +227,7 @@ checked.
 | `nulls` | `array` | values read as null in every column (default `""`) |
 | `nulls[]` | `string` | a value read as null |
 | `match` | `string` | how the file's columns are found: `name` (by the header) or `position`; left out, by name when the file has a header |
-| `threshold` | `number` | the fraction of a column's values that must fit for the file to pass (default 1.0); infer writes the `--threshold` it was given |
+| `threshold` | `number` | the fraction of a column's values that must fit, and of rows that must be read whole, for the file to pass (default 1.0); infer writes the `--threshold` it was given |
 | `sampled` | `boolean` | infer, with `--sample-rows`: only the first rows were read |
 
 ## Reject files

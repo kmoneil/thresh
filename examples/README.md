@@ -112,15 +112,15 @@ $ cat reports/harvest_dirty.csv.report.json
       "name": "lug_id",
       "type": "int64",
       "nulls": 1,
-      "mismatches": 1,
-      "conformance": 0.96666667
+      "mismatches": 0,
+      "conformance": 1.0
     },
     {
       "name": "picked_on",
       "type": "date",
       "nulls": 0,
-      "mismatches": 2,
-      "conformance": 0.93333333,
+      "mismatches": 1,
+      "conformance": 0.96551724,
       "format": "%Y-%m-%d",
       "ambiguous": 0,
       "samples": [
@@ -135,15 +135,15 @@ $ cat reports/harvest_dirty.csv.report.json
       "name": "orchard_row",
       "type": "string",
       "nulls": 0,
-      "mismatches": 1,
-      "conformance": 0.96666667
+      "mismatches": 0,
+      "conformance": 1.0
     },
     {
       "name": "lug_kg",
       "type": "decimal",
       "nulls": 0,
-      "mismatches": 2,
-      "conformance": 0.93333333,
+      "mismatches": 1,
+      "conformance": 0.96551724,
       "samples": [
         {
           "row": 5,
@@ -156,15 +156,15 @@ $ cat reports/harvest_dirty.csv.report.json
       "name": "cultivar",
       "type": "string",
       "nulls": 0,
-      "mismatches": 1,
-      "conformance": 0.96666667
+      "mismatches": 0,
+      "conformance": 1.0
     },
     {
       "name": "bruised",
       "type": "bool",
       "nulls": 0,
-      "mismatches": 2,
-      "conformance": 0.93333333,
+      "mismatches": 1,
+      "conformance": 0.96551724,
       "samples": [
         {
           "row": 13,
@@ -177,8 +177,8 @@ $ cat reports/harvest_dirty.csv.report.json
       "name": "remark",
       "type": "string",
       "nulls": 16,
-      "mismatches": 1,
-      "conformance": 0.96666667
+      "mismatches": 0,
+      "conformance": 1.0
     }
   ],
   "problems": [],

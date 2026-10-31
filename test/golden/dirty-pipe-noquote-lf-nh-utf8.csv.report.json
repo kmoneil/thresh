@@ -28,8 +28,8 @@
       "name": "id",
       "type": "int64",
       "nulls": 0,
-      "mismatches": 4,
-      "conformance": 0.93333333,
+      "mismatches": 3,
+      "conformance": 0.94915254,
       "samples": [
         {
           "row": 12,
@@ -52,8 +52,8 @@
       "name": "code",
       "type": "enum",
       "nulls": 0,
-      "mismatches": 2,
-      "conformance": 0.96666667,
+      "mismatches": 1,
+      "conformance": 0.98305085,
       "samples": [
         {
           "row": 24,
@@ -66,8 +66,8 @@
       "name": "amount",
       "type": "decimal",
       "nulls": 0,
-      "mismatches": 4,
-      "conformance": 0.93333333,
+      "mismatches": 3,
+      "conformance": 0.94915254,
       "samples": [
         {
           "row": 28,
@@ -90,8 +90,8 @@
       "name": "ratio",
       "type": "float64",
       "nulls": 11,
-      "mismatches": 3,
-      "conformance": 0.95,
+      "mismatches": 2,
+      "conformance": 0.96610169,
       "samples": [
         {
           "row": 8,
@@ -109,8 +109,8 @@
       "name": "flag",
       "type": "bool",
       "nulls": 0,
-      "mismatches": 2,
-      "conformance": 0.96666667,
+      "mismatches": 1,
+      "conformance": 0.98305085,
       "samples": [
         {
           "row": 44,
@@ -123,8 +123,8 @@
       "name": "created",
       "type": "date",
       "nulls": 0,
-      "mismatches": 2,
-      "conformance": 0.96666667,
+      "mismatches": 1,
+      "conformance": 0.98305085,
       "format": "%Y-%m-%d",
       "ambiguous": 0,
       "samples": [
@@ -139,8 +139,8 @@
       "name": "updated",
       "type": "timestamp",
       "nulls": 0,
-      "mismatches": 2,
-      "conformance": 0.96666667,
+      "mismatches": 1,
+      "conformance": 0.98305085,
       "format": "%Y-%m-%d %H:%M:%S",
       "ambiguous": 0,
       "samples": [
@@ -155,8 +155,8 @@
       "name": "name",
       "type": "string",
       "nulls": 0,
-      "mismatches": 3,
-      "conformance": 0.95,
+      "mismatches": 2,
+      "conformance": 0.96610169,
       "samples": [
         {
           "row": 56,

@@ -73,6 +73,9 @@ pub const Validator = struct {
     dates: []?types.date.Column,
     rows: u64 = 0,
     rejected: u64 = 0,
+    /// Rows rejected whole (row_errors): no column's values are read from
+    /// them, so they count in no column.
+    whole: u64 = 0,
     rejected_sample: std.ArrayList(u64) = .empty,
     row_errors: std.EnumArray(Reason, u64) = .initFill(0),
     structural: std.ArrayList(Problem) = .empty,
@@ -237,7 +240,7 @@ pub const Validator = struct {
         if (rec.end > base and !endsLine(data[@intCast(rec.end - 1 - base)])) try v.cutOff(rec, fields.len);
         if (v.rowError(rec, fields.len)) |r| {
             v.row_errors.getPtr(r).* += 1;
-            for (v.stats) |*s| s.mismatches += 1;
+            v.whole += 1;
             try v.errors.print(v.gpa, "*:{s}", .{r.text()});
             return v.rejectRow(rec, fields, data, base);
         }
@@ -372,12 +375,19 @@ pub const Validator = struct {
         return true;
     }
 
-    /// The file passes: nothing structural, no --strict failure, and every
-    /// column conforms at least as often as the threshold asks.
+    /// The file passes: nothing structural, no --strict failure, rows read
+    /// whole at least as often as the threshold asks, and every column
+    /// conforming as often over the rows read into columns.
     pub fn passed(v: *const Validator) bool {
         if (v.structural.items.len > 0 or v.strict_failure) return false;
-        for (v.stats) |s| if (conformance(s, v.rows) < v.options.threshold) return false;
+        if (v.rows > 0 and 1.0 - @as(f64, @floatFromInt(v.whole)) / @as(f64, @floatFromInt(v.rows)) < v.options.threshold) return false;
+        for (v.stats) |s| if (conformance(s, v.columnRows()) < v.options.threshold) return false;
         return true;
+    }
+
+    /// The rows read into columns: all but those rejected whole.
+    pub fn columnRows(v: *const Validator) u64 {
+        return v.rows - v.whole;
     }
 };
 
@@ -385,7 +395,8 @@ fn endsLine(c: u8) bool {
     return c == '\n' or c == '\r';
 }
 
-/// The fraction of rows a column's cells conform in: nulls it allows count.
+/// The fraction of rows a column's cells conform in, of the rows read into
+/// columns: nulls it allows count.
 pub fn conformance(s: ColumnStats, rows: u64) f64 {
     if (rows == 0) return 1.0;
     return 1.0 - @as(f64, @floatFromInt(s.mismatches)) / @as(f64, @floatFromInt(rows));
@@ -449,7 +460,7 @@ test "cells: mismatches, nulls and samples per column" {
     , rejects.written());
 }
 
-test "rows: ragged and broken rows count against every column" {
+test "rows: ragged and broken rows count in row_errors, in no column, and against the file" {
     var rejects: Io.Writer.Allocating = .init(testing.allocator);
     defer rejects.deinit();
     const input = "id,amount,status\n1,1.50\n2,\"3\"x,open\n3,4.00,open\n";
@@ -458,8 +469,19 @@ test "rows: ragged and broken rows count against every column" {
     try testing.expectEqual(@as(u64, 2), v.rejected);
     try testing.expectEqual(@as(u64, 1), v.row_errors.get(.ragged));
     try testing.expectEqual(@as(u64, 1), v.row_errors.get(.bad_quote));
-    for (v.stats) |s| try testing.expectEqual(@as(u64, 2), s.mismatches);
-    try testing.expectApproxEqAbs(@as(f64, 1.0 / 3.0), conformance(v.stats[0], v.rows), 1e-12);
+    // No column's values were read from them: each column is all there.
+    for (v.stats) |s| try testing.expectEqual(@as(u64, 0), s.mismatches);
+    try testing.expectEqual(@as(u64, 1), v.columnRows());
+    try testing.expectEqual(@as(f64, 1.0), conformance(v.stats[0], v.columnRows()));
+    // But the file is a third read whole: it fails 1.0, and a half, not a third.
+    try testing.expect(!v.passed());
+    for ([_]struct { f64, bool }{ .{ 0.5, false }, .{ 0.3, true } }) |c| {
+        var r: Io.Writer.Allocating = .init(testing.allocator);
+        defer r.deinit();
+        var t = try run(input, &orders, .{ .threshold = c[0] }, &r);
+        defer t.deinit();
+        try testing.expectEqual(c[1], t.passed());
+    }
 
     var padded: Io.Writer.Allocating = .init(testing.allocator);
     defer padded.deinit();

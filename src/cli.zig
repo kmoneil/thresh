@@ -33,8 +33,8 @@ pub const usage =
     \\      --encoding E       utf8 (the default), cp1252 (Windows-1252) or
     \\                         latin1; a file with a UTF-16 byte order mark is
     \\                         read as UTF-16, with no --encoding
-    \\      --threshold F      minimum conforming fraction per column (default:
-    \\                         the schema's, or 1.0)
+    \\      --threshold F      minimum conforming fraction per column, and of
+    \\                         rows read whole (default: the schema's, or 1.0)
     \\      --strict           extra columns, ragged rows and ambiguous dates fail
     \\      --keep-empty       an empty line is a one-field record, not skipped
     \\      --pad              fill a short row's missing fields with null
