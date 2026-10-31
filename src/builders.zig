@@ -14,8 +14,10 @@ pub const Column = struct {
     utf8: schema.Utf8Policy,
     /// One a row: false for a null.
     valid: std.ArrayList(bool) = .empty,
-    /// int64, time (us), timestamp (us), date (days).
+    /// int64, time (us), timestamp (us).
     ints: std.ArrayList(i64) = .empty,
+    /// date: days since 1970-01-01, as Arrow's date32 holds them.
+    days: std.ArrayList(i32) = .empty,
     floats: std.ArrayList(f64) = .empty,
     decimals: std.ArrayList(i128) = .empty,
     bools: std.ArrayList(bool) = .empty,
@@ -28,12 +30,14 @@ pub const Column = struct {
     offsets: std.ArrayList(u64) = .empty,
     bytes: std.ArrayList(u8) = .empty,
 
+    const lists = .{ "valid", "ints", "days", "floats", "decimals", "bools", "indices", "offsets", "bytes" };
+
     fn deinit(c: *Column, gpa: Allocator) void {
-        inline for (.{ "valid", "ints", "floats", "decimals", "bools", "indices", "offsets", "bytes" }) |f| @field(c, f).deinit(gpa);
+        inline for (lists) |f| @field(c, f).deinit(gpa);
     }
 
     fn clear(c: *Column) void {
-        inline for (.{ "valid", "ints", "floats", "decimals", "bools", "indices", "offsets", "bytes" }) |f| @field(c, f).clearRetainingCapacity();
+        inline for (lists) |f| @field(c, f).clearRetainingCapacity();
     }
 
     /// Row i's bytes: its string or binary value, or its text as read.
@@ -85,12 +89,12 @@ pub const Batch = struct {
             };
             switch (v) {
                 .int, .time, .timestamp => |n| try c.ints.append(gpa, n),
-                .date => |d| try c.ints.append(gpa, d),
+                .date => |d| try c.days.append(gpa, d),
                 .float => |f| try c.floats.append(gpa, f),
                 .decimal => |d| try c.decimals.append(gpa, d),
                 .bool => |x| try c.bools.append(gpa, x),
                 .enumeration => |i| try c.indices.append(gpa, i),
-                .string => |s| try b.appendText(c, s),
+                .string => |s| try appendUtf8(gpa, &c.bytes, s, b.encoding, c.utf8 == .replace),
                 .binary => |s| try c.bytes.appendSlice(gpa, s),
             }
             if (v != .string and v != .binary) try c.bytes.appendSlice(gpa, text);
@@ -98,43 +102,147 @@ pub const Batch = struct {
         }
         b.rows += 1;
     }
+};
 
-    /// A string's bytes as UTF-8: Latin-1 or Windows-1252 transcoded,
-    /// invalid UTF-8 replaced under utf8: replace, kept under utf8: binary.
-    fn appendText(b: *Batch, c: *Column, s: []const u8) Allocator.Error!void {
-        const gpa = b.gpa;
-        if (b.encoding != .utf8) {
-            for (s) |ch| {
-                if (ch < 0x80) {
-                    try c.bytes.append(gpa, ch);
-                    continue;
-                }
-                var buf: [3]u8 = undefined;
-                const n = std.unicode.utf8Encode(types.codepoint(b.encoding, ch), &buf) catch unreachable;
-                try c.bytes.appendSlice(gpa, buf[0..n]);
+/// s's bytes as UTF-8 onto out: Latin-1 or Windows-1252 transcoded,
+/// invalid UTF-8 replaced with U+FFFD when replace is set, else kept.
+fn appendUtf8(gpa: Allocator, out: *std.ArrayList(u8), s: []const u8, encoding: types.Encoding, replace: bool) Allocator.Error!void {
+    if (encoding != .utf8) {
+        for (s) |ch| {
+            if (ch < 0x80) {
+                try out.append(gpa, ch);
+                continue;
             }
-            return;
+            var buf: [3]u8 = undefined;
+            const n = std.unicode.utf8Encode(types.codepoint(encoding, ch), &buf) catch unreachable;
+            try out.appendSlice(gpa, buf[0..n]);
         }
-        if (c.utf8 != .replace or types.utf8.valid(s)) return c.bytes.appendSlice(gpa, s);
-        var i: usize = 0;
-        while (i < s.len) {
-            const len = std.unicode.utf8ByteSequenceLength(s[i]) catch 0;
-            if (len > 0 and i + len <= s.len) {
-                if (std.unicode.utf8Decode(s[i..][0..len])) |_| {
-                    try c.bytes.appendSlice(gpa, s[i..][0..len]);
-                    i += len;
-                    continue;
-                } else |_| {}
-            }
-            try c.bytes.appendSlice(gpa, "\xef\xbf\xbd");
-            i += 1;
+        return;
+    }
+    if (!replace or types.utf8.valid(s)) return out.appendSlice(gpa, s);
+    var i: usize = 0;
+    while (i < s.len) {
+        const len = std.unicode.utf8ByteSequenceLength(s[i]) catch 0;
+        if (len > 0 and i + len <= s.len) {
+            if (std.unicode.utf8Decode(s[i..][0..len])) |_| {
+                try out.appendSlice(gpa, s[i..][0..len]);
+                i += len;
+                continue;
+            } else |_| {}
         }
+        try out.appendSlice(gpa, "\xef\xbf\xbd");
+        i += 1;
+    }
+}
+
+/// A column of UTF-8 text, a value or a null a row: row i is
+/// bytes[offsets[i]..offsets[i + 1]]. offsets is empty until the first row.
+pub const Text = struct {
+    valid: std.ArrayList(bool) = .empty,
+    offsets: std.ArrayList(u64) = .empty,
+    bytes: std.ArrayList(u8) = .empty,
+
+    const lists = .{ "valid", "offsets", "bytes" };
+
+    fn deinit(t: *Text, gpa: Allocator) void {
+        inline for (lists) |f| @field(t, f).deinit(gpa);
+    }
+
+    fn clear(t: *Text) void {
+        inline for (lists) |f| @field(t, f).clearRetainingCapacity();
+    }
+
+    /// value as UTF-8 (transcoded from encoding, invalid bytes replaced),
+    /// or a null.
+    fn append(t: *Text, gpa: Allocator, value: ?[]const u8, encoding: types.Encoding) Allocator.Error!void {
+        if (t.offsets.items.len == 0) try t.offsets.append(gpa, 0);
+        try t.valid.append(gpa, value != null);
+        if (value) |s| try appendUtf8(gpa, &t.bytes, s, encoding, true);
+        try t.offsets.append(gpa, t.bytes.items.len);
+    }
+
+    /// Row i's text; "" for a null.
+    pub fn at(t: *const Text, i: usize) []const u8 {
+        return t.bytes.items[@intCast(t.offsets.items[i])..@intCast(t.offsets.items[i + 1])];
+    }
+};
+
+/// One thing wrong with a rejected row: the schema column it is in, or
+/// null for the whole row, and why.
+pub const RowError = struct { column: ?[]const u8, reason: types.Reason };
+
+/// A batch of rejected rows, as the reject file has them: each of the
+/// file's fields as text (null where a short row has none), the line the
+/// row starts on, its errors, and a wide row's fields past the header
+/// (null for any other row). A row is added a field at a time (begin,
+/// field, end), since each value is read into the same scratch.
+pub const Rejects = struct {
+    gpa: Allocator,
+    encoding: types.Encoding,
+    /// One a field of the header's width, made at the first row.
+    fields: []Text = &.{},
+    rows: usize = 0,
+    lines: std.ArrayList(i64) = .empty,
+    /// Row i's errors are those from error_offsets[i] to [i + 1]: each
+    /// error's column (null for the whole row) and its reason's code.
+    error_offsets: std.ArrayList(u64) = .empty,
+    error_columns: Text = .{},
+    error_codes: Text = .{},
+    extra: Text = .{},
+
+    pub fn init(gpa: Allocator, encoding: types.Encoding) Rejects {
+        return .{ .gpa = gpa, .encoding = encoding };
+    }
+
+    pub fn deinit(r: *Rejects) void {
+        for (r.fields) |*t| t.deinit(r.gpa);
+        r.gpa.free(r.fields);
+        r.lines.deinit(r.gpa);
+        r.error_offsets.deinit(r.gpa);
+        inline for (.{ "error_columns", "error_codes", "extra" }) |f| @field(r, f).deinit(r.gpa);
+    }
+
+    pub fn reset(r: *Rejects) void {
+        r.rows = 0;
+        for (r.fields) |*t| t.clear();
+        r.lines.clearRetainingCapacity();
+        r.error_offsets.clearRetainingCapacity();
+        inline for (.{ "error_columns", "error_codes", "extra" }) |f| @field(r, f).clear();
+    }
+
+    /// Starts a row of width fields: the same width every row.
+    pub fn begin(r: *Rejects, width: usize) Allocator.Error!void {
+        if (r.fields.len == width) return;
+        std.debug.assert(r.fields.len == 0);
+        r.fields = try r.gpa.alloc(Text, width);
+        @memset(r.fields, .{});
+    }
+
+    /// Field i of the row, or null where the row has none.
+    pub fn field(r: *Rejects, i: usize, value: ?[]const u8) Allocator.Error!void {
+        try r.fields[i].append(r.gpa, value, r.encoding);
+    }
+
+    /// Ends the row: its line, what was wrong, and a wide row's fields
+    /// past the header.
+    pub fn end(r: *Rejects, line: u64, errors: []const RowError, extra: ?[]const u8) Allocator.Error!void {
+        const gpa = r.gpa;
+        try r.lines.append(gpa, @intCast(line));
+        if (r.error_offsets.items.len == 0) try r.error_offsets.append(gpa, 0);
+        for (errors) |e| {
+            try r.error_columns.append(gpa, e.column, .utf8);
+            try r.error_codes.append(gpa, @tagName(e.reason), .utf8);
+        }
+        try r.error_offsets.append(gpa, r.error_codes.valid.items.len);
+        try r.extra.append(gpa, extra, r.encoding);
+        r.rows += 1;
     }
 };
 
 fn pushDefault(gpa: Allocator, c: *Column) Allocator.Error!void {
     switch (c.type) {
-        .int64, .time, .timestamp, .date => try c.ints.append(gpa, 0),
+        .int64, .time, .timestamp => try c.ints.append(gpa, 0),
+        .date => try c.days.append(gpa, 0),
         .float64 => try c.floats.append(gpa, 0),
         .decimal => try c.decimals.append(gpa, 0),
         .bool => try c.bools.append(gpa, false),

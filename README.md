@@ -109,7 +109,7 @@ zig build corpus          # the fixture corpus, into zig-out/corpus (python3)
 zig build bench           # MB/s per parsing stage, ReleaseFast (-- --size BYTES)
 zig build scale -Doptimize=ReleaseFast  # 10,000 files, MB/s by --jobs, Ctrl-C
 zig build fuzz            # replay the fuzz seeds; tools/fuzz.sh [LIMIT] fuzzes
-zig build arrow-check     # Arrow output read back by pyarrow and DuckDB
+zig build arrow-check     # Arrow output and C streams read back by pyarrow and DuckDB
 ```
 
 ## Speed
@@ -143,13 +143,14 @@ compiles that is almost certainly wrong.
 
 ## Status
 
-Early, and tried on real feeds. Next: problems as codes as well as
-sentences, a versioned report format, and then thresh as a C library and
-a Python package, [threshio](https://pypi.org/project/threshio/), that
-checks a file before the rest of your code runs, describes it in one
-document (for people, code or an AI, with a shapes-only mode that leaves
-the data out), and hands rows and rejects to pyarrow, polars or DuckDB
-without a copy.
+Early, and tried on real feeds. Problems are codes as well as sentences,
+the reports have a [versioned format](docs/REPORT.md), and the CLI is
+built on a library (`src/lib.zig`) that hands rows and rejects out as
+Arrow C streams. Next: thresh as a C library and a Python package,
+[threshio](https://pypi.org/project/threshio/), that checks a file before
+the rest of your code runs, describes it in one document (for people,
+code or an AI, with a shapes-only mode that leaves the data out), and
+hands rows and rejects to pyarrow, polars or DuckDB without a copy.
 
 ## License
 

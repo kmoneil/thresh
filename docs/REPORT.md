@@ -249,3 +249,13 @@ fields as read, a short row's padded with empty fields, then:
   a whole row's (a ragged one, say) is `*:reason`.
 - `_extra`: a row wider than the header, its fields past it, joined by
   the file's own delimiter as one field; empty for any other row.
+
+Through the library (`readArrow` in `src/lib.zig`), the same rows come as
+an Arrow C stream, a struct array a batch: a nullable `utf8` for each
+name of the header above, then `_row` (`int64`), `_errors` (a `list` of
+`struct<column: utf8, code: utf8>`, `column` null for a whole row's
+error, `code` the reason's code in PROBLEMS.md) and `_extra` (a nullable
+`utf8`). Where the CSV pads, the stream has nulls: a short row's missing
+fields, and `_extra` for a row no wider than the header. Every field is
+UTF-8, transcoded from the file's encoding, with U+FFFD for a byte that
+is not UTF-8.

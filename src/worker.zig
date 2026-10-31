@@ -94,13 +94,22 @@ pub const Reader = struct {
 
     pub const Opened = union(enum) {
         reader: Reader,
-        /// The file stops before it is read: the outcome says why, and the
-        /// verdict is there when it was sniffed.
-        stopped: struct { outcome: report.Outcome, verdict: ?dialect.Verdict = null },
+        stopped: Stopped,
     };
 
+    /// The file stops before it is read: the outcome says why, and the
+    /// verdict is there when it was sniffed.
+    pub const Stopped = struct { outcome: report.Outcome, verdict: ?dialect.Verdict = null };
+
+    /// open, with the nulls (the schema's and the options') and the
+    /// threshold (the options', the schema's, or 1.0) they give, in arena.
+    pub fn openFor(env: Env, arena: Allocator, path: []const u8, s: *const Schema, opts: Options) !Opened {
+        const nulls = try std.mem.concat(arena, []const u8, &.{ s.nulls, opts.nulls });
+        return open(env, arena, path, s, nulls, opts.threshold orelse s.threshold orelse 1.0, opts);
+    }
+
     /// Opens path and sniffs it, ready to read against s. arena holds the
-    /// schema's names for the sniffer.
+    /// schema's names for the sniffer, and what the reader keeps of nulls.
     pub fn open(env: Env, arena: Allocator, path: []const u8, s: *const Schema, nulls: []const []const u8, threshold: f64, opts: Options) !Opened {
         var out: report.Outcome = .{ .file = path, .result = .@"error" };
         const names = try arena.alloc([]const u8, s.columns.len);

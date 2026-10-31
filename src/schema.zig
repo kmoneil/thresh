@@ -193,6 +193,31 @@ pub const Owned = struct {
     }
 };
 
+/// s and every string it holds, copied into a.
+pub fn dupe(s: Schema, a: Allocator) Allocator.Error!Schema {
+    const columns = try a.alloc(Column, s.columns.len);
+    for (columns, s.columns) |*d, c| {
+        inline for (@typeInfo(Column).@"struct".field_names) |f| @field(d, f) = try dupeField(a, @field(c, f));
+    }
+    var out = s;
+    out.columns = columns;
+    out.nulls = try dupeField(a, s.nulls);
+    return out;
+}
+
+fn dupeField(a: Allocator, x: anytype) Allocator.Error!@TypeOf(x) {
+    return switch (@TypeOf(x)) {
+        []const u8 => a.dupe(u8, x),
+        []const []const u8 => {
+            const out = try a.alloc([]const u8, x.len);
+            for (out, x) |*o, v| o.* = try a.dupe(u8, v);
+            return out;
+        },
+        ?[]const u8, ?[]const []const u8 => if (x) |v| try dupeField(a, v) else null,
+        else => x,
+    };
+}
+
 /// Why a schema was refused, for the user.
 pub const Diagnostic = struct {
     buf: [256]u8 = undefined,
@@ -318,6 +343,23 @@ pub fn load(io: Io, gpa: Allocator, path: []const u8, diag: *Diagnostic) (Error 
 }
 
 const testing = std.testing;
+
+test "a schema copied holds none of the original's memory" {
+    var diag: Diagnostic = .{};
+    var o = try parseJson(std.testing.allocator, "{\"columns\":[{\"name\":\"cultivar\",\"type\":\"enum\",\"values\":[\"Starfall\",\"Quillon\"],\"nulls\":[\"-\"]},{\"name\":\"picked_on\",\"type\":\"date\",\"format\":\"%d/%m/%Y\"}],\"nulls\":[\"\",\"NA\"]}", &diag);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const copy = try dupe(o.schema, arena.allocator());
+    var before: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer before.deinit();
+    try writeJson(o.schema, &before.writer);
+    // Freed: what the copy still reads is its own.
+    o.deinit();
+    var after: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer after.deinit();
+    try writeJson(copy, &after.writer);
+    try std.testing.expectEqualStrings(before.written(), after.written());
+}
 
 test "the spec's example schema reads" {
     const text =

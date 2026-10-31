@@ -13,6 +13,8 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const arrow_c = @import("write/arrow_c.zig");
+const arrow_stream = @import("arrow_stream.zig");
 const builders = @import("builders.zig");
 const dialect = @import("dialect.zig");
 const infer_mod = @import("infer.zig");
@@ -37,6 +39,13 @@ pub const Reader = worker.Reader;
 pub const Batch = builders.Batch;
 /// One file's columns as inference left them: what merge takes.
 pub const Columns = worker.Inferred;
+/// Arrow's C Data Interface, as its C header lays the structs out.
+pub const ArrowSchema = arrow_c.Schema;
+pub const ArrowArray = arrow_c.Array;
+pub const ArrowArrayStream = arrow_c.ArrayStream;
+/// A file being read and handed out as Arrow C streams (readArrow).
+pub const ArrowExport = arrow_stream.Export;
+pub const ArrowWant = arrow_stream.Want;
 
 /// A schema and the memory it lives in (deinit frees it), and why one was
 /// refused.
@@ -205,12 +214,25 @@ pub fn validate(env: Env, arena: Allocator, path: []const u8, s: *const Schema, 
 /// settles the outcome, Reader.fileReport makes it a report, and deinit
 /// releases the reader.
 pub fn read(env: Env, arena: Allocator, path: []const u8, s: *const Schema, o: Options, rows: ?*Batch) !Reader.Opened {
-    var opened = try Reader.open(env, arena, path, s, try nullsOf(arena, s.nulls, o.nulls), o.threshold orelse s.threshold orelse 1.0, o);
+    var opened = try Reader.openFor(env, arena, path, s, o);
     switch (opened) {
         .reader => |*r| r.v.batch = rows,
         .stopped => {},
     }
     return opened;
+}
+
+/// The file at path, opened to hand its accepted rows (and, when want
+/// says, its rejected rows) out as Arrow C streams, for a library such as
+/// pyarrow, polars or DuckDB to take in the same process with no copy. When
+/// the file stops before it is read, the result says why, in arena.
+/// Otherwise the export holds its own copies of path and s, and lives until
+/// it and every stream it hands out are released: rowsStream and
+/// rejectsStream hand them out, fileReport reads what is left and reports,
+/// release drops the caller's hold. env.io, and o.cancel when set, must
+/// outlive it. One thread at a time; a batch handed out is the consumer's.
+pub fn readArrow(env: Env, arena: Allocator, path: []const u8, s: *const Schema, o: Options, want: ArrowWant) !arrow_stream.Opened {
+    return arrow_stream.Export.open(env, arena, path, s, o, want);
 }
 
 /// first, then extra: the strings read as null in every column.
@@ -375,6 +397,203 @@ test "cancel: the caller's own flag stops a call" {
     try testing.expectEqual(report.Result.pass, f.outcome.result);
 }
 
+/// What a consumer such as pyarrow makes of an Arrow C stream: its schema,
+/// then its batches to the end, each released as it is read.
+const Drained = struct { batches: usize = 0, rows: i64 = 0 };
+
+fn drain(stream: *ArrowArrayStream) !Drained {
+    var d: Drained = .{};
+    var s: ArrowSchema = undefined;
+    if (stream.get_schema.?(stream, &s) != 0) return error.StreamFailed;
+    s.release.?(&s);
+    while (true) {
+        var a: ArrowArray = undefined;
+        if (stream.get_next.?(stream, &a) != 0) return error.StreamFailed;
+        const release = a.release orelse return d;
+        d.batches += 1;
+        d.rows += a.length;
+        release(&a);
+    }
+}
+
+/// Row i of a utf8 array.
+fn textOf(a: *const ArrowArray, i: usize) []const u8 {
+    const offsets: [*]const i32 = @ptrCast(@alignCast(a.buffers.?[1].?));
+    const data: [*]const u8 = @ptrCast(a.buffers.?[2].?);
+    return data[@intCast(offsets[i])..@intCast(offsets[i + 1])];
+}
+
+test "readArrow: the rows and the rejected rows as Arrow C streams, in either order" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const env: Env = .{ .io = testing.io, .gpa = testing.allocator };
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "lugs.csv", .data = "lug_id,lug_kg\n1,17.5\nx,18.0\n3,16.25\n4\n" });
+    var diag: schema_mod.Diagnostic = .{};
+    var owned = try schema_mod.parseInline(testing.allocator, "lug_id:int64,lug_kg:decimal(4,2)", &diag);
+    const e = (try readArrow(env, a, try pathIn(a, tmp, "lugs.csv"), &owned.schema, .{}, .{ .rejects = true })).ready;
+    var rows: ArrowArrayStream = undefined;
+    var rejects: ArrowArrayStream = undefined;
+    try e.rowsStream(&rows);
+    try e.rejectsStream(&rejects);
+    var again: ArrowArrayStream = undefined;
+    try testing.expectError(error.AlreadyTaken, e.rowsStream(&again));
+    // The export has its own schema, and the streams hold the export.
+    owned.deinit();
+    e.release();
+
+    var s: ArrowSchema = undefined;
+    try testing.expectEqual(@as(c_int, 0), rejects.get_schema.?(&rejects, &s));
+    for ([_][]const u8{ "lug_id", "lug_kg", "_row", "_errors", "_extra" }, s.children.?[0..5]) |want, c|
+        try testing.expectEqualStrings(want, std.mem.span(c.name.?));
+    s.release.?(&s);
+    var b: ArrowArray = undefined;
+    try testing.expectEqual(@as(c_int, 0), rejects.get_next.?(&rejects, &b));
+    try testing.expectEqual(@as(i64, 2), b.length);
+    const lines: [*]const i64 = @ptrCast(@alignCast(b.children.?[2].buffers.?[1].?));
+    try testing.expectEqualSlices(i64, &.{ 3, 5 }, lines[0..2]);
+    const item = b.children.?[3].children.?[0];
+    try testing.expectEqualStrings("lug_id", textOf(item.children.?[0], 0));
+    try testing.expectEqualStrings("not_int", textOf(item.children.?[1], 0));
+    try testing.expectEqualStrings("ragged", textOf(item.children.?[1], 1));
+    // The short row's missing field is a null, not an empty string.
+    try testing.expectEqual(@as(i64, 1), b.children.?[1].null_count);
+    b.release.?(&b);
+    try testing.expectEqual(@as(c_int, 0), rejects.get_next.?(&rejects, &b));
+    try testing.expect(b.release == null);
+    rejects.release.?(&rejects);
+
+    // The rows waited for their stream.
+    const d = try drain(&rows);
+    try testing.expectEqual(@as(i64, 2), d.rows);
+    rows.release.?(&rows);
+}
+
+/// lugs.csv in tmp, rows of it: more than one batch's worth.
+fn manyRows(tmp: testing.TmpDir, rows: usize) !void {
+    var text: Io.Writer.Allocating = .init(testing.allocator);
+    defer text.deinit();
+    try text.writer.writeAll("lug_id,remark\n");
+    for (0..rows) |i| try text.writer.print("{d},row {d}\n", .{ i, i });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "lugs.csv", .data = text.written() });
+}
+
+test "readArrow: a consumer that stops early, in any order, leaks nothing" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const env: Env = .{ .io = testing.io, .gpa = testing.allocator };
+    try manyRows(tmp, 70_000);
+    const path = try pathIn(a, tmp, "lugs.csv");
+    var diag: schema_mod.Diagnostic = .{};
+    var owned = try schema_mod.parseInline(testing.allocator, "lug_id:int64,remark:string", &diag);
+    defer owned.deinit();
+
+    // One batch kept past the stream and the export.
+    {
+        const e = (try readArrow(env, a, path, &owned.schema, .{}, .{})).ready;
+        var rows: ArrowArrayStream = undefined;
+        try e.rowsStream(&rows);
+        var b: ArrowArray = undefined;
+        try testing.expectEqual(@as(c_int, 0), rows.get_next.?(&rows, &b));
+        // A batch of records, the header one of the first.
+        try testing.expectEqual(@as(i64, 65_535), b.length);
+        rows.release.?(&rows);
+        e.release();
+        try testing.expectEqualStrings("row 7", textOf(b.children.?[1], 7));
+        b.release.?(&b);
+    }
+    // Streams taken and never read, the export released last.
+    {
+        const e = (try readArrow(env, a, path, &owned.schema, .{}, .{ .rejects = true })).ready;
+        var rows: ArrowArrayStream = undefined;
+        var rejects: ArrowArrayStream = undefined;
+        try e.rowsStream(&rows);
+        try e.rejectsStream(&rejects);
+        rejects.release.?(&rejects);
+        rows.release.?(&rows);
+        e.release();
+    }
+    // The report read with a stream still open: its batches wait for it,
+    // and are released with it.
+    {
+        const e = (try readArrow(env, a, path, &owned.schema, .{}, .{})).ready;
+        var rows: ArrowArrayStream = undefined;
+        try e.rowsStream(&rows);
+        const f = try e.fileReport(a);
+        try testing.expectEqual(report.Result.pass, f.outcome.result);
+        try testing.expectEqual(@as(u64, 70_000), f.outcome.rows);
+        e.release();
+        var b: ArrowArray = undefined;
+        try testing.expectEqual(@as(c_int, 0), rows.get_next.?(&rows, &b));
+        b.release.?(&b);
+        rows.release.?(&rows);
+    }
+    // No stream asked for: the export only validates.
+    {
+        const e = (try readArrow(env, a, path, &owned.schema, .{}, .{ .rows = false })).ready;
+        defer e.release();
+        var rows: ArrowArrayStream = undefined;
+        try testing.expectError(error.NotWanted, e.rowsStream(&rows));
+        try testing.expectError(error.NotWanted, e.rejectsStream(&rows));
+        try testing.expectEqual(@as(u64, 70_000), (try e.fileReport(a)).outcome.rows);
+    }
+}
+
+test "readArrow: a stream stops where the read does, and says why" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const env: Env = .{ .io = testing.io, .gpa = testing.allocator };
+    var diag: schema_mod.Diagnostic = .{};
+    var owned = try schema_mod.parseInline(testing.allocator, "lug_id:int64,bin:string,cultivar:string", &diag);
+    defer owned.deinit();
+
+    // Stopped before it is read: no export.
+    const missing = try readArrow(env, a, try pathIn(a, tmp, "none.csv"), &owned.schema, .{}, .{});
+    try testing.expectEqual(Problem.Code.no_such_file, std.meta.activeTag(missing.stopped.outcome.problem.?));
+    const sniffed = try readArrow(env, a, "test/cli/inches.txt", &owned.schema, .{}, .{});
+    try testing.expectEqual(Problem.Code.quote_is_data, std.meta.activeTag(sniffed.stopped.outcome.problem.?));
+
+    // The quotes are data past the sniff's sample: the rows handed out are
+    // not the file's, so the stream ends in the problem, not at an end.
+    {
+        const e = (try readArrow(env, a, "test/cli/inches.txt", &owned.schema, .{ .sample_bytes = 512 }, .{})).ready;
+        defer e.release();
+        var rows: ArrowArrayStream = undefined;
+        try e.rowsStream(&rows);
+        defer rows.release.?(&rows);
+        try testing.expectError(error.StreamFailed, drain(&rows));
+        const message = std.mem.span(rows.get_last_error.?(&rows).?);
+        try testing.expect(std.mem.endsWith(u8, message, "pin --quote none to read quotes as data"));
+        try testing.expect(std.mem.startsWith(u8, message, "test/cli/inches.txt: the quotes look like data"));
+        const f = try e.fileReport(a);
+        try testing.expectEqual(report.Result.@"error", f.outcome.result);
+        try testing.expectEqual(Problem.Code.quote_is_data, std.meta.activeTag(f.outcome.problem.?));
+    }
+
+    // The caller's cancel: EINTR, and the report is that error.
+    try manyRows(tmp, 10);
+    var stop: std.atomic.Value(bool) = .init(true);
+    var lugs = try schema_mod.parseInline(testing.allocator, "lug_id:int64,remark:string", &diag);
+    defer lugs.deinit();
+    const e = (try readArrow(env, a, try pathIn(a, tmp, "lugs.csv"), &lugs.schema, .{ .cancel = &stop }, .{})).ready;
+    defer e.release();
+    var rows: ArrowArrayStream = undefined;
+    try e.rowsStream(&rows);
+    defer rows.release.?(&rows);
+    var b: ArrowArray = undefined;
+    try testing.expectEqual(@as(c_int, 4), rows.get_next.?(&rows, &b));
+    try testing.expect(std.mem.endsWith(u8, std.mem.span(rows.get_last_error.?(&rows).?), "lugs.csv: interrupted"));
+    try testing.expectError(error.Interrupted, e.fileReport(a));
+}
+
 test "the library imports nothing of the CLI's" {
     // Every file lib.zig reaches; main, cli, pool and interrupt are the
     // CLI's: its arguments, its parallel runs, its Ctrl-C.
@@ -387,7 +606,7 @@ test "the library imports nothing of the CLI's" {
         @embedFile("types/date.zig"),    @embedFile("types/decimal.zig"), @embedFile("types/enum.zig"),
         @embedFile("types/float.zig"),   @embedFile("types/int.zig"),     @embedFile("types/time.zig"),
         @embedFile("types/utf8.zig"),    @embedFile("write/arrow.zig"),   @embedFile("write/csv.zig"),
-        @embedFile("write/flatbuf.zig"),
+        @embedFile("write/flatbuf.zig"), @embedFile("write/arrow_c.zig"), @embedFile("arrow_stream.zig"),
     };
     // Spelled in two pieces, so this file does not hold them whole.
     const cli_files = [_][]const u8{ "@import(\"" ++ "cli.zig\")", "@import(\"" ++ "pool.zig\")", "@import(\"" ++ "interrupt.zig\")", "@import(\"" ++ "main.zig\")" };

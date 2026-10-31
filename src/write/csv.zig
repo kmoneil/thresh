@@ -88,7 +88,8 @@ pub const Writer = struct {
                 if (i > 0) try delimiter(out, w.options);
                 if (!c.valid.items[row]) continue;
                 if (w.normalize_dates and (c.type == .date or c.type == .timestamp)) {
-                    try field(out, rfc3339(&buf, c.type, c.ints.items[row]), w.options);
+                    const v: i64 = if (c.type == .date) c.days.items[row] else c.ints.items[row];
+                    try field(out, rfc3339(&buf, c.type, v), w.options);
                     continue;
                 }
                 try field(out, c.text(row), w.options);

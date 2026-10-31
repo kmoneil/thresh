@@ -229,10 +229,7 @@ pub const Writer = struct {
         scratch.clearRetainingCapacity();
         switch (sc.type) {
             .int64, .timestamp, .time => try w.addBuffer(std.mem.sliceAsBytes(c.ints.items)),
-            .date => {
-                for (c.ints.items) |d| try appendLe(gpa, &scratch, i32, @intCast(d));
-                try w.addBuffer(scratch.items);
-            },
+            .date => try w.addBuffer(std.mem.sliceAsBytes(c.days.items)),
             .float64 => try w.addBuffer(std.mem.sliceAsBytes(c.floats.items)),
             .decimal => try w.addBuffer(std.mem.sliceAsBytes(c.decimals.items)),
             .bool => {

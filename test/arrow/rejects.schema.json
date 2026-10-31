@@ -1,0 +1,9 @@
+{
+  "columns": [
+    { "name": "lug_id", "type": "int64", "nullable": false },
+    { "name": "cultivar", "type": "enum", "values": ["Starfall", "Quillon", "Brookwood"] },
+    { "name": "lug_kg", "type": "decimal", "precision": 5, "scale": 2 },
+    { "name": "picked_on", "type": "date" },
+    { "name": "remark", "type": "string" }
+  ]
+}
