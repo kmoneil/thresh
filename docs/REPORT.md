@@ -1,13 +1,14 @@
 # Reports: the JSON thresh writes
 
-thresh writes five kinds of JSON document for programs to read:
+thresh writes six kinds of JSON document for programs to read:
 
 | Document | Written by | Where |
 | --- | --- | --- |
 | [The file report](#the-file-report) | validate, convert, run with `--report DIR` | `DIR/<file>.report.json`, one per input |
 | [summary.json](#summaryjson) | validate, convert, run with `--report DIR` | `DIR/summary.json`, one per run |
 | [A file's line](#a-files-line---json) | validate, convert, run with `--json` | stdout, one line per input as it finishes |
-| [A sniff line](#a-sniff-line-sniff---json) | sniff with `--json` | stdout, one line per input |
+| [A sniff line](#a-sniff-line-sniff---json) | sniff with `--json`; the C library's `thresh_sniff` | stdout, one line per input |
+| [An infer result](#an-infer-result-the-c-library) | the C library's `thresh_infer` | returned, one per call |
 | [The schema](#the-schema) | infer | stdout, or `--out FILE`; validate, convert and run read it with `--schema` |
 
 Every code in them (a problem, a warning, why a value was rejected) is
@@ -163,14 +164,16 @@ summary.json's `results` holds, and its version.
 One compact JSON object per input on stdout. A file that cannot be read
 has no line; stderr says why, and the exit is 2. A file whose dialect is
 not settled, or whose sample's quotes look like data, has its line with
-the problem in `problems`; stderr says so too, and the exit is 2.
+the problem in `problems`; stderr says so too, and the exit is 2. The C
+library's `thresh_sniff` returns the same line, and one for a file it
+cannot read too: no `dialect`, and the problem in `problems`.
 
 <!-- fields: sniff -->
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `format_version` | `integer` | 1 |
 | `file` | `string` | the input's path, as it was given |
-| `dialect` | `object` | as the report's `dialect` |
+| `dialect` | `object` | when the file could be read: as the report's `dialect` |
 | `dialect.delimiter` | `string` | |
 | `dialect.quote` | `string` or `null` | |
 | `dialect.escape` | `string` | `doubled` or `backslash` |
@@ -184,7 +187,30 @@ the problem in `problems`; stderr says so too, and the exit is 2.
 | `dialect.runners_up[].score` | `number` | |
 | `warnings` | `array` | what is unusual about the file |
 | `warnings[]` | `string` | a [warning](PROBLEMS.md#warnings) code |
-| `problems` | `array` | what stops the file at its sniff, `dialect_unsettled` or `quote_is_data`; empty when nothing does |
+| `problems` | `array` | what stops the file at its sniff, `dialect_unsettled` or `quote_is_data`, or why it could not be read; empty when nothing does |
+| `problems[]` | `problem` | a [problem object](PROBLEMS.md#problems) |
+
+## An infer result (the C library)
+
+What `thresh_infer` returns: the schema its files fit, as `infer` writes
+it, and what it has to say about each file and about the run, which the
+CLI prints on stderr.
+
+<!-- fields: infer -->
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `format_version` | `integer` | 1 |
+| `schema` | `schema` | when any file could be read: the schema, as [The schema](#the-schema) describes it |
+| `files` | `array` | one per input, in the order given |
+| `files[].file` | `string` | the input's path, as it was given |
+| `files[].result` | `string` | `pass`, or `error`: it could not be read, or stopped at its sniff, and the schema leaves it out |
+| `files[].problems` | `array` | why it is an error; empty when it is not |
+| `files[].problems[]` | `problem` | a [problem object](PROBLEMS.md#problems) |
+| `files[].notes` | `array` | what inference found in this file: a column a few values moved (`column_misfits`) or one the threshold kept (`column_tolerated`), a type widened by it (`column_widened`), a repeated header, wide rows |
+| `files[].notes[]` | `problem` | a [problem object](PROBLEMS.md#problems) |
+| `notes` | `array` | the run's: columns typed from too few values (`columns_thin`) |
+| `notes[]` | `problem` | a [problem object](PROBLEMS.md#problems) |
+| `problems` | `array` | `nothing_to_infer` when no file could be read, or how the files disagree, so the schema fails some of them (`files_columns`, `files_widths`, `files_mixed_headers`; the CLI's exit 1); empty when neither |
 | `problems[]` | `problem` | a [problem object](PROBLEMS.md#problems) |
 
 ## The schema

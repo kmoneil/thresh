@@ -183,12 +183,105 @@ pub fn merge(arena: Allocator, files: []const Columns, o: Options) !Merged {
     };
 }
 
-/// inferFile on each of paths in turn, then merge: infer from start to
-/// finish, for a caller that does not run files in parallel.
+/// inferFiles, then merge: infer from start to finish.
 pub fn infer(env: Env, arena: Allocator, paths: []const []const u8, o: Options) !Merged {
+    return merge(arena, try inferFiles(env, arena, paths, o), o);
+}
+
+/// inferFile on each of paths, in their order: Options.jobs at once, on
+/// threads of the call's own, joined before it returns. With more than
+/// one, env.io and env.gpa must be safe to use from several threads
+/// (std.Io.Threaded is), and so must arena (0.17's ArenaAllocator is, over
+/// a thread-safe allocator). An error reading one file is returned, the
+/// first file's that had one; a file's own problem is its outcome.
+pub fn inferFiles(env: Env, arena: Allocator, paths: []const []const u8, o: Options) ![]Columns {
     const files = try arena.alloc(Columns, paths.len);
-    for (files, paths) |*f, p| f.* = try inferFile(env, arena, p, o);
-    return merge(arena, files, o);
+    const cores = if (o.jobs == 0) std.Thread.getCpuCount() catch 1 else o.jobs;
+    const jobs = @min(paths.len, cores);
+    if (jobs <= 1) {
+        for (files, paths) |*f, p| f.* = try inferFile(env, arena, p, o);
+        return files;
+    }
+    const errors = try arena.alloc(?anyerror, paths.len);
+    @memset(errors, null);
+    var run: Parallel = .{ .env = env, .arena = arena, .paths = paths, .o = o, .files = files, .errors = errors };
+    // The caller's index buffer is for one thread.
+    run.env.positions = null;
+    const threads = try env.gpa.alloc(std.Thread, jobs);
+    defer env.gpa.free(threads);
+    var started: usize = 0;
+    for (threads) |*t| {
+        // Those started take every file between them.
+        t.* = std.Thread.spawn(.{}, Parallel.work, .{&run}) catch |e| if (started == 0) return e else break;
+        started += 1;
+    }
+    for (threads[0..started]) |t| t.join();
+    for (errors) |e| if (e) |err| return err;
+    return files;
+}
+
+/// inferFiles' threads: each takes the next file until none is left.
+const Parallel = struct {
+    env: Env,
+    arena: Allocator,
+    paths: []const []const u8,
+    o: Options,
+    files: []Columns,
+    errors: []?anyerror,
+    next: std.atomic.Value(usize) = .init(0),
+
+    fn work(p: *Parallel) void {
+        while (true) {
+            const i = p.next.fetchAdd(1, .monotonic);
+            if (i >= p.paths.len) return;
+            p.files[i] = inferFile(p.env, p.arena, p.paths[i], p.o) catch |e| {
+                p.errors[i] = e;
+                continue;
+            };
+        }
+    }
+};
+
+/// What infer made of its files as JSON, as docs/REPORT.md's "An infer
+/// result" has it: the schema, each file's outcome and notes, and the
+/// run's notes and problems.
+pub fn writeInferResult(w: *Io.Writer, files: []const Columns, m: Merged) std.json.Stringify.Error!void {
+    var s: std.json.Stringify = .{ .writer = w, .options = .{ .emit_null_optional_fields = false } };
+    try s.beginObject();
+    try s.objectField("format_version");
+    try s.write(report.format_version);
+    if (m.schema) |sc| {
+        try s.objectField("schema");
+        try s.write(sc);
+    }
+    try s.objectField("files");
+    try s.beginArray();
+    for (files, 0..) |f, i| {
+        try s.beginObject();
+        try s.objectField("file");
+        try s.write(f.outcome.file);
+        try s.objectField("result");
+        try s.write(@tagName(f.outcome.result));
+        try s.objectField("problems");
+        try s.write(if (f.outcome.problem) |*p| p[0..1] else &[_]Problem{});
+        try s.objectField("notes");
+        try s.beginArray();
+        for (m.notes) |n| if (n.after == i) try s.write(n.problem);
+        try s.endArray();
+        try s.endObject();
+    }
+    try s.endArray();
+    try s.objectField("notes");
+    try s.beginArray();
+    for (m.notes) |n| if (n.after == null) try s.write(n.problem);
+    try s.endArray();
+    try s.objectField("problems");
+    try s.beginArray();
+    if (m.stop) |p| try s.write(p);
+    if (m.disagreement) |p| try s.write(p);
+    try s.endArray();
+    try s.endObject();
+    try w.writeByte('\n');
 }
 
 /// The file at path read against s: its report. Rejected rows go to
@@ -607,6 +700,8 @@ test "the library imports nothing of the CLI's" {
         @embedFile("types/float.zig"),   @embedFile("types/int.zig"),     @embedFile("types/time.zig"),
         @embedFile("types/utf8.zig"),    @embedFile("write/arrow.zig"),   @embedFile("write/csv.zig"),
         @embedFile("write/flatbuf.zig"), @embedFile("write/arrow_c.zig"), @embedFile("arrow_stream.zig"),
+        // And the C library's root, which reaches lib.
+        @embedFile("capi.zig"),
     };
     // Spelled in two pieces, so this file does not hold them whole.
     const cli_files = [_][]const u8{ "@import(\"" ++ "cli.zig\")", "@import(\"" ++ "pool.zig\")", "@import(\"" ++ "interrupt.zig\")", "@import(\"" ++ "main.zig\")" };

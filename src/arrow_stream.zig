@@ -186,6 +186,12 @@ pub const Export = struct {
         };
     }
 
+    /// What stopped the streams, "path: sentence", or null while nothing
+    /// has. Valid while the export lives.
+    pub fn lastError(e: *const Export) ?[:0]const u8 {
+        return if (e.failure) |f| f.message else null;
+    }
+
     /// The file's report, its strings in arena: what is left of the file
     /// is read first, its batches kept for the streams still open. A file
     /// whose read ends in a problem has its report; an error that stopped

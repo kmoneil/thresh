@@ -45,7 +45,11 @@ Where they appear ([REPORT.md](REPORT.md) has every field of each):
 - `summary.json`'s `results`, and each `--json` line: `problems`, the file's
   first problem (or none).
 - Each `sniff --json` line: `problems`, what stops the file at its sniff
-  (or none).
+  (or none); from the C library's `thresh_sniff`, why it could not be
+  read too.
+- The C library's infer result: each file's `problems` and `notes`, the
+  run's `notes`, and its `problems` (nothing to infer, or how the files
+  disagree): what `infer` prints on stderr.
 - stderr: the sentence.
 
 ### A file thresh cannot read

@@ -43,6 +43,9 @@ pub const Options = struct {
     ragged: validate.Ragged = .reject,
     /// infer: only the first rows are read.
     sample_rows: ?u64 = null,
+    /// lib.infer and lib.inferFiles: files read at once, on threads of the
+    /// call's own; 0 for one a CPU core.
+    jobs: usize = 1,
     /// Strings read as null in every column, besides the schema's (infer:
     /// besides "").
     nulls: []const []const u8 = &.{},
