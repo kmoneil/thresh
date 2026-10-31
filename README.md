@@ -149,6 +149,7 @@ zig build test            # unit tests, the corpus, the command and examples/
                           # (-Dcorpus=false skips the parts needing python3)
 zig build fmt-check       # zig fmt --check
 zig build vet             # zigvet, built from the pinned dependency
+zig build complexity      # gnarl: no function more complex than complexity.baseline allows
 zig build corpus          # the fixture corpus, into zig-out/corpus (python3)
 zig build bench           # MB/s per parsing stage, ReleaseFast (-- --size BYTES)
 zig build scale -Doptimize=ReleaseFast  # 10,000 files, MB/s by --jobs, Ctrl-C
@@ -207,9 +208,12 @@ numbers, stage by stage, and the regression gate.
 - Tests in Debug and ReleaseSafe in CI, and a benchmark gate on every pull
   request.
 
-Dates go through [dateparsa](https://github.com/kmoneil/dateparsa.zig), and
+Dates go through [dateparsa](https://github.com/kmoneil/dateparsa.zig);
 [zigvet](https://github.com/kmoneil/zigvet) checks the sources for code Zig
-compiles that is almost certainly wrong.
+compiles that is almost certainly wrong, and
+[gnarl](https://github.com/kmoneil/gnarl) holds each function's complexity
+to a ratchet: none new over a critical limit, none worse than
+`complexity.baseline` says.
 
 ## Status
 

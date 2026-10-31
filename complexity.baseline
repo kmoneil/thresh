@@ -1,0 +1,41 @@
+# gnarl baseline: the functions over a critical threshold when it was
+# written. gnarl --check fails a function that is new and over one, or
+# above its number here; gnarl --update-baseline rewrites this file.
+# path, name, cyclomatic, cognitive, lines, nesting, params, params_weighted
+bench/main.zig	main	18	36	45	4	1	1
+src/capi.zig	optionsOf	38	37	58	4	2	2
+src/cli.zig	parse	96	124	120	4	2	2
+src/corpus_test.zig	test "convert --to csv: every corpus file comes out RFC 4180, re-sniffs as it, and holds the same fields"	14	39	51	5	0	0
+src/dialect.zig	candidateDelimiters	18	26	21	3	2	2
+src/dialect.zig	isHeader	61	124	95	5	4	4
+src/dialect.zig	looksTyped	20	21	21	3	1	1
+src/dialect.zig	pick	16	24	16	3	1	1
+src/dialect.zig	score	38	50	67	3	6	6
+src/dialect.zig	sniff	38	46	78	4	3	3
+src/dialect.zig	textHeader	22	37	38	3	5	5
+src/format_test.zig	walk	25	30	30	3	4	4
+src/infer.zig	Inferrer.observe	16	15	27	2	2	2
+src/infer.zig	decimalShape	19	26	32	3	1	1
+src/infer.zig	merge	28	47	37	5	3	3
+src/input.zig	Input.transcode	15	31	35	4	0	0
+src/lib.zig	merge	19	34	51	3	2	2
+src/main.zig	inferFiles	17	30	42	4	4	4
+src/main.zig	sniff	10	29	27	6	4	4
+src/problem.zig	Problem.format	44	23	45	3	1	1
+src/records.zig	Scanner.classify	19	28	33	3	3	3
+src/records.zig	Scanner.next	14	26	17	3	1	1
+src/reference.zig	Parser.next	16	29	28	4	1	1
+src/render.zig	validateNamed	19	22	47	2	4	4
+src/report.zig	fileOf	20	33	51	4	2	2
+src/report.zig	writeFileReport	27	66	137	6	3	3
+src/schema.zig	check	18	35	17	3	2	2
+src/schema.zig	parseInline	14	28	31	3	2	2
+src/stats.zig	writeOrdered	21	18	28	2	3	3
+src/types.zig	Reason.text	21	1	22	1	0	0
+src/types.zig	read	26	27	20	3	3	3
+src/types/decimal.zig	parse	20	27	27	3	3	3
+src/types/float.zig	valid	22	27	20	2	1	1
+src/types/time.zig	parse	19	19	20	2	1	1
+src/validate.zig	Validator.columns	24	53	50	4	4	4
+src/validate.zig	Validator.rejectRow	18	26	30	3	4	4
+src/worker.zig	inferFile	23	42	85	4	4	4
