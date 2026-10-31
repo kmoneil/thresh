@@ -4,7 +4,6 @@
 # path, name, cyclomatic, cognitive, lines, nesting, params, params_weighted
 bench/main.zig	main	18	36	45	4	1	1
 src/capi.zig	optionsOf	38	37	58	4	2	2
-src/cli.zig	parse	96	124	120	4	2	2
 src/corpus_test.zig	test "convert --to csv: every corpus file comes out RFC 4180, re-sniffs as it, and holds the same fields"	14	39	51	5	0	0
 src/dialect.zig	candidateDelimiters	18	26	21	3	2	2
 src/dialect.zig	isHeader	61	124	95	5	4	4

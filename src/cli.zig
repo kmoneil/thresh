@@ -200,125 +200,209 @@ const flags: std.StaticStringMap(Flag) = blk: {
 /// What args ask for, the program's name left off. Slices of args end up in
 /// the Config, so args must outlive it.
 pub fn parse(gpa: std.mem.Allocator, args: []const []const u8, diag: *Diagnostic) error{ Usage, OutOfMemory }!Action {
-    var cfg: Config = .{ .command = .sniff };
-    var command: ?Command = null;
+    var p: Parser = .{ .gpa = gpa, .args = args, .diag = diag };
     // A defer, not an errdefer: --help after a file returns early too.
-    var files: std.ArrayList([]const u8) = .empty;
-    defer files.deinit(gpa);
-    var seen: std.EnumSet(Flag) = .empty;
-    var positional_only = false;
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (positional_only or arg.len < 2 or arg[0] != '-') {
-            if (command == null) {
-                if (std.mem.eql(u8, arg, "help")) return .help;
-                command = std.meta.stringToEnum(Command, arg) orelse
-                    return diag.fail("no command '{s}': sniff, infer, validate, convert or run", .{arg});
-            } else try files.append(gpa, arg);
-            continue;
-        }
+    defer p.files.deinit(gpa);
+    while (p.i < args.len) : (p.i += 1) if (try p.one()) |action| return action;
+    p.cfg.command = p.command orelse return diag.fail("no command: sniff, infer, validate, convert or run", .{});
+    try check(&p.cfg, p.seen, p.files.items.len, diag);
+    p.cfg.files = try p.files.toOwnedSlice(gpa);
+    return .{ .run = p.cfg };
+}
+
+/// The arguments, read one at a time into a Config.
+const Parser = struct {
+    gpa: std.mem.Allocator,
+    args: []const []const u8,
+    diag: *Diagnostic,
+    i: usize = 0,
+    cfg: Config = .{ .command = .sniff },
+    command: ?Command = null,
+    files: std.ArrayList([]const u8) = .empty,
+    seen: std.EnumSet(Flag) = .empty,
+    /// After a lone "--", every argument is a command or a file.
+    positional_only: bool = false,
+
+    /// args[i]: a flag and, for one that takes it, its value (args[i] moves
+    /// on to it); or the command or a file. An action to take now (--help,
+    /// --version), or null to read on.
+    fn one(p: *Parser) error{ Usage, OutOfMemory }!?Action {
+        const arg = p.args[p.i];
+        if (p.positional_only or arg.len < 2 or arg[0] != '-') return p.positional(arg);
         if (std.mem.eql(u8, arg, "--")) {
-            positional_only = true;
-            continue;
+            p.positional_only = true;
+            return null;
         }
-        var name = arg;
-        var inline_value: ?[]const u8 = null;
-        if (std.mem.startsWith(u8, arg, "--")) {
-            if (std.mem.findScalar(u8, arg, '=')) |eq| {
-                name = arg[0..eq];
-                inline_value = arg[eq + 1 ..];
-            }
-        }
-        const flag = flags.get(name) orelse return diag.fail("no option {s}", .{name});
+        const named = split(arg);
+        const flag = flags.get(named.name) orelse return p.diag.fail("no option {s}", .{named.name});
         if (flag == .help) return .help;
         if (flag == .version) return .version;
-        if (seen.contains(flag)) return diag.fail("{s} given twice", .{name});
-        seen.insert(flag);
+        if (p.seen.contains(flag)) return p.diag.fail("{s} given twice", .{named.name});
+        p.seen.insert(flag);
         if (!flag.takesValue()) {
-            if (inline_value != null) return diag.fail("{s} takes no value", .{name});
-            switch (flag) {
-                .day_first => cfg.day_first = true,
-                .strict => cfg.strict = true,
-                .keep_empty => cfg.keep_empty = true,
-                .pad => cfg.ragged = .pad,
-                .truncate => cfg.ragged = .truncate,
-                .normalize_dates => cfg.normalize_dates = true,
-                .arrow_file => cfg.arrow_file = true,
-                .no_mmap => cfg.no_mmap = true,
-                .json => cfg.json = true,
-                .quiet => cfg.quiet = true,
-                .progress => cfg.progress = true,
-                else => unreachable,
-            }
-            continue;
+            if (named.value != null) return p.diag.fail("{s} takes no value", .{named.name});
+            setSwitch(&p.cfg, flag);
+            return null;
         }
-        const value = inline_value orelse v: {
-            i += 1;
-            if (i == args.len) return diag.fail("{s} needs a value", .{name});
-            break :v args[i];
-        };
-        switch (flag) {
-            .delimiter => cfg.pins.delimiter = parseByte(value) orelse
-                return diag.fail("--delimiter {s}: one ASCII byte, tab, \\t or \\xHH", .{value}),
-            .quote => cfg.pins.quote = if (std.mem.eql(u8, value, "none"))
-                .none
-            else
-                .{ .byte = parseByte(value) orelse
-                    return diag.fail("--quote {s}: one ASCII byte, or none", .{value}) },
-            .escape => cfg.pins.escape = std.meta.stringToEnum(Dialect.Escape, value) orelse
-                return diag.fail("--escape {s}: doubled or backslash", .{value}),
-            .newline => cfg.pins.newline = std.meta.stringToEnum(Dialect.Newline, value) orelse
-                return diag.fail("--newline {s}: lf, crlf or cr", .{value}),
-            .header => cfg.pins.header = std.meta.stringToEnum(HeaderMode, value) orelse
-                return diag.fail("--header {s}: auto, yes or no", .{value}),
-            .comment => cfg.pins.comment = parseByte(value) orelse
-                return diag.fail("--comment {s}: one ASCII byte, tab, \\t or \\xHH", .{value}),
-            .sample_bytes => cfg.sample_bytes = parseSize(value) orelse
-                return diag.fail("--sample-bytes {s}: a size such as 65536, 64K or 1M", .{value}),
-            .schema => cfg.schema = value,
-            .columns => cfg.columns = value,
-            .null => cfg.nulls = value,
-            .encoding => cfg.encoding = std.meta.stringToEnum(Encoding, value) orelse
-                if (std.ascii.eqlIgnoreCase(value, "windows-1252")) .cp1252 else return diag.fail("--encoding {s}: utf8, cp1252 or latin1", .{value}),
-            .threshold => cfg.threshold = parseFraction(value) orelse
-                return diag.fail("--threshold {s}: a fraction from 0 to 1", .{value}),
-            .report => cfg.report_dir = value,
-            .reject => cfg.reject_dir = value,
-            .sample => cfg.sample_rows = parsePositive(u64, value) orelse
-                return diag.fail("--sample {s}: a row count above 0", .{value}),
-            .to => cfg.to = std.meta.stringToEnum(Format, value) orelse
-                return diag.fail("--to {s}: csv or arrow", .{value}),
-            .out => cfg.out = value,
-            .out_delimiter => cfg.out_delimiter = parseByte(value) orelse
-                return diag.fail("--out-delimiter {s}: one ASCII byte, tab, \\t or \\xHH", .{value}),
-            .out_newline => cfg.out_newline = outNewline(value) orelse
-                return diag.fail("--out-newline {s}: lf or crlf", .{value}),
-            .jobs => cfg.jobs = parsePositive(usize, value) orelse
-                return diag.fail("--jobs {s}: a count above 0", .{value}),
-            else => unreachable,
-        }
+        const value = named.value orelse try p.nextValue(named.name);
+        if (!setValue(&p.cfg, flag, value)) return p.diag.fail("{s} {s}: {s}", .{ named.name, value, hint(flag) });
+        return null;
     }
 
-    cfg.command = command orelse return diag.fail("no command: sniff, infer, validate, convert or run", .{});
+    /// The command, the first argument that is not a flag, or a file.
+    fn positional(p: *Parser, arg: []const u8) error{ Usage, OutOfMemory }!?Action {
+        if (p.command != null) {
+            try p.files.append(p.gpa, arg);
+            return null;
+        }
+        if (std.mem.eql(u8, arg, "help")) return .help;
+        p.command = std.meta.stringToEnum(Command, arg) orelse
+            return p.diag.fail("no command '{s}': sniff, infer, validate, convert or run", .{arg});
+        return null;
+    }
+
+    /// The argument after a flag that takes a value, as its value.
+    fn nextValue(p: *Parser, name: []const u8) error{Usage}![]const u8 {
+        p.i += 1;
+        if (p.i == p.args.len) return p.diag.fail("{s} needs a value", .{name});
+        return p.args[p.i];
+    }
+};
+
+/// "--name=value" as its name and value; any other argument, a name alone.
+fn split(arg: []const u8) struct { name: []const u8, value: ?[]const u8 } {
+    if (!std.mem.startsWith(u8, arg, "--")) return .{ .name = arg, .value = null };
+    const eq = std.mem.findScalar(u8, arg, '=') orelse return .{ .name = arg, .value = null };
+    return .{ .name = arg[0..eq], .value = arg[eq + 1 ..] };
+}
+
+/// A flag that takes no value, set.
+fn setSwitch(cfg: *Config, flag: Flag) void {
+    switch (flag) {
+        .day_first => cfg.day_first = true,
+        .strict => cfg.strict = true,
+        .keep_empty => cfg.keep_empty = true,
+        .pad => cfg.ragged = .pad,
+        .truncate => cfg.ragged = .truncate,
+        .normalize_dates => cfg.normalize_dates = true,
+        .arrow_file => cfg.arrow_file = true,
+        .no_mmap => cfg.no_mmap = true,
+        .json => cfg.json = true,
+        .quiet => cfg.quiet = true,
+        .progress => cfg.progress = true,
+        else => unreachable,
+    }
+}
+
+/// value into cfg for flag, one that takes a value; false when it is not
+/// a value the flag takes, which hint(flag) then says.
+fn setValue(cfg: *Config, flag: Flag, value: []const u8) bool {
+    return setDialect(cfg, flag, value) orelse setSchema(cfg, flag, value) orelse setRun(cfg, flag, value) orelse unreachable;
+}
+
+/// The dialect's pins; null for another flag.
+fn setDialect(cfg: *Config, flag: Flag, value: []const u8) ?bool {
+    switch (flag) {
+        .delimiter => cfg.pins.delimiter = parseByte(value) orelse return false,
+        .quote => cfg.pins.quote = quoteOf(value) orelse return false,
+        .escape => cfg.pins.escape = std.meta.stringToEnum(Dialect.Escape, value) orelse return false,
+        .newline => cfg.pins.newline = std.meta.stringToEnum(Dialect.Newline, value) orelse return false,
+        .header => cfg.pins.header = std.meta.stringToEnum(HeaderMode, value) orelse return false,
+        .comment => cfg.pins.comment = parseByte(value) orelse return false,
+        else => return null,
+    }
+    return true;
+}
+
+/// The schema and how a file is read against it; null for another flag.
+fn setSchema(cfg: *Config, flag: Flag, value: []const u8) ?bool {
+    switch (flag) {
+        .schema => cfg.schema = value,
+        .columns => cfg.columns = value,
+        .null => cfg.nulls = value,
+        .encoding => cfg.encoding = encodingOf(value) orelse return false,
+        .threshold => cfg.threshold = parseFraction(value) orelse return false,
+        .sample_bytes => cfg.sample_bytes = parseSize(value) orelse return false,
+        else => return null,
+    }
+    return true;
+}
+
+/// What a run writes and how; null for another flag.
+fn setRun(cfg: *Config, flag: Flag, value: []const u8) ?bool {
+    switch (flag) {
+        .report => cfg.report_dir = value,
+        .reject => cfg.reject_dir = value,
+        .sample => cfg.sample_rows = parsePositive(u64, value) orelse return false,
+        .to => cfg.to = std.meta.stringToEnum(Format, value) orelse return false,
+        .out => cfg.out = value,
+        .out_delimiter => cfg.out_delimiter = parseByte(value) orelse return false,
+        .out_newline => cfg.out_newline = outNewline(value) orelse return false,
+        .jobs => cfg.jobs = parsePositive(usize, value) orelse return false,
+        else => return null,
+    }
+    return true;
+}
+
+fn quoteOf(value: []const u8) ?Pins.Quote {
+    if (std.mem.eql(u8, value, "none")) return .none;
+    return .{ .byte = parseByte(value) orelse return null };
+}
+
+fn encodingOf(value: []const u8) ?Encoding {
+    if (std.ascii.eqlIgnoreCase(value, "windows-1252")) return .cp1252;
+    return std.meta.stringToEnum(Encoding, value);
+}
+
+/// What a flag's value must be, for the message when it is not.
+fn hint(flag: Flag) []const u8 {
+    return switch (flag) {
+        .delimiter, .comment, .out_delimiter => "one ASCII byte, tab, \\t or \\xHH",
+        .quote => "one ASCII byte, or none",
+        .escape => "doubled or backslash",
+        .newline => "lf, crlf or cr",
+        .header => "auto, yes or no",
+        .sample_bytes => "a size such as 65536, 64K or 1M",
+        .encoding => "utf8, cp1252 or latin1",
+        .threshold => "a fraction from 0 to 1",
+        .sample => "a row count above 0",
+        .jobs => "a count above 0",
+        .to => "csv or arrow",
+        .out_newline => "lf or crlf",
+        else => "",
+    };
+}
+
+/// The flags given, against each other and the command.
+fn check(cfg: *const Config, seen: std.EnumSet(Flag), files: usize, diag: *Diagnostic) error{Usage}!void {
     var it = seen.iterator();
     while (it.next()) |flag| {
         const allowed = flag.commands() orelse continue;
         if (std.mem.findScalar(Command, allowed, cfg.command) == null)
             return diag.fail("{s} is not an option of {t}", .{ flagName(flag), cfg.command });
     }
-    if (files.items.len == 0) return diag.fail("{t}: no input files", .{cfg.command});
+    if (files == 0) return diag.fail("{t}: no input files", .{cfg.command});
     if (seen.contains(.pad) and seen.contains(.truncate)) return diag.fail("--pad and --truncate together", .{});
     if (cfg.schema != null and cfg.columns != null) return diag.fail("--schema and --columns together", .{});
-    if (cfg.pins.delimiter) |d| {
-        if (cfg.pins.quote) |q| if (q == .byte and q.byte == d)
+    try checkPins(cfg.pins, diag);
+    if (cfg.to == .parquet) return diag.fail("--to parquet: not in v1; write arrow and convert it", .{});
+    return checkCommand(cfg, diag);
+}
+
+/// Pins that cannot hold together.
+fn checkPins(pins: Pins, diag: *Diagnostic) error{Usage}!void {
+    if (pins.delimiter) |d| {
+        if (pins.quote) |q| if (q == .byte and q.byte == d)
             return diag.fail("--delimiter and --quote are the same byte", .{});
-        if (cfg.pins.comment == d) return diag.fail("--delimiter and --comment are the same byte", .{});
+        if (pins.comment == d) return diag.fail("--delimiter and --comment are the same byte", .{});
     }
     // A backslash escapes only inside quotes, so with none it means nothing.
-    if (cfg.pins.quote) |q| if (q == .none and cfg.pins.escape == .backslash)
+    if (pins.quote) |q| if (q == .none and pins.escape == .backslash)
         return diag.fail("--quote none and --escape backslash together", .{});
-    if (cfg.to == .parquet) return diag.fail("--to parquet: not in v1; write arrow and convert it", .{});
+}
+
+/// What each command needs.
+fn checkCommand(cfg: *const Config, diag: *Diagnostic) error{Usage}!void {
     switch (cfg.command) {
         .sniff, .infer => {},
         .validate => if (cfg.schema == null and cfg.columns == null)
@@ -334,8 +418,6 @@ pub fn parse(gpa: std.mem.Allocator, args: []const []const u8, diag: *Diagnostic
             if (cfg.out == null) return diag.fail("run needs --out", .{});
         },
     }
-    cfg.files = try files.toOwnedSlice(gpa);
-    return .{ .run = cfg };
 }
 
 fn flagName(flag: Flag) []const u8 {
@@ -497,6 +579,30 @@ test "usage errors" {
     try expectUsage(&.{ "sniff", "a", "--threshold", "1.5" }, "--threshold 1.5: a fraction from 0 to 1");
     try expectUsage(&.{ "infer", "a", "--out-newline", "crlf" }, "--out-newline is not an option of infer");
     try expectUsage(&.{ "convert", "a", "--out-newline", "cr" }, "--out-newline cr: lf or crlf");
+}
+
+test "a value a flag does not take says what it does" {
+    const cases = [_]struct { []const u8, []const u8, []const u8 }{
+        .{ "--delimiter", "ab", "one ASCII byte, tab, \\t or \\xHH" },
+        .{ "--quote", "ab", "one ASCII byte, or none" },
+        .{ "--escape", "slash", "doubled or backslash" },
+        .{ "--newline", "nl", "lf, crlf or cr" },
+        .{ "--header", "maybe", "auto, yes or no" },
+        .{ "--comment", "ab", "one ASCII byte, tab, \\t or \\xHH" },
+        .{ "--sample-bytes", "lots", "a size such as 65536, 64K or 1M" },
+        .{ "--encoding", "ebcdic", "utf8, cp1252 or latin1" },
+        .{ "--threshold", "2", "a fraction from 0 to 1" },
+        .{ "--jobs", "0", "a count above 0" },
+        .{ "--out-delimiter", "ab", "one ASCII byte, tab, \\t or \\xHH" },
+        .{ "--out-newline", "cr", "lf or crlf" },
+    };
+    for (cases) |c| {
+        var buf: [128]u8 = undefined;
+        const message = try std.fmt.bufPrint(&buf, "{s} {s}: {s}", c);
+        try expectUsage(&.{ "convert", "a.csv", c[0], c[1] }, message);
+    }
+    try expectUsage(&.{ "infer", "a.csv", "--sample", "0" }, "--sample 0: a row count above 0");
+    try expectUsage(&.{ "run", "a.csv", "--to", "xml" }, "--to xml: csv or arrow");
 }
 
 test "-- ends the options" {
