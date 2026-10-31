@@ -15,6 +15,8 @@ in the page cache reads the same way. Each stage includes the ones before it.
 | stage1 | the structural index alone: delimiters and line breaks outside quotes, as bitmasks |
 | parse | stages 1 and 2: records and fields, in batches of 65,536 rows |
 | validate | every cell checked against the profile's schema |
+| report | the same, with each column's statistics, as `--report` and the library have them |
+| infer | every value's type inferred, with each column's statistics, as `infer` reads a file |
 | csv | validated rows built into typed columns and written as RFC 4180 CSV |
 | arrow | the same, written as Arrow IPC (stream format) |
 | reference | the scalar reference parser, byte at a time, for scale |
@@ -52,6 +54,26 @@ leaves the whole only about 1.1 times as fast as the scalar reference: the
 first place to look for speed. On the text profile, where a long quoted field is
 mostly bytes the index skips, it is 1.7 times. CSV output costs more than
 Arrow because every field is scanned for bytes that need quoting.
+
+## Column statistics
+
+A report's statistics for each column (docs/REPORT.md, `columns[].stats`)
+cost a validate more than the rest of a report does, so the CLI works them
+out only with `--report`; a `validate` without one runs as it did. Every
+value adds a few comparisons: its length, whether it is empty, and the
+least and greatest of an ordered type. Distinct values, the most common
+values and the most common shapes are counted over a sample of rows: every
+row of a file of up to about 65,536, and rows spread evenly through a
+larger one, at a stride worked out from the line breaks in its first 64
+KiB. On a large file they cost little; a small one, sampled whole, takes
+up to twice validate's time.
+
+Measured on the machine above while it ran other work, best of three at
+256 MB (commit of the change that added them): `report` against
+`validate` is 9% slower on the narrow profile, 12% on the wide and the
+same on the text. `infer` with them took 11% longer than before them on a
+100 MB, six-column file (best of seven). The two stages are in the gate
+from that change on.
 
 ## Shipped build
 

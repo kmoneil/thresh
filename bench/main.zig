@@ -12,6 +12,8 @@
 //!   stage1    the structural index alone
 //!   parse     stages 1 and 2: records and fields, in batches
 //!   validate  every cell checked against the profile's schema
+//!   report    the same, with each column's statistics, as --report has
+//!   infer     every value's type inferred, with the columns' statistics
 //!   csv       validated rows built into typed columns and written as CSV
 //!   arrow     the same, written as Arrow IPC
 //!   reference the scalar reference parser, for scale
@@ -30,7 +32,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const Profile = enum { narrow, wide, text };
-pub const Stage = enum { stage1, parse, validate, csv, arrow, reference };
+pub const Stage = enum { stage1, parse, validate, report, infer, csv, arrow, reference };
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -100,7 +102,8 @@ fn best(io: Io, gpa: Allocator, runs: usize, data: []const u8, s: *const schema.
             .stage1 => try stage1(gpa, data),
             .parse => try parse(gpa, data),
             .reference => try referenceParse(gpa, data),
-            .validate, .csv, .arrow => try pipeline(gpa, data, s, stage),
+            .infer => try inferStage(gpa, data, s),
+            .validate, .report, .csv, .arrow => try pipeline(gpa, data, s, stage),
         };
         const ns = start.durationTo(Io.Timestamp.now(io, .awake)).nanoseconds;
         // Every run must find the same; it also keeps the work from being
@@ -154,10 +157,10 @@ fn parse(gpa: Allocator, data: []const u8) !u64 {
 /// build each batch's accepted rows into typed columns and write them to
 /// a writer that discards (so the disk is not measured). Counts rows.
 fn pipeline(gpa: Allocator, data: []const u8, s: *const schema.Schema, stage: Stage) !u64 {
-    var v: thresh.validate.Validator = try .init(gpa, s, .rfc4180, .{});
+    var v: thresh.validate.Validator = try .init(gpa, s, .rfc4180, .{ .stats = stage == .report, .stats_stride = strideOf(data) });
     defer v.deinit();
     try v.columns(null, s.columns.len, data, 0);
-    var typed: ?thresh.builders.Batch = if (stage == .validate) null else try .init(gpa, s, .utf8);
+    var typed: ?thresh.builders.Batch = if (stage == .validate or stage == .report) null else try .init(gpa, s, .utf8);
     defer if (typed) |*t| t.deinit();
     if (typed) |*t| v.batch = t;
     var sink_buf: [1 << 20]u8 = undefined;
@@ -185,6 +188,41 @@ fn pipeline(gpa: Allocator, data: []const u8, s: *const schema.Schema, stage: St
     if (stage == .arrow) try arrow_w.end(&sink.writer);
     if (v.rejected != 0) return error.Rejected;
     return v.rows;
+}
+
+/// The stride a read of data samples its columns' statistics at, as the
+/// reader works it out from its first 64 KiB.
+fn strideOf(data: []const u8) u64 {
+    const head = data[0..@min(data.len, 1 << 16)];
+    return thresh.stats.strideFor(data.len, std.mem.countScalar(u8, head, '\n'), head.len);
+}
+
+/// Infer's pass over the data, as inferFile makes it: each record's values
+/// into the inferrer. Counts rows.
+fn inferStage(gpa: Allocator, data: []const u8, s: *const schema.Schema) !u64 {
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var f: thresh.infer.Inferrer = .init(arena.allocator(), .{ .stats_stride = strideOf(data) });
+    try f.header(null, s.columns.len);
+    var scanner: records.Scanner = try .init(gpa, .rfc4180, .{});
+    defer scanner.deinit();
+    scanner.feed(data, 0, true);
+    var batch: records.Batch = .{};
+    defer batch.deinit(gpa);
+    var scratch: std.ArrayList(u8) = .empty;
+    defer scratch.deinit(gpa);
+    var values: std.ArrayList([]const u8) = .empty;
+    defer values.deinit(gpa);
+    while (true) {
+        batch.clear();
+        const state = try batch.fill(gpa, &scanner, .{});
+        for (0..batch.len()) |i| {
+            try records.values(gpa, batch.recordFields(i), data, 0, .rfc4180, &scratch, &values);
+            try f.record(values.items);
+        }
+        if (state == .end) break;
+    }
+    return f.rows;
 }
 
 /// The reference parser over the same input, for scale.

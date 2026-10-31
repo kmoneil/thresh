@@ -28,7 +28,7 @@ on its way.
 | **Infer** | each column's type across many files: integers, decimals with their precision and scale, dates in the format they are written, enums, booleans. |
 | **Validate** | every row against a schema. A bad row is set aside with its line and the reason; the good rows go on. |
 | **Convert** | the good rows to clean CSV, or to Arrow that pyarrow, polars and DuckDB read straight in. |
-| **Report** | JSON in a [versioned format](docs/REPORT.md), every problem a stable [code](docs/PROBLEMS.md), with the fix where there is one. |
+| **Report** | JSON in a [versioned format](docs/REPORT.md), every problem a stable [code](docs/PROBLEMS.md), with the fix where there is one, and what each column holds: its range, distinct values, the most common values and shapes. |
 | **Embed** | a [C library](docs/C.md) that hands rows and rejects to Arrow consumers in the same process, without a copy. |
 
 ## Quick start

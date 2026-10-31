@@ -29,35 +29,128 @@
       "type": "int64",
       "nulls": 0,
       "mismatches": 0,
-      "conformance": 1.0
+      "conformance": 1.0,
+      "stats": {
+        "values": 60,
+        "empty": 0,
+        "length": {
+          "min": 1,
+          "max": 2
+        },
+        "min": "1",
+        "max": "60",
+        "distinct": 60,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9",
+            "count": 60
+          }
+        ]
+      }
     },
     {
       "name": "code",
       "type": "enum",
       "nulls": 0,
       "mismatches": 0,
-      "conformance": 1.0
+      "conformance": 1.0,
+      "stats": {
+        "values": 60,
+        "empty": 0,
+        "length": {
+          "min": 4,
+          "max": 7
+        },
+        "distinct": 3,
+        "top": [
+          {
+            "value": "closed",
+            "count": 22
+          },
+          {
+            "value": "open",
+            "count": 20
+          },
+          {
+            "value": "pending",
+            "count": 18
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a",
+            "count": 60
+          }
+        ]
+      }
     },
     {
       "name": "amount",
       "type": "decimal",
       "nulls": 0,
       "mismatches": 0,
-      "conformance": 1.0
+      "conformance": 1.0,
+      "stats": {
+        "values": 60,
+        "empty": 0,
+        "length": {
+          "min": 5,
+          "max": 8
+        },
+        "min": "-4824.82",
+        "max": "19836.40",
+        "distinct": 60,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9.9",
+            "count": 49
+          },
+          {
+            "shape": "-9.9",
+            "count": 11
+          }
+        ]
+      }
     },
     {
       "name": "ratio",
       "type": "float64",
       "nulls": 6,
       "mismatches": 0,
-      "conformance": 1.0
+      "conformance": 1.0,
+      "stats": {
+        "values": 54,
+        "empty": 6,
+        "length": {
+          "min": 6,
+          "max": 6
+        },
+        "min": "0.0074",
+        "max": "0.9627",
+        "distinct": 54,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9.9",
+            "count": 54
+          }
+        ]
+      }
     },
     {
       "name": "flag",
       "type": "bool",
       "nulls": 0,
       "mismatches": 0,
-      "conformance": 1.0
+      "conformance": 1.0,
+      "stats": {
+        "values": 0,
+        "empty": 0,
+        "top": [],
+        "shapes": []
+      }
     },
     {
       "name": "created",
@@ -66,7 +159,34 @@
       "mismatches": 0,
       "conformance": 1.0,
       "format": "%Y-%m-%d",
-      "ambiguous": 0
+      "ambiguous": 0,
+      "stats": {
+        "values": 60,
+        "empty": 0,
+        "length": {
+          "min": 10,
+          "max": 10
+        },
+        "min": "2019-01-17",
+        "max": "2026-09-26",
+        "distinct": 58,
+        "top": [
+          {
+            "value": "2019-10-22",
+            "count": 2
+          },
+          {
+            "value": "2023-01-11",
+            "count": 2
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "9-9-9",
+            "count": 60
+          }
+        ]
+      }
     },
     {
       "name": "updated",
@@ -75,14 +195,77 @@
       "mismatches": 0,
       "conformance": 1.0,
       "format": "%Y-%m-%d %H:%M:%S",
-      "ambiguous": 0
+      "ambiguous": 0,
+      "stats": {
+        "values": 60,
+        "empty": 0,
+        "length": {
+          "min": 19,
+          "max": 19
+        },
+        "min": "2019-01-24T10:50:43Z",
+        "max": "2026-09-18T04:56:01Z",
+        "distinct": 60,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9-9-9 9:9:9",
+            "count": 60
+          }
+        ]
+      }
     },
     {
       "name": "name",
       "type": "string",
       "nulls": 0,
       "mismatches": 0,
-      "conformance": 1.0
+      "conformance": 1.0,
+      "stats": {
+        "values": 60,
+        "empty": 0,
+        "length": {
+          "min": 6,
+          "max": 19
+        },
+        "distinct": 46,
+        "top": [
+          {
+            "value": "Hana Østergaard",
+            "count": 3
+          },
+          {
+            "value": "Chloé Lee",
+            "count": 3
+          },
+          {
+            "value": "Émile Smith",
+            "count": 3
+          },
+          {
+            "value": "Smith, Chloé",
+            "count": 2
+          },
+          {
+            "value": "Günter DSouza",
+            "count": 2
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a a",
+            "count": 15
+          },
+          {
+            "shape": "aUa a",
+            "count": 8
+          },
+          {
+            "shape": "aU a",
+            "count": 8
+          }
+        ]
+      }
     }
   ],
   "problems": [

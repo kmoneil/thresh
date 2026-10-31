@@ -129,6 +129,8 @@ fn optionsOf(a: Allocator, cfg: *const cli.Config) Allocator.Error!lib.Options {
         .nulls = nulls.items,
         .threshold = cfg.threshold,
         .cancel = &interrupt.flag,
+        // A report is where they go.
+        .stats = cfg.report_dir != null,
     };
 }
 
@@ -442,6 +444,7 @@ test {
     _ = @import("write/arrow_c.zig");
     _ = @import("write/flatbuf.zig");
     _ = @import("builders.zig");
+    _ = @import("stats.zig");
     _ = report;
     _ = problem;
     _ = @import("problems_doc_test.zig");

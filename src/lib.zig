@@ -637,6 +637,38 @@ test "readArrow: a consumer that stops early, in any order, leaks nothing" {
     }
 }
 
+test "statistics: a large file sampled evenly, merged across files" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const env: Env = .{ .io = testing.io, .gpa = testing.allocator };
+    try manyRows(tmp, 200_000);
+    const path = try pathIn(a, tmp, "lugs.csv");
+    var diag: schema_mod.Diagnostic = .{};
+    var owned = try schema_mod.parseInline(testing.allocator, "lug_id:int64,remark:string", &diag);
+    defer owned.deinit();
+    const f = try validate(env, a, path, &owned.schema, .{}, null);
+    const s = f.read.?.columns[0].stats.?;
+    try testing.expectEqual(@as(u64, 200_000), s.values);
+    try testing.expectEqualStrings("199999", s.max.?);
+    // About sample_target rows, spread through it: not every row, not few.
+    try testing.expect(s.sampled.? > 50_000 and s.sampled.? < 120_000);
+    try testing.expectEqual(@as(?bool, true), s.distinct_at_least);
+
+    // Two files: one column's statistics over both.
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.csv", .data = "lug_kg\n17.5\n18.0\n" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "b.csv", .data = "lug_kg\n9.25\n18.0\n" });
+    const m = try infer(env, a, &.{ try pathIn(a, tmp, "a.csv"), try pathIn(a, tmp, "b.csv") }, .{});
+    const kg = m.schema.?.columns[0].stats.?;
+    try testing.expectEqual(@as(u64, 4), kg.values);
+    try testing.expectEqualStrings("9.25", kg.min.?);
+    try testing.expectEqualStrings("18.00", kg.max.?);
+    try testing.expectEqualStrings("18.0", kg.top[0].value);
+    try testing.expectEqual(@as(u64, 2), kg.top[0].count);
+}
+
 test "readArrow: a stream stops where the read does, and says why" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

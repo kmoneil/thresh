@@ -46,7 +46,29 @@
           "value": "99999999999999999999",
           "code": "int_overflow"
         }
-      ]
+      ],
+      "stats": {
+        "values": 57,
+        "empty": 1,
+        "length": {
+          "min": 1,
+          "max": 20
+        },
+        "min": "1",
+        "max": "59",
+        "distinct": 57,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9",
+            "count": 56
+          },
+          {
+            "shape": "9a",
+            "count": 1
+          }
+        ]
+      }
     },
     {
       "name": "code",
@@ -60,7 +82,36 @@
           "value": "OPEN",
           "code": "not_in_enum"
         }
-      ]
+      ],
+      "stats": {
+        "values": 58,
+        "empty": 0,
+        "length": {
+          "min": 4,
+          "max": 7
+        },
+        "distinct": 4,
+        "top": [
+          {
+            "value": "open",
+            "count": 23
+          },
+          {
+            "value": "closed",
+            "count": 17
+          },
+          {
+            "value": "pending",
+            "count": 17
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a",
+            "count": 58
+          }
+        ]
+      }
     },
     {
       "name": "amount",
@@ -84,7 +135,33 @@
           "value": "12,50",
           "code": "not_decimal"
         }
-      ]
+      ],
+      "stats": {
+        "values": 58,
+        "empty": 0,
+        "length": {
+          "min": 5,
+          "max": 16
+        },
+        "min": "-4854.26",
+        "max": "19614.62",
+        "distinct": 58,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9.9",
+            "count": 44
+          },
+          {
+            "shape": "-9.9",
+            "count": 13
+          },
+          {
+            "shape": "9,9",
+            "count": 1
+          }
+        ]
+      }
     },
     {
       "name": "ratio",
@@ -98,7 +175,29 @@
           "value": "abc",
           "code": "not_float"
         }
-      ]
+      ],
+      "stats": {
+        "values": 53,
+        "empty": 5,
+        "length": {
+          "min": 3,
+          "max": 6
+        },
+        "min": "0.0511",
+        "max": "0.9976",
+        "distinct": 53,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9.9",
+            "count": 52
+          },
+          {
+            "shape": "a",
+            "count": 1
+          }
+        ]
+      }
     },
     {
       "name": "flag",
@@ -112,7 +211,32 @@
           "value": "maybe",
           "code": "not_bool"
         }
-      ]
+      ],
+      "stats": {
+        "values": 58,
+        "empty": 0,
+        "length": {
+          "min": 4,
+          "max": 5
+        },
+        "distinct": 3,
+        "top": [
+          {
+            "value": "true",
+            "count": 30
+          },
+          {
+            "value": "false",
+            "count": 27
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a",
+            "count": 58
+          }
+        ]
+      }
     },
     {
       "name": "created",
@@ -128,7 +252,25 @@
           "value": "2024-02-30",
           "code": "not_in_format"
         }
-      ]
+      ],
+      "stats": {
+        "values": 58,
+        "empty": 0,
+        "length": {
+          "min": 10,
+          "max": 10
+        },
+        "min": "2019-01-15",
+        "max": "2026-09-10",
+        "distinct": 58,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9-9-9",
+            "count": 58
+          }
+        ]
+      }
     },
     {
       "name": "updated",
@@ -144,7 +286,29 @@
           "value": "3 days ago",
           "code": "not_in_format"
         }
-      ]
+      ],
+      "stats": {
+        "values": 58,
+        "empty": 0,
+        "length": {
+          "min": 10,
+          "max": 19
+        },
+        "min": "2019-02-02T13:24:07Z",
+        "max": "2026-12-02T13:01:10Z",
+        "distinct": 58,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9-9-9 9:9:9",
+            "count": 57
+          },
+          {
+            "shape": "9 a a",
+            "count": 1
+          }
+        ]
+      }
     },
     {
       "name": "name",
@@ -163,7 +327,52 @@
           "value": "caf�",
           "code": "invalid_utf8"
         }
-      ]
+      ],
+      "stats": {
+        "values": 58,
+        "empty": 0,
+        "length": {
+          "min": 4,
+          "max": 60
+        },
+        "distinct": 40,
+        "top": [
+          {
+            "value": "Bo Smith",
+            "count": 4
+          },
+          {
+            "value": "Bo Núñez",
+            "count": 4
+          },
+          {
+            "value": "Fatima Ng",
+            "count": 3
+          },
+          {
+            "value": "Dev Østergaard",
+            "count": 3
+          },
+          {
+            "value": "Hana Núñez",
+            "count": 2
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a a",
+            "count": 28
+          },
+          {
+            "shape": "a aUa",
+            "count": 8
+          },
+          {
+            "shape": "a Ua",
+            "count": 5
+          }
+        ]
+      }
     }
   ],
   "problems": [],

@@ -151,6 +151,47 @@ pub fn dateReason(p: date.Problem) Reason {
     };
 }
 
+/// bytes as UTF-8, in a: Latin-1 or Windows-1252 transcoded, and under
+/// UTF-8 any byte that is not part of a character replaced with U+FFFD, so
+/// a report is valid JSON whatever a cell held.
+pub fn utf8Of(a: std.mem.Allocator, bytes: []const u8, encoding: Encoding) std.mem.Allocator.Error![]const u8 {
+    // A byte becomes at most a 3-byte character, U+FFFD or a transcoded one.
+    const buf = try a.alloc(u8, bytes.len * 3);
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const c = bytes[i];
+        if (encoding != .utf8) {
+            n += std.unicode.utf8Encode(codepoint(encoding, c), buf[n..]) catch unreachable;
+            i += 1;
+            continue;
+        }
+        const len = std.unicode.utf8ByteSequenceLength(c) catch 0;
+        if (len > 0 and i + len <= bytes.len) {
+            if (std.unicode.utf8Decode(bytes[i..][0..len])) |_| {
+                @memcpy(buf[n..][0..len], bytes[i..][0..len]);
+                n += len;
+                i += len;
+                continue;
+            } else |_| {}
+        }
+        @memcpy(buf[n..][0..3], "\xef\xbf\xbd");
+        n += 3;
+        i += 1;
+    }
+    return a.realloc(buf, n);
+}
+
+test utf8Of {
+    const a = std.testing.allocator;
+    const replaced = try utf8Of(a, "caf\xe9 ok", .utf8);
+    defer a.free(replaced);
+    try std.testing.expectEqualStrings("caf\u{fffd} ok", replaced);
+    const latin = try utf8Of(a, "caf\xe9", .latin1);
+    defer a.free(latin);
+    try std.testing.expectEqualStrings("café", latin);
+}
+
 test {
     _ = date;
     _ = int;

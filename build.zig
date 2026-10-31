@@ -390,7 +390,25 @@ const cli_checks = [_]struct {
         \\        "1",
         \\        "2"
         \\      ],
-        \\      "inferred": true
+        \\      "inferred": true,
+        \\      "stats": {
+        \\        "values": 2,
+        \\        "empty": 0,
+        \\        "length": {
+        \\          "min": 1,
+        \\          "max": 1
+        \\        },
+        \\        "min": "1",
+        \\        "max": "2",
+        \\        "distinct": 2,
+        \\        "top": [],
+        \\        "shapes": [
+        \\          {
+        \\            "shape": "9",
+        \\            "count": 2
+        \\          }
+        \\        ]
+        \\      }
         \\    },
         \\    {
         \\      "name": "name",
@@ -400,7 +418,27 @@ const cli_checks = [_]struct {
         \\        "apple",
         \\        "pear, green"
         \\      ],
-        \\      "inferred": true
+        \\      "inferred": true,
+        \\      "stats": {
+        \\        "values": 2,
+        \\        "empty": 0,
+        \\        "length": {
+        \\          "min": 5,
+        \\          "max": 11
+        \\        },
+        \\        "distinct": 2,
+        \\        "top": [],
+        \\        "shapes": [
+        \\          {
+        \\            "shape": "a",
+        \\            "count": 1
+        \\          },
+        \\          {
+        \\            "shape": "a, a",
+        \\            "count": 1
+        \\          }
+        \\        ]
+        \\      }
         \\    },
         \\    {
         \\      "name": "amount",
@@ -412,7 +450,25 @@ const cli_checks = [_]struct {
         \\        "1.50",
         \\        "2.25"
         \\      ],
-        \\      "inferred": true
+        \\      "inferred": true,
+        \\      "stats": {
+        \\        "values": 2,
+        \\        "empty": 0,
+        \\        "length": {
+        \\          "min": 4,
+        \\          "max": 4
+        \\        },
+        \\        "min": "1.50",
+        \\        "max": "2.25",
+        \\        "distinct": 2,
+        \\        "top": [],
+        \\        "shapes": [
+        \\          {
+        \\            "shape": "9.9",
+        \\            "count": 2
+        \\          }
+        \\        ]
+        \\      }
         \\    }
         \\  ],
         \\  "nulls": [

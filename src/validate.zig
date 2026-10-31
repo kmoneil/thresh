@@ -23,6 +23,7 @@ const Record = records.Record;
 const Dialect = @import("dialect.zig").Dialect;
 const csv = @import("write/csv.zig");
 const builders = @import("builders.zig");
+const stats_mod = @import("stats.zig");
 const Problem = @import("problem.zig").Problem;
 
 /// What a short or long row becomes.
@@ -37,6 +38,11 @@ pub const Options = struct {
     ragged: Ragged = .reject,
     /// --day-first: every date column reads ambiguous dates day first.
     day_first: bool = false,
+    /// Each column's statistics, and every stats_stride-th row sampled
+    /// for their distinct, most common values and shapes
+    /// (stats.strideFor).
+    stats: bool = false,
+    stats_stride: u64 = 1,
 };
 
 /// The most mismatch samples a column keeps, and rejected rows and
@@ -85,6 +91,8 @@ pub const Validator = struct {
     /// The header's names, for the reject file.
     names: []const []const u8,
     stats: []ColumnStats,
+    /// What each schema column's values are like (stats.zig).
+    profiles: []stats_mod.Column,
     /// Each date or timestamp column's reader; null for other types.
     dates: []?types.date.Column,
     rows: u64 = 0,
@@ -139,6 +147,7 @@ pub const Validator = struct {
             .width = s.columns.len,
             .names = &.{},
             .stats = &.{},
+            .profiles = &.{},
             .dates = &.{},
             .raw = &.{},
             .cells = &.{},
@@ -147,6 +156,7 @@ pub const Validator = struct {
         errdefer v.deinit();
         v.stats = try gpa.alloc(ColumnStats, s.columns.len);
         @memset(v.stats, .{});
+        if (options.stats) v.profiles = try profilesFor(gpa, s.columns.len, options.encoding);
         v.mapping = try gpa.alloc(?u32, s.columns.len);
         for (v.mapping, 0..) |*m, i| m.* = @intCast(i);
         v.raw = try gpa.alloc([]const u8, s.columns.len);
@@ -166,6 +176,8 @@ pub const Validator = struct {
     pub fn deinit(v: *Validator) void {
         for (v.stats) |*s| s.samples.deinit(v.gpa);
         v.gpa.free(v.stats);
+        for (v.profiles) |*p| p.deinit(v.gpa);
+        v.gpa.free(v.profiles);
         v.gpa.free(v.mapping);
         v.gpa.free(v.dates);
         v.gpa.free(v.raw);
@@ -283,17 +295,39 @@ pub const Validator = struct {
         // Every value at once, so none overwrites another: the batch keeps
         // them all.
         try records.values(v.gpa, fields, data, base, v.dialect, &v.scratch, &v.values);
-        for (v.schema.columns, v.mapping, v.stats, v.dates, v.raw, v.cells) |*c, m, *st, *dc, *raw, *cell| {
+        switch (v.profiles.len > 0) {
+            inline else => |profiling| try v.readCells(profiling, rec.line),
+        }
+        if (v.errors.items.len > 0) return v.rejectRow(rec, fields, data, base);
+        if (v.batch) |b| try b.append(v.raw, v.cells);
+    }
+
+    /// Each column's cell of the row in v.values: read into v.cells, a
+    /// mismatch counted, and with profiling, into its statistics. Two
+    /// loops, one for each, so one without statistics does no more than
+    /// it did before them.
+    fn readCells(v: *Validator, comptime profiling: bool, line: u64) Allocator.Error!void {
+        const sampled = profiling and (v.rows - 1) % v.options.stats_stride == 0;
+        for (v.schema.columns, v.mapping, v.stats, v.dates, v.raw, v.cells, 0..) |*c, m, *st, *dc, *raw, *cell, j| {
             cell.* = null;
             raw.* = "";
             const i = m orelse continue;
             const value = if (i < v.values.items.len) v.values.items[i] else "";
             raw.* = value;
-            const r = v.cellReason(c, dc, st, value, cell) orelse continue;
-            try v.mismatch(c, st, rec.line, value, r);
+            const r = v.cellReason(c, dc, st, value, cell);
+            if (profiling) {
+                const pr = &v.profiles[j];
+                pr.field(value);
+                if (cell.*) |x| {
+                    pr.value(value, sampled);
+                    extreme(pr, x);
+                } else if (r != null and r.? != .null_value) {
+                    // A value that does not fit: its text, not its order.
+                    pr.value(value, sampled);
+                }
+            }
+            try v.mismatch(c, st, line, value, r orelse continue);
         }
-        if (v.errors.items.len > 0) return v.rejectRow(rec, fields, data, base);
-        if (v.batch) |b| try b.append(v.raw, v.cells);
     }
 
     /// The last record, with no line break after it, short of fields or
@@ -468,6 +502,34 @@ pub const Validator = struct {
     }
 };
 
+/// n columns' statistics, each initialized, or none.
+fn profilesFor(gpa: Allocator, n: usize, encoding: types.Encoding) Allocator.Error![]stats_mod.Column {
+    const out = try gpa.alloc(stats_mod.Column, n);
+    var made: usize = 0;
+    errdefer {
+        for (out[0..made]) |*p| p.deinit(gpa);
+        gpa.free(out);
+    }
+    for (out) |*p| {
+        p.* = try .init(gpa, encoding);
+        made += 1;
+    }
+    return out;
+}
+
+/// x into pr's least and greatest, when its type is ordered: a decimal
+/// scaled, a date in microseconds as a timestamp is.
+fn extreme(pr: *stats_mod.Column, x: types.Value) void {
+    switch (x) {
+        .int => |n| pr.int(n),
+        .float => |f| pr.float(f),
+        .decimal => |d| pr.int(d),
+        .date => |d| pr.int(@as(i128, d) * 86_400_000_000),
+        .timestamp, .time => |t| pr.int(t),
+        .bool, .enumeration, .string, .binary => {},
+    }
+}
+
 fn endsLine(c: u8) bool {
     return c == '\n' or c == '\r';
 }
@@ -567,6 +629,34 @@ test "the report keeps rejected rows as the file has them: line breaks, quotes, 
     // Cut before the character it would split, its whole length kept.
     try testing.expectEqual(@as(usize, 299), lines[2].text.len);
     try testing.expectEqual(@as(u64, long.len - 2), lines[2].len);
+}
+
+test "statistics: with them asked for, misfits counted, nulls not, a decimal at its scale; without, none" {
+    var rejects: Io.Writer.Allocating = .init(testing.allocator);
+    defer rejects.deinit();
+    const input = "id,amount,status\n1,2.50,open\n2,N/A,closed\nx,10.00,open\n4,0.75,shut\n";
+    var v = try run(input, &orders, .{ .nulls = orders.nulls, .stats = true }, &rejects);
+    defer v.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const id = try v.profiles[0].summary(a, orders.columns[0].statsFormat());
+    // x does not fit: a value, with its length, but no part of the order.
+    try testing.expectEqual(@as(u64, 4), id.values);
+    try testing.expectEqualStrings("1", id.min.?);
+    try testing.expectEqualStrings("4", id.max.?);
+    const amount = try v.profiles[1].summary(a, orders.columns[1].statsFormat());
+    // N/A is a null: no value.
+    try testing.expectEqual(@as(u64, 3), amount.values);
+    try testing.expectEqualStrings("0.75", amount.min.?);
+    try testing.expectEqualStrings("10.00", amount.max.?);
+    const status = try v.profiles[2].summary(a, orders.columns[2].statsFormat());
+    try testing.expectEqual(@as(?[]const u8, null), status.min);
+    try testing.expectEqualStrings("open", status.top[0].value);
+
+    var plain = try run(input, &orders, .{ .nulls = orders.nulls }, &rejects);
+    defer plain.deinit();
+    try testing.expectEqual(@as(usize, 0), plain.profiles.len);
 }
 
 test "the report keeps the first twenty rejected rows, and counts them all" {

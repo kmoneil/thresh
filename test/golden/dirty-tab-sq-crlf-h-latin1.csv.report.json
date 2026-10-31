@@ -46,7 +46,29 @@
           "value": "99999999999999999999",
           "code": "int_overflow"
         }
-      ]
+      ],
+      "stats": {
+        "values": 56,
+        "empty": 1,
+        "length": {
+          "min": 1,
+          "max": 20
+        },
+        "min": "1",
+        "max": "60",
+        "distinct": 56,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9",
+            "count": 55
+          },
+          {
+            "shape": "9a",
+            "count": 1
+          }
+        ]
+      }
     },
     {
       "name": "code",
@@ -60,7 +82,36 @@
           "value": "OPEN",
           "code": "not_in_enum"
         }
-      ]
+      ],
+      "stats": {
+        "values": 57,
+        "empty": 0,
+        "length": {
+          "min": 4,
+          "max": 7
+        },
+        "distinct": 4,
+        "top": [
+          {
+            "value": "pending",
+            "count": 23
+          },
+          {
+            "value": "closed",
+            "count": 18
+          },
+          {
+            "value": "open",
+            "count": 15
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a",
+            "count": 57
+          }
+        ]
+      }
     },
     {
       "name": "amount",
@@ -79,7 +130,29 @@
           "value": "1.234",
           "code": "decimal_scale"
         }
-      ]
+      ],
+      "stats": {
+        "values": 57,
+        "empty": 0,
+        "length": {
+          "min": 5,
+          "max": 16
+        },
+        "min": "-4664.97",
+        "max": "19956.83",
+        "distinct": 57,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9.9",
+            "count": 50
+          },
+          {
+            "shape": "-9.9",
+            "count": 7
+          }
+        ]
+      }
     },
     {
       "name": "ratio",
@@ -98,7 +171,38 @@
           "value": "1.2.3",
           "code": "not_float"
         }
-      ]
+      ],
+      "stats": {
+        "values": 50,
+        "empty": 7,
+        "length": {
+          "min": 3,
+          "max": 6
+        },
+        "min": "0.0051",
+        "max": "0.9808",
+        "distinct": 49,
+        "top": [
+          {
+            "value": "0.8609",
+            "count": 2
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "9.9",
+            "count": 48
+          },
+          {
+            "shape": "a",
+            "count": 1
+          },
+          {
+            "shape": "9.9.9",
+            "count": 1
+          }
+        ]
+      }
     },
     {
       "name": "flag",
@@ -112,7 +216,32 @@
           "value": "maybe",
           "code": "not_bool"
         }
-      ]
+      ],
+      "stats": {
+        "values": 57,
+        "empty": 0,
+        "length": {
+          "min": 4,
+          "max": 5
+        },
+        "distinct": 3,
+        "top": [
+          {
+            "value": "true",
+            "count": 31
+          },
+          {
+            "value": "false",
+            "count": 25
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a",
+            "count": 57
+          }
+        ]
+      }
     },
     {
       "name": "created",
@@ -128,7 +257,25 @@
           "value": "2024-02-30",
           "code": "not_in_format"
         }
-      ]
+      ],
+      "stats": {
+        "values": 57,
+        "empty": 0,
+        "length": {
+          "min": 10,
+          "max": 10
+        },
+        "min": "2019-01-04",
+        "max": "2026-11-28",
+        "distinct": 57,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9-9-9",
+            "count": 57
+          }
+        ]
+      }
     },
     {
       "name": "updated",
@@ -144,7 +291,29 @@
           "value": "3 days ago",
           "code": "not_in_format"
         }
-      ]
+      ],
+      "stats": {
+        "values": 57,
+        "empty": 0,
+        "length": {
+          "min": 10,
+          "max": 19
+        },
+        "min": "2019-04-10T13:18:15Z",
+        "max": "2026-12-08T00:10:04Z",
+        "distinct": 57,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9-9-9 9:9:9",
+            "count": 56
+          },
+          {
+            "shape": "9 a a",
+            "count": 1
+          }
+        ]
+      }
     },
     {
       "name": "name",
@@ -158,7 +327,52 @@
           "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "code": "too_long"
         }
-      ]
+      ],
+      "stats": {
+        "values": 57,
+        "empty": 0,
+        "length": {
+          "min": 6,
+          "max": 60
+        },
+        "distinct": 47,
+        "top": [
+          {
+            "value": "Émile Østergaard",
+            "count": 3
+          },
+          {
+            "value": "Fatima Lee",
+            "count": 2
+          },
+          {
+            "value": "Hana Smith",
+            "count": 2
+          },
+          {
+            "value": "Émile Lee",
+            "count": 2
+          },
+          {
+            "value": "Ng\t Fatima",
+            "count": 2
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a a",
+            "count": 18
+          },
+          {
+            "shape": "a\t a",
+            "count": 7
+          },
+          {
+            "shape": "Ua a",
+            "count": 6
+          }
+        ]
+      }
     }
   ],
   "problems": [],

@@ -12,6 +12,7 @@ const dialect = @import("dialect.zig");
 const Problem = @import("problem.zig").Problem;
 const schema = @import("schema.zig");
 const types = @import("types.zig");
+const stats = @import("stats.zig");
 const validate = @import("validate.zig");
 
 /// The version of every JSON document this file writes (the report,
@@ -116,6 +117,8 @@ pub const Column = struct {
     fits: Fits = .{},
     /// The first values that do not fit.
     samples: []const Sample = &.{},
+    /// What its values are like, when they were asked for (stats.zig).
+    stats: ?stats.Summary = null,
 };
 
 pub const Fits = struct { month_first: bool = false, day_first: bool = false, year_first: bool = false };
@@ -170,7 +173,7 @@ pub fn fileOf(a: Allocator, o: Outcome, d: Details) Allocator.Error!File {
     f.warnings.extra_columns = v.extra_columns;
     f.warnings.header_repeated = v.repeated_headers > 0;
     const columns = try a.alloc(Column, v.schema.columns.len);
-    for (columns, v.schema.columns, v.stats, v.dates) |*col, c, st, dc| {
+    for (columns, v.schema.columns, v.stats, v.dates, 0..) |*col, c, st, dc, col_index| {
         col.* = .{
             .name = try a.dupe(u8, c.name),
             .type = c.type,
@@ -179,6 +182,7 @@ pub fn fileOf(a: Allocator, o: Outcome, d: Details) Allocator.Error!File {
             .conformance = validate.conformance(st, v.columnRows()),
             .format = if (c.format) |x| try a.dupe(u8, x) else null,
         };
+        if (v.profiles.len > 0) col.stats = try v.profiles[col_index].summary(a, c.statsFormat());
         if (dc) |date| {
             col.ambiguous = date.ambiguous;
             if (date.ambiguous > 0) {
@@ -187,7 +191,7 @@ pub fn fileOf(a: Allocator, o: Outcome, d: Details) Allocator.Error!File {
             }
         }
         const samples = try a.alloc(Sample, st.samples.items.len);
-        for (samples, st.samples.items) |*s, x| s.* = .{ .row = x.row, .value = try utf8Of(a, x.value, d.encoding), .code = x.reason };
+        for (samples, st.samples.items) |*s, x| s.* = .{ .row = x.row, .value = try types.utf8Of(a, x.value, d.encoding), .code = x.reason };
         col.samples = samples;
     }
     const problems = try a.alloc(Problem, v.structural.items.len);
@@ -199,7 +203,7 @@ pub fn fileOf(a: Allocator, o: Outcome, d: Details) Allocator.Error!File {
         for (errors, x.errors) |*e, xe| e.* = .{ .column = if (xe.column) |c| try a.dupe(u8, c) else null, .code = xe.reason };
         l.* = .{
             .row = x.row,
-            .text = try utf8Of(a, x.text, d.encoding),
+            .text = try types.utf8Of(a, x.text, d.encoding),
             .length = if (x.text.len < x.len) x.len else null,
             .errors = errors,
         };
@@ -281,6 +285,12 @@ pub fn writeFileReport(w: *Io.Writer, f: File, timing: bool) Stringify.Error!voi
                     try s.endObject();
                 }
                 try s.endArray();
+            }
+            if (c.stats) |st| {
+                try s.objectField("stats");
+                s.options.emit_null_optional_fields = false;
+                defer s.options.emit_null_optional_fields = true;
+                try s.write(st);
             }
             try s.endObject();
         }
@@ -391,38 +401,6 @@ fn writeFraction(s: *Stringify, f: f64) Stringify.Error!void {
     try s.print("{s}", .{text[0..end]});
 }
 
-/// A value as UTF-8, in a: Latin-1 or Windows-1252 transcoded, and under
-/// UTF-8 any byte that is not part of a character replaced with U+FFFD, so
-/// the report is valid JSON whatever the cell held. bytes is a sample's,
-/// at most validate.max_sample_len.
-fn utf8Of(a: Allocator, bytes: []const u8, encoding: types.Encoding) Allocator.Error![]const u8 {
-    // A byte becomes at most a 3-byte character, U+FFFD or a transcoded one.
-    const buf = try a.alloc(u8, bytes.len * 3);
-    var n: usize = 0;
-    var i: usize = 0;
-    while (i < bytes.len) {
-        const c = bytes[i];
-        if (encoding != .utf8) {
-            n += std.unicode.utf8Encode(types.codepoint(encoding, c), buf[n..]) catch unreachable;
-            i += 1;
-            continue;
-        }
-        const len = std.unicode.utf8ByteSequenceLength(c) catch 0;
-        if (len > 0 and i + len <= bytes.len) {
-            if (std.unicode.utf8Decode(bytes[i..][0..len])) |_| {
-                @memcpy(buf[n..][0..len], bytes[i..][0..len]);
-                n += len;
-                i += len;
-                continue;
-            } else |_| {}
-        }
-        @memcpy(buf[n..][0..3], "\xef\xbf\xbd");
-        n += 3;
-        i += 1;
-    }
-    return a.realloc(buf, n);
-}
-
 /// summary.json: every file's outcome, and the counts over them.
 pub fn writeSummary(w: *Io.Writer, outcomes: []const Outcome, exit: u8) Stringify.Error!void {
     var s: Stringify = .{ .writer = w, .options = .{ .whitespace = .indent_2 } };
@@ -531,14 +509,4 @@ test writeFraction {
         try writeFraction(&s, c[0]);
         try std.testing.expectEqualStrings(c[1], w.buffered());
     }
-}
-
-test utf8Of {
-    const a = std.testing.allocator;
-    const replaced = try utf8Of(a, "caf\xe9 ok", .utf8);
-    defer a.free(replaced);
-    try std.testing.expectEqualStrings("caf\u{fffd} ok", replaced);
-    const latin = try utf8Of(a, "caf\xe9", .latin1);
-    defer a.free(latin);
-    try std.testing.expectEqualStrings("café", latin);
 }
