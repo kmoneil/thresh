@@ -131,6 +131,7 @@ fn optionsOf(a: Allocator, cfg: *const cli.Config) Allocator.Error!lib.Options {
         .cancel = &interrupt.flag,
         // A report is where they go.
         .stats = cfg.report_dir != null,
+        .shapes = if (cfg.shape_names) .names else if (cfg.shapes_only) .values else .none,
     };
 }
 
@@ -188,24 +189,15 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
     // What the run made of each file, a failure included.
     for (ctx.results, outcomes) |*r, o| r.outcome = o;
 
-    const m = try lib.merge(a, ctx.results, ctx.options);
-    var code: Exit = .ok;
-    for (ctx.results, 0..) |r, i| {
-        const path = r.outcome.file;
-        if (r.outcome.result == .@"error") {
-            code = code.worst(.unreadable);
-            if (!cfg.quiet) try err.print("error {s}  {?f}\n", .{ path, r.outcome.problem });
-            continue;
-        }
-        if (cfg.quiet) continue;
-        try err.print("infer {s}  {d} rows  {d} columns\n", .{ path, r.outcome.rows, r.columns.len });
-        for (m.notes) |n| if (n.after) |at| if (at == i) try printNote(err, n);
-    }
+    // What is said of the files: as shapes, when asked.
+    const said = try lib.shaped(a, ctx.results, try lib.merge(a, ctx.results, ctx.options), ctx.options.shapes);
+    const m = said.merged;
+    var code = try sayFiles(err, cfg.quiet, said);
     if (m.stop) |p| {
         try err.print("thresh: {f}\n", .{p});
         return code.worst(.unreadable);
     }
-    if (!cfg.quiet) for (m.notes) |n| if (n.after == null) try printNote(err, n);
+    if (!cfg.quiet) try printNotes(err, m.notes, null);
     if (m.disagreement) |p| {
         try err.print("thresh: {f}\n", .{p});
         code = code.worst(.failed);
@@ -220,6 +212,29 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
         try fw.interface.flush();
     } else try lib.writeSchema(s, out);
     return code;
+}
+
+/// infer's line for each file on stderr, and the notes that follow it;
+/// the worst exit of them.
+fn sayFiles(err: *Io.Writer, quiet: bool, said: lib.Shaped) !Exit {
+    var code: Exit = .ok;
+    for (said.files, 0..) |r, i| {
+        const path = r.outcome.file;
+        if (r.outcome.result == .@"error") {
+            code = code.worst(.unreadable);
+            if (!quiet) try err.print("error {s}  {?f}\n", .{ path, r.outcome.problem });
+            continue;
+        }
+        if (quiet) continue;
+        try err.print("infer {s}  {d} rows  {d} columns\n", .{ path, r.outcome.rows, r.columns.len });
+        try printNotes(err, said.merged.notes, i);
+    }
+    return code;
+}
+
+/// The notes that follow file after, or with null the run's.
+fn printNotes(err: *Io.Writer, notes: []const lib.Note, after: ?usize) !void {
+    for (notes) |n| if (n.after == after) try printNote(err, n);
 }
 
 /// A note of infer's: its file first, unless the problem names it.
@@ -445,6 +460,7 @@ test {
     _ = @import("write/flatbuf.zig");
     _ = @import("builders.zig");
     _ = @import("stats.zig");
+    _ = @import("shapes.zig");
     _ = report;
     _ = problem;
     _ = @import("problems_doc_test.zig");
@@ -456,6 +472,89 @@ test {
     _ = pool;
     _ = interrupt;
     _ = @import("types/date.zig");
+}
+
+/// What one run of the CLI said: stdout, stderr and every file it wrote
+/// into the report directory, end to end.
+fn everythingSaid(tmp: std.testing.TmpDir, args: []const []const u8) ![]const u8 {
+    const t = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var out: Io.Writer.Allocating = .init(t.allocator);
+    defer out.deinit();
+    var err: Io.Writer.Allocating = .init(t.allocator);
+    defer err.deinit();
+    _ = try execute(.{ .io = t.io, .gpa = t.allocator, .arena = a }, args, &out.writer, &err.writer);
+    var all: std.ArrayList(u8) = .empty;
+    try all.appendSlice(t.allocator, out.written());
+    try all.appendSlice(t.allocator, err.written());
+    for ([_][]const u8{ "reports/markers.csv.report.json", "reports/summary.json", "markers.schema.json" }) |name| {
+        const text = tmp.dir.readFileAlloc(t.io, name, a, .limited(1 << 20)) catch continue;
+        try all.appendSlice(t.allocator, text);
+        try tmp.dir.deleteFile(t.io, name);
+    }
+    return all.toOwnedSlice(t.allocator);
+}
+
+test "--shapes-only: none of a file's values leaves thresh; --shape-names, none of its names" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    // Every field holds a marker: the names qxname, the values qxval or
+    // 777, in samples, rejected lines, statistics and problems.
+    var data: Io.Writer.Allocating = .init(t.allocator);
+    defer data.deinit();
+    try data.writer.writeAll("qxname_id,qxname_kg,qxname_day,qxname_word\n");
+    // Enough whole rows that the dialect is settled.
+    for (0..20) |i| try data.writer.print("{d},777999{d}.25,2026-09-{d:0>2},qxvalone\n", .{ i + 10, i, i % 28 + 1 });
+    try data.writer.writeAll("2,777999.50,2026-09-15,qxvalone\n" ++
+        "bad777999,18.00,2026-09-16,qxvaltwo\n" ++
+        "4,19.50,qxvalnotaday,qxvalthree\n" ++
+        "5,20.00,2026-09-17,\"qxval, quoted\"\n" ++
+        "6,21.00,2026-09-18,qxvalone,qxvalextra\n");
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "markers.csv", .data = data.written() });
+    var buf: [64]u8 = undefined;
+    const dir = try std.fmt.bufPrint(&buf, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var paths: [4][]const u8 = undefined;
+    var names: [4][128]u8 = undefined;
+    for ([_][]const u8{ "markers.csv", "reports", "out", "markers.schema.json" }, &paths, &names) |n, *p, *b| p.* = try std.fmt.bufPrint(b, "{s}/{s}", .{ dir, n });
+    const file, const reports, const outdir, const schema_out = paths;
+    // One column the file lacks: a problem that names it.
+    const columns = "qxname_id:int64,qxname_kg:decimal(9,2),qxname_day:date,qxname_word:string,qxname_gone:string";
+    const runs = [_][]const []const u8{
+        &.{ "validate", file, "--columns", columns, "--report", reports, "--json" },
+        &.{ "run", file, "--columns", columns[0 .. columns.len - ",qxname_gone:string".len], "--to", "csv", "--out", outdir, "--report", reports },
+        &.{ "infer", file, "--out", schema_out },
+        &.{ "infer", file },
+        &.{ "sniff", file, "--json" },
+    };
+    for (runs) |args| {
+        // Without the flags the markers are there: the test sees them.
+        const plain = try everythingSaid(tmp, args);
+        defer t.allocator.free(plain);
+        if (std.mem.find(u8, plain, "qxname") == null and !std.mem.eql(u8, args[0], "sniff")) {
+            std.debug.print("{s}: no names in what it said:\n{s}\n", .{ args[0], plain[0..@min(plain.len, 600)] });
+            return error.TestUnexpectedResult;
+        }
+        if (!std.mem.eql(u8, args[0], "sniff")) try t.expect(std.mem.find(u8, plain, "qxval") != null);
+
+        var with: [16][]const u8 = undefined;
+        for ([_][]const u8{ "--shapes-only", "--shape-names" }) |flag| {
+            @memcpy(with[0..args.len], args);
+            with[args.len] = flag;
+            const shaped = try everythingSaid(tmp, with[0 .. args.len + 1]);
+            defer t.allocator.free(shaped);
+            for ([_][]const u8{ "qxval", "777999" }) |marker| if (std.mem.find(u8, shaped, marker)) |at| {
+                std.debug.print("{s} {s}: {s} at {d}: {s}\n", .{ args[0], flag, marker, at, shaped[at -| 80..@min(shaped.len, at + 40)] });
+                return error.TestUnexpectedResult;
+            };
+            if (std.mem.eql(u8, flag, "--shape-names")) if (std.mem.find(u8, shaped, "qxname")) |at| {
+                std.debug.print("{s} {s}: a name at {d}: {s}\n", .{ args[0], flag, at, shaped[at -| 80..@min(shaped.len, at + 40)] });
+                return error.TestUnexpectedResult;
+            };
+        }
+    }
 }
 
 test "worst keeps the higher status" {

@@ -41,7 +41,9 @@ pub const Flag = struct {
     pub const strict: u32 = 4;
     pub const no_mmap: u32 = 8;
     pub const threshold: u32 = 16;
-    const all: u32 = 31;
+    pub const shapes_only: u32 = 32;
+    pub const shape_names: u32 = 64;
+    const all: u32 = 127;
 };
 
 /// thresh_options, as the header lays it out.
@@ -147,58 +149,9 @@ fn jsonOf(comptime f: anytype, args: anytype) Allocator.Error![*:0]u8 {
 /// a newer header may be longer, if it leaves the fields past this one's
 /// zero.
 fn optionsOf(m: *Message, a: Allocator, given: ?*const Options) !lib.Options {
-    var c = std.mem.zeroes(Options);
-    if (given) |g| {
-        if (g.size < @sizeOf(usize)) return misuse(m, "thresh_options.size is {d}: set it to sizeof(thresh_options)", .{g.size});
-        const bytes: [*]const u8 = @ptrCast(g);
-        const n = @min(g.size, @sizeOf(Options));
-        @memcpy(std.mem.asBytes(&c)[0..n], bytes[0..n]);
-        if (g.size > @sizeOf(Options)) for (bytes[@sizeOf(Options)..g.size], @sizeOf(Options)..) |b, i| if (b != 0)
-            return misuse(m, "thresh_options sets byte {d}, past the {d} that thresh {s} knows: it is from a newer thresh", .{ i, @sizeOf(Options), build_options.version });
-    }
-    var o: lib.Options = .{ .jobs = c.jobs };
-    o.pins.delimiter = if (c.delimiter == 0) null else c.delimiter;
-    o.pins.comment = if (c.comment == 0) null else c.comment;
-    o.pins.quote = switch (c.quote) {
-        0 => null,
-        quote_none => .none,
-        1...255 => .{ .byte = @intCast(c.quote) },
-        else => return misuse(m, "thresh_options.quote is {d}: a byte, THRESH_QUOTE_NONE, or 0 to sniff it", .{c.quote}),
-    };
-    o.pins.escape = switch (c.escape) {
-        0 => null,
-        1 => .doubled,
-        2 => .backslash,
-        else => return misuse(m, "thresh_options.escape is {d}: THRESH_ESCAPE_DOUBLED, THRESH_ESCAPE_BACKSLASH, or 0 to sniff it", .{c.escape}),
-    };
-    o.pins.newline = switch (c.newline) {
-        0 => null,
-        1 => .lf,
-        2 => .crlf,
-        3 => .cr,
-        else => return misuse(m, "thresh_options.newline is {d}: THRESH_NEWLINE_LF, _CRLF, _CR, or 0 to sniff it", .{c.newline}),
-    };
-    o.pins.header = switch (c.header) {
-        0 => .auto,
-        1 => .yes,
-        2 => .no,
-        else => return misuse(m, "thresh_options.header is {d}: THRESH_HEADER_YES, THRESH_HEADER_NO, or 0 to sniff it", .{c.header}),
-    };
-    o.ragged = switch (c.ragged) {
-        0 => .reject,
-        1 => .pad,
-        2 => .truncate,
-        else => return misuse(m, "thresh_options.ragged is {d}: THRESH_RAGGED_PAD, THRESH_RAGGED_TRUNCATE, or 0 to reject", .{c.ragged}),
-    };
-    if (c.flags & ~Flag.all != 0) return misuse(m, "thresh_options.flags is 0x{x}: 0x{x} is no flag of thresh {s}", .{ c.flags, c.flags & ~Flag.all, build_options.version });
-    o.keep_empty = c.flags & Flag.keep_empty != 0;
-    o.day_first = c.flags & Flag.day_first != 0;
-    o.strict = c.flags & Flag.strict != 0;
-    o.mmap = c.flags & Flag.no_mmap == 0;
-    if (c.flags & Flag.threshold != 0) {
-        if (!(c.threshold >= 0 and c.threshold <= 1)) return misuse(m, "thresh_options.threshold is {d}: a fraction from 0 to 1", .{c.threshold});
-        o.threshold = c.threshold;
-    }
+    const c = try copyOf(m, given);
+    var o: lib.Options = .{ .jobs = c.jobs, .pins = try pinsOf(m, c) };
+    try flagsInto(m, &o, c);
     if (c.encoding) |e| o.encoding = std.meta.stringToEnum(types.Encoding, std.mem.span(e)) orelse
         return misuse(m, "thresh_options.encoding is \"{s}\": utf8, latin1 or cp1252", .{std.mem.span(e)});
     if (c.sample_bytes != 0) o.sample_bytes = std.math.cast(usize, c.sample_bytes) orelse
@@ -213,6 +166,76 @@ fn optionsOf(m: *Message, a: Allocator, given: ?*const Options) !lib.Options {
     // Set to 1 from another thread: a bool's byte.
     if (c.cancel) |p| o.cancel = @ptrCast(@volatileCast(p));
     return o;
+}
+
+/// The caller's struct, as many of its bytes as this thresh knows; the
+/// rest zero. One from a newer header is refused if it sets what is past.
+fn copyOf(m: *Message, given: ?*const Options) Misuse!Options {
+    var c = std.mem.zeroes(Options);
+    const g = given orelse return c;
+    if (g.size < @sizeOf(usize)) return misuse(m, "thresh_options.size is {d}: set it to sizeof(thresh_options)", .{g.size});
+    const bytes: [*]const u8 = @ptrCast(g);
+    const n = @min(g.size, @sizeOf(Options));
+    @memcpy(std.mem.asBytes(&c)[0..n], bytes[0..n]);
+    if (g.size > @sizeOf(Options)) for (bytes[@sizeOf(Options)..g.size], @sizeOf(Options)..) |b, i| if (b != 0)
+        return misuse(m, "thresh_options sets byte {d}, past the {d} that thresh {s} knows: it is from a newer thresh", .{ i, @sizeOf(Options), build_options.version });
+    return c;
+}
+
+/// The dialect the caller pins; 0 leaves a dimension to the sniffer.
+fn pinsOf(m: *Message, c: Options) Misuse!@FieldType(lib.Options, "pins") {
+    return .{
+        .delimiter = if (c.delimiter == 0) null else c.delimiter,
+        .comment = if (c.comment == 0) null else c.comment,
+        .quote = try quotePin(m, c.quote),
+        .escape = switch (c.escape) {
+            0 => null,
+            1 => .doubled,
+            2 => .backslash,
+            else => return misuse(m, "thresh_options.escape is {d}: THRESH_ESCAPE_DOUBLED, THRESH_ESCAPE_BACKSLASH, or 0 to sniff it", .{c.escape}),
+        },
+        .newline = switch (c.newline) {
+            0 => null,
+            1 => .lf,
+            2 => .crlf,
+            3 => .cr,
+            else => return misuse(m, "thresh_options.newline is {d}: THRESH_NEWLINE_LF, _CRLF, _CR, or 0 to sniff it", .{c.newline}),
+        },
+        .header = switch (c.header) {
+            0 => .auto,
+            1 => .yes,
+            2 => .no,
+            else => return misuse(m, "thresh_options.header is {d}: THRESH_HEADER_YES, THRESH_HEADER_NO, or 0 to sniff it", .{c.header}),
+        },
+    };
+}
+
+fn quotePin(m: *Message, quote: i32) Misuse!@FieldType(@FieldType(lib.Options, "pins"), "quote") {
+    return switch (quote) {
+        0 => null,
+        quote_none => .none,
+        1...255 => .{ .byte = @intCast(quote) },
+        else => misuse(m, "thresh_options.quote is {d}: a byte, THRESH_QUOTE_NONE, or 0 to sniff it", .{quote}),
+    };
+}
+
+/// ragged, and what flags says (its threshold among it), into o.
+fn flagsInto(m: *Message, o: *lib.Options, c: Options) Misuse!void {
+    o.ragged = switch (c.ragged) {
+        0 => .reject,
+        1 => .pad,
+        2 => .truncate,
+        else => return misuse(m, "thresh_options.ragged is {d}: THRESH_RAGGED_PAD, THRESH_RAGGED_TRUNCATE, or 0 to reject", .{c.ragged}),
+    };
+    if (c.flags & ~Flag.all != 0) return misuse(m, "thresh_options.flags is 0x{x}: 0x{x} is no flag of thresh {s}", .{ c.flags, c.flags & ~Flag.all, build_options.version });
+    o.keep_empty = c.flags & Flag.keep_empty != 0;
+    o.day_first = c.flags & Flag.day_first != 0;
+    o.strict = c.flags & Flag.strict != 0;
+    o.mmap = c.flags & Flag.no_mmap == 0;
+    o.shapes = if (c.flags & Flag.shape_names != 0) .names else if (c.flags & Flag.shapes_only != 0) .values else .none;
+    if (c.flags & Flag.threshold == 0) return;
+    if (!(c.threshold >= 0 and c.threshold <= 1)) return misuse(m, "thresh_options.threshold is {d}: a fraction from 0 to 1", .{c.threshold});
+    o.threshold = c.threshold;
 }
 
 fn schemaOf(m: *Message, text_c: ?[*:0]const u8) !lib.OwnedSchema {
@@ -282,7 +305,8 @@ fn infer(m: *Message, paths_c: ?[*]const ?[*:0]const u8, len: usize, o: ?*const 
         for (paths, list[0..len], 0..) |*p, c, i| p.* = std.mem.span(c orelse return misuse(m, "paths[{d}] is NULL", .{i}));
     }
     const files = try lib.inferFiles(env(), a, paths, opts);
-    out.* = try jsonOf(lib.writeInferResult, .{ files, try lib.merge(a, files, opts) });
+    const said = try lib.shaped(a, files, try lib.merge(a, files, opts), opts.shapes);
+    out.* = try jsonOf(lib.writeInferResult, .{ said.files, said.merged });
 }
 
 export fn thresh_columns(t: ?*Thresh, columns: ?[*:0]const u8, schema_json: ?*?[*:0]u8) c_int {
@@ -343,7 +367,7 @@ fn read(m: *Message, path_c: ?[*:0]const u8, schema_json: ?[*:0]const u8, o: ?*c
     defer owned.deinit();
     switch (try lib.readArrow(env(), a, path, &owned.schema, opts, .{ .rows = want & want_rows != 0, .rejects = want & want_rejects != 0 })) {
         .stopped => |st| {
-            const f = try report.fileOf(a, st.outcome, .{ .verdict = st.verdict, .encoding = opts.encoding });
+            const f = try report.fileOf(a, st.outcome, .{ .verdict = st.verdict, .encoding = opts.encoding, .shapes = opts.shapes });
             out.* = try jsonOf(report.writeFileReport, .{ f, true });
         },
         .ready => |e| {
@@ -431,6 +455,8 @@ test "include/thresh.h lays out its structs and numbers its constants as the lib
     try testing.expectEqual(Flag.strict, h.THRESH_STRICT);
     try testing.expectEqual(Flag.no_mmap, h.THRESH_NO_MMAP);
     try testing.expectEqual(Flag.threshold, h.THRESH_THRESHOLD);
+    try testing.expectEqual(Flag.shapes_only, h.THRESH_SHAPES_ONLY);
+    try testing.expectEqual(Flag.shape_names, h.THRESH_SHAPE_NAMES);
     try testing.expectEqual(@as(c_int, arrow_c.flag_nullable), h.ARROW_FLAG_NULLABLE);
 }
 
@@ -601,6 +627,27 @@ test "each option reaches the call" {
     try testing.expectEqual(@as(c_int, 0), thresh_validate(t, lugs, schema, &o, &json));
     try testing.expect(std.mem.find(u8, std.mem.span(json.?), "\"rows_rejected\": 1") != null);
     thresh_string_free(json);
+}
+
+test "shapes: the reports say nothing of the file's values, or with names its names" {
+    const t = thresh_new().?;
+    defer thresh_free(t);
+    var schema: ?[*:0]u8 = null;
+    try testing.expectEqual(@as(c_int, 0), thresh_columns(t, lugs_columns, &schema));
+    defer thresh_string_free(schema);
+    var json: ?[*:0]u8 = null;
+    var o = defaults();
+    for ([_]u32{ 0, Flag.shapes_only, Flag.shape_names }) |flags| {
+        o.flags = flags;
+        try testing.expectEqual(@as(c_int, 0), thresh_validate(t, lugs, schema, &o, &json));
+        defer thresh_string_free(json);
+        const text = std.mem.span(json.?);
+        // "heavy" is a bad value, in a sample and a rejected line;
+        // Quillon one of the most common.
+        const values = std.mem.find(u8, text, "heavy") != null or std.mem.find(u8, text, "Quillon") != null;
+        try testing.expectEqual(flags == 0, values);
+        try testing.expectEqual(flags != Flag.shape_names, std.mem.find(u8, text, "lug_kg") != null);
+    }
 }
 
 test "the cancel flag stops a call" {

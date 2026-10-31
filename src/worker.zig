@@ -16,6 +16,7 @@ const report = @import("report.zig");
 const Problem = @import("problem.zig").Problem;
 const infer = @import("infer.zig");
 const stats = @import("stats.zig");
+const shapes_mod = @import("shapes.zig");
 const Encoding = @import("types.zig").Encoding;
 
 pub const Env = struct {
@@ -52,6 +53,10 @@ pub const Options = struct {
     /// sampled whole, so the CLI asks for them only with a report to put
     /// them in. infer always has them.
     stats: bool = true,
+    /// What of a file's contents its report, lines and notes write as
+    /// shapes (shapes.zig): nothing, its values, or its column names too.
+    /// Never what is read, nor the rows handed out.
+    shapes: shapes_mod.Shapes = .none,
     /// Strings read as null in every column, besides the schema's (infer:
     /// besides "").
     nulls: []const []const u8 = &.{},
@@ -234,7 +239,7 @@ pub const Reader = struct {
 
     /// The file's report, for out, finish's outcome, its strings in arena.
     pub fn fileReport(r: *const Reader, arena: Allocator, out: report.Outcome) !report.File {
-        return report.fileOf(arena, out, .{ .verdict = r.verdict, .validator = &r.v, .encoding = r.opts.encoding });
+        return report.fileOf(arena, out, .{ .verdict = r.verdict, .validator = &r.v, .encoding = r.opts.encoding, .shapes = r.opts.shapes });
     }
 };
 

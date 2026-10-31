@@ -12,6 +12,7 @@ const Env = lib.Env;
 const Options = lib.Options;
 const dialect = @import("dialect.zig");
 const report = @import("report.zig");
+const shapes = @import("shapes.zig");
 const Schema = @import("schema.zig").Schema;
 const builders = @import("builders.zig");
 const csv = @import("write/csv.zig");
@@ -164,13 +165,13 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
     const io = env.io;
     const gpa = env.gpa;
     const opts = plan.options;
-    var details: report.Details = .{ .encoding = opts.encoding };
+    var details: report.Details = .{ .encoding = opts.encoding, .shapes = opts.shapes };
 
     var r = switch (try lib.read(env, arena, path, plan.schema, opts, null)) {
         .stopped => |st| {
             details.verdict = st.verdict;
             try writeReport(env, plan, arena, st.outcome, name, details);
-            return st.outcome;
+            return shapes.outcome(arena, st.outcome, opts.shapes);
         },
         .reader => |x| x,
     };
@@ -225,7 +226,8 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
         }
     }
     try writeReport(env, plan, arena, out, name, details);
-    return out;
+    // The lines and summary.json say what the report does.
+    return shapes.outcome(arena, out, opts.shapes);
 }
 
 fn writeReport(env: Env, plan: Plan, arena: Allocator, out: report.Outcome, name: []const u8, details: report.Details) !void {
