@@ -99,6 +99,25 @@ as the file finishes. A file that could not be read has one too: its
 | `columns[].samples[].row` | `integer` | the source line the value's record starts on, from 1 |
 | `columns[].samples[].value` | `string` | the value as read, its first 200 bytes, in UTF-8: transcoded from `--encoding`, and under UTF-8 a byte that is not part of a character is U+FFFD |
 | `columns[].samples[].code` | `string` | why it does not fit: a [reason](PROBLEMS.md#reasons) |
+| `columns[].stats` | `object` | when asked for (`--report`; the C library and `lib.validate` always): what the column's values are like, so a person or an AI can reason about it without reading it |
+| `columns[].stats.values` | `integer` | values read, not null, those that do not fit too |
+| `columns[].stats.empty` | `integer` | fields empty or only spaces, null or not |
+| `columns[].stats.length` | `object` | when a value was read: the shortest and the longest, in bytes as the file has them |
+| `columns[].stats.length.min` | `integer` | |
+| `columns[].stats.length.max` | `integer` | |
+| `columns[].stats.min` | `string` | a number, date, timestamp or time column with a value that fits: the least of every value, as text (a decimal at its scale; a date, timestamp or time as RFC 3339 writes one) |
+| `columns[].stats.max` | `string` | the greatest |
+| `columns[].stats.distinct` | `integer` | distinct values, up to 1000 |
+| `columns[].stats.distinct_at_least` | `boolean` | when there are more: `distinct` is then 1000 |
+| `columns[].stats.top` | `array` | the most common values seen more than once, up to five, the most common first; a value over 64 bytes is not counted among them |
+| `columns[].stats.top[].value` | `string` | the value as read, in UTF-8 as `samples[].value` is |
+| `columns[].stats.top[].count` | `integer` | how many times |
+| `columns[].stats.top_estimated` | `boolean` | when more values were seen than thresh keeps count of (64): each `count` is then at most the true count plus the least it has kept, a value as common as one listed may be missing, and one more common than one in 64 never is |
+| `columns[].stats.shapes` | `array` | the most common shapes, up to three: digits as `9`, letters as `a`, any other non-ASCII character as `U`, a run of one of those as one, every other byte as it is (`0614141000012` is `9`, `AB_CD_12` is `a_a_9`) |
+| `columns[].stats.shapes[].shape` | `string` | its first 32 bytes |
+| `columns[].stats.shapes[].count` | `integer` | how many values |
+| `columns[].stats.shapes_estimated` | `boolean` | as `top_estimated`, for shapes (16 kept count of) |
+| `columns[].stats.sampled` | `integer` | when the file has more rows than about 65,536: the values `distinct`, `top` and `shapes` count, from rows spread evenly through it; every other field counts every value |
 | `problems` | `array` | what stopped or failed the file; empty when it passed |
 | `problems[]` | `problem` | a [problem object](PROBLEMS.md#problems): `code`, `message`, its parameters, and `suggest` where there is a fix |
 | `rows_rejected` | `integer` | when read against its schema: rows set aside, as the reject file has them |
@@ -267,6 +286,25 @@ checked.
 | `columns[].samples[]` | `string` | a value |
 | `columns[].widened_by` | `string` | infer, from several files: the file that took the column to a lower type |
 | `columns[].inferred` | `boolean` | infer: true |
+| `columns[].stats` | `object` | infer: what the column's values are like, as a report's `columns[].stats` |
+| `columns[].stats.values` | `integer` | values read, not null, those that do not fit too |
+| `columns[].stats.empty` | `integer` | fields empty or only spaces, null or not |
+| `columns[].stats.length` | `object` | when a value was read: the shortest and the longest, in bytes as the file has them |
+| `columns[].stats.length.min` | `integer` | |
+| `columns[].stats.length.max` | `integer` | |
+| `columns[].stats.min` | `string` | a number, date, timestamp or time column with a value that fits: the least of every value, as text (a decimal at its scale; a date, timestamp or time as RFC 3339 writes one) |
+| `columns[].stats.max` | `string` | the greatest |
+| `columns[].stats.distinct` | `integer` | distinct values, up to 1000 |
+| `columns[].stats.distinct_at_least` | `boolean` | when there are more: `distinct` is then 1000 |
+| `columns[].stats.top` | `array` | the most common values seen more than once, up to five, the most common first; a value over 64 bytes is not counted among them |
+| `columns[].stats.top[].value` | `string` | the value as read, in UTF-8 as `samples[].value` is |
+| `columns[].stats.top[].count` | `integer` | how many times |
+| `columns[].stats.top_estimated` | `boolean` | when more values were seen than thresh keeps count of (64): each `count` is then at most the true count plus the least it has kept, a value as common as one listed may be missing, and one more common than one in 64 never is |
+| `columns[].stats.shapes` | `array` | the most common shapes, up to three: digits as `9`, letters as `a`, any other non-ASCII character as `U`, a run of one of those as one, every other byte as it is (`0614141000012` is `9`, `AB_CD_12` is `a_a_9`) |
+| `columns[].stats.shapes[].shape` | `string` | its first 32 bytes |
+| `columns[].stats.shapes[].count` | `integer` | how many values |
+| `columns[].stats.shapes_estimated` | `boolean` | as `top_estimated`, for shapes (16 kept count of) |
+| `columns[].stats.sampled` | `integer` | when the file has more rows than about 65,536: the values `distinct`, `top` and `shapes` count, from rows spread evenly through it; every other field counts every value |
 | `nulls` | `array` | values read as null in every column (default `""`) |
 | `nulls[]` | `string` | a value read as null |
 | `match` | `string` | how the file's columns are found: `name` (by the header) or `position`; left out, by name when the file has a header |

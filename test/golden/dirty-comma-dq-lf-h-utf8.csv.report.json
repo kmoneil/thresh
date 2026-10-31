@@ -46,14 +46,65 @@
           "value": "99999999999999999999",
           "code": "int_overflow"
         }
-      ]
+      ],
+      "stats": {
+        "values": 56,
+        "empty": 1,
+        "length": {
+          "min": 1,
+          "max": 20
+        },
+        "min": "1",
+        "max": "59",
+        "distinct": 56,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9",
+            "count": 55
+          },
+          {
+            "shape": "9a",
+            "count": 1
+          }
+        ]
+      }
     },
     {
       "name": "code",
       "type": "enum",
       "nulls": 0,
       "mismatches": 0,
-      "conformance": 1.0
+      "conformance": 1.0,
+      "stats": {
+        "values": 57,
+        "empty": 0,
+        "length": {
+          "min": 4,
+          "max": 7
+        },
+        "distinct": 3,
+        "top": [
+          {
+            "value": "pending",
+            "count": 25
+          },
+          {
+            "value": "closed",
+            "count": 18
+          },
+          {
+            "value": "open",
+            "count": 14
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a",
+            "count": 57
+          }
+        ]
+      }
     },
     {
       "name": "amount",
@@ -77,7 +128,33 @@
           "value": "12,50",
           "code": "not_decimal"
         }
-      ]
+      ],
+      "stats": {
+        "values": 57,
+        "empty": 0,
+        "length": {
+          "min": 5,
+          "max": 16
+        },
+        "min": "-4806.00",
+        "max": "19903.29",
+        "distinct": 57,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9.9",
+            "count": 39
+          },
+          {
+            "shape": "-9.9",
+            "count": 17
+          },
+          {
+            "shape": "9,9",
+            "count": 1
+          }
+        ]
+      }
     },
     {
       "name": "ratio",
@@ -91,7 +168,29 @@
           "value": "abc",
           "code": "not_float"
         }
-      ]
+      ],
+      "stats": {
+        "values": 51,
+        "empty": 6,
+        "length": {
+          "min": 3,
+          "max": 6
+        },
+        "min": "0.0219",
+        "max": "0.9753",
+        "distinct": 51,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9.9",
+            "count": 50
+          },
+          {
+            "shape": "a",
+            "count": 1
+          }
+        ]
+      }
     },
     {
       "name": "flag",
@@ -105,7 +204,32 @@
           "value": "maybe",
           "code": "not_bool"
         }
-      ]
+      ],
+      "stats": {
+        "values": 57,
+        "empty": 0,
+        "length": {
+          "min": 4,
+          "max": 5
+        },
+        "distinct": 3,
+        "top": [
+          {
+            "value": "false",
+            "count": 32
+          },
+          {
+            "value": "true",
+            "count": 24
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a",
+            "count": 57
+          }
+        ]
+      }
     },
     {
       "name": "created",
@@ -121,7 +245,25 @@
           "value": "2024-02-30",
           "code": "not_in_format"
         }
-      ]
+      ],
+      "stats": {
+        "values": 57,
+        "empty": 0,
+        "length": {
+          "min": 10,
+          "max": 10
+        },
+        "min": "2019-04-02",
+        "max": "2026-12-27",
+        "distinct": 57,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9-9-9",
+            "count": 57
+          }
+        ]
+      }
     },
     {
       "name": "updated",
@@ -137,7 +279,29 @@
           "value": "3 days ago",
           "code": "not_in_format"
         }
-      ]
+      ],
+      "stats": {
+        "values": 57,
+        "empty": 0,
+        "length": {
+          "min": 10,
+          "max": 19
+        },
+        "min": "2019-01-06T02:05:17Z",
+        "max": "2026-11-02T07:03:37Z",
+        "distinct": 57,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9-9-9 9:9:9",
+            "count": 56
+          },
+          {
+            "shape": "9 a a",
+            "count": 1
+          }
+        ]
+      }
     },
     {
       "name": "name",
@@ -156,7 +320,53 @@
           "value": "caf�",
           "code": "invalid_utf8"
         }
-      ]
+      ],
+      "stats": {
+        "values": 57,
+        "empty": 0,
+        "length": {
+          "min": 4,
+          "max": 60
+        },
+        "distinct": 47,
+        "top": [
+          {
+            "value": "Bo Lee",
+            "count": 3
+          },
+          {
+            "value": "Émile Østergaard",
+            "count": 3
+          },
+          {
+            "value": "Günter OBrien",
+            "count": 2
+          },
+          {
+            "value": "Bo Smith",
+            "count": 2
+          },
+          {
+            "value": "Hana Østergaard",
+            "count": 2
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a a",
+            "count": 19
+          },
+          {
+            "shape": "aUa a",
+            "count": 7
+          },
+          {
+            "shape": "a, a",
+            "count": 6
+          }
+        ],
+        "shapes_estimated": true
+      }
     }
   ],
   "problems": [],

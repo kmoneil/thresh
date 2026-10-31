@@ -113,7 +113,25 @@ $ cat reports/harvest_dirty.csv.report.json
       "type": "int64",
       "nulls": 1,
       "mismatches": 0,
-      "conformance": 1.0
+      "conformance": 1.0,
+      "stats": {
+        "values": 28,
+        "empty": 1,
+        "length": {
+          "min": 1,
+          "max": 2
+        },
+        "min": "1",
+        "max": "30",
+        "distinct": 28,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9",
+            "count": 28
+          }
+        ]
+      }
     },
     {
       "name": "picked_on",
@@ -129,14 +147,78 @@ $ cat reports/harvest_dirty.csv.report.json
           "value": "2026-09-31",
           "code": "not_in_format"
         }
-      ]
+      ],
+      "stats": {
+        "values": 29,
+        "empty": 0,
+        "length": {
+          "min": 10,
+          "max": 10
+        },
+        "min": "2026-09-01",
+        "max": "2026-09-28",
+        "distinct": 27,
+        "top": [
+          {
+            "value": "2026-09-02",
+            "count": 2
+          },
+          {
+            "value": "2026-09-03",
+            "count": 2
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "9-9-9",
+            "count": 29
+          }
+        ]
+      }
     },
     {
       "name": "orchard_row",
       "type": "string",
       "nulls": 0,
       "mismatches": 0,
-      "conformance": 1.0
+      "conformance": 1.0,
+      "stats": {
+        "values": 29,
+        "empty": 0,
+        "length": {
+          "min": 3,
+          "max": 3
+        },
+        "distinct": 12,
+        "top": [
+          {
+            "value": "R02",
+            "count": 3
+          },
+          {
+            "value": "R03",
+            "count": 3
+          },
+          {
+            "value": "R04",
+            "count": 3
+          },
+          {
+            "value": "R05",
+            "count": 3
+          },
+          {
+            "value": "R06",
+            "count": 3
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a9",
+            "count": 29
+          }
+        ]
+      }
     },
     {
       "name": "lug_kg",
@@ -150,14 +232,98 @@ $ cat reports/harvest_dirty.csv.report.json
           "value": "18,5",
           "code": "not_decimal"
         }
-      ]
+      ],
+      "stats": {
+        "values": 29,
+        "empty": 0,
+        "length": {
+          "min": 4,
+          "max": 4
+        },
+        "min": "14.0",
+        "max": "22.2",
+        "distinct": 24,
+        "top": [
+          {
+            "value": "14.1",
+            "count": 2
+          },
+          {
+            "value": "18.4",
+            "count": 2
+          },
+          {
+            "value": "14.9",
+            "count": 2
+          },
+          {
+            "value": "19.9",
+            "count": 2
+          },
+          {
+            "value": "17.1",
+            "count": 2
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "9.9",
+            "count": 28
+          },
+          {
+            "shape": "9,9",
+            "count": 1
+          }
+        ]
+      }
     },
     {
       "name": "cultivar",
       "type": "string",
       "nulls": 0,
       "mismatches": 0,
-      "conformance": 1.0
+      "conformance": 1.0,
+      "stats": {
+        "values": 29,
+        "empty": 0,
+        "length": {
+          "min": 7,
+          "max": 9
+        },
+        "distinct": 5,
+        "top": [
+          {
+            "value": "Marrowdew",
+            "count": 9
+          },
+          {
+            "value": "Starfall",
+            "count": 7
+          },
+          {
+            "value": "Brookwood",
+            "count": 5
+          },
+          {
+            "value": "Quillon",
+            "count": 4
+          },
+          {
+            "value": "Ember Pip",
+            "count": 4
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a",
+            "count": 25
+          },
+          {
+            "shape": "a a",
+            "count": 4
+          }
+        ]
+      }
     },
     {
       "name": "bruised",
@@ -171,14 +337,76 @@ $ cat reports/harvest_dirty.csv.report.json
           "value": "maybe",
           "code": "not_bool"
         }
-      ]
+      ],
+      "stats": {
+        "values": 29,
+        "empty": 0,
+        "length": {
+          "min": 4,
+          "max": 5
+        },
+        "distinct": 3,
+        "top": [
+          {
+            "value": "false",
+            "count": 23
+          },
+          {
+            "value": "true",
+            "count": 5
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a",
+            "count": 29
+          }
+        ]
+      }
     },
     {
       "name": "remark",
       "type": "string",
       "nulls": 16,
       "mismatches": 0,
-      "conformance": 1.0
+      "conformance": 1.0,
+      "stats": {
+        "values": 13,
+        "empty": 16,
+        "length": {
+          "min": 5,
+          "max": 10
+        },
+        "distinct": 6,
+        "top": [
+          {
+            "value": "windfall",
+            "count": 4
+          },
+          {
+            "value": "frost",
+            "count": 3
+          },
+          {
+            "value": "sunburn",
+            "count": 2
+          },
+          {
+            "value": "shade side",
+            "count": 2
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a",
+            "count": 10
+          },
+          {
+            "shape": "a a",
+            "count": 3
+          }
+        ]
+      }
     }
   ],
   "problems": [],

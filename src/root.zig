@@ -10,5 +10,7 @@ pub const input = @import("input.zig");
 pub const schema = @import("schema.zig");
 pub const validate = @import("validate.zig");
 pub const builders = @import("builders.zig");
+pub const stats = @import("stats.zig");
+pub const infer = @import("infer.zig");
 pub const csv = @import("write/csv.zig");
 pub const arrow = @import("write/arrow.zig");

@@ -17,6 +17,7 @@ const Field = @import("records.zig").Field;
 const reference = @import("reference.zig");
 const report = @import("report.zig");
 const schema = @import("schema.zig");
+const stats = @import("stats.zig");
 const validate = @import("validate.zig");
 
 const doc_text = @embedFile("report_doc");
@@ -208,6 +209,22 @@ fn written(a: Allocator, comptime f: anytype, args: anytype) ![]const u8 {
 }
 
 const ok_outcome: report.Outcome = .{ .file = "a.csv", .bytes = 120, .rows = 5, .result = .pass, .written = "out/a.csv" };
+
+/// Column statistics with every field set: past every cap, and sampled.
+const full_stats: stats.Summary = .{
+    .values = 70_000,
+    .empty = 12,
+    .length = .{ .min = 4, .max = 5 },
+    .min = "14.30",
+    .max = "22.90",
+    .distinct = 1000,
+    .distinct_at_least = true,
+    .top = &.{ .{ .value = "18.10", .count = 840 }, .{ .value = "14.70", .count = 610 } },
+    .top_estimated = true,
+    .shapes = &.{.{ .shape = "9.9", .count = 65_536 }},
+    .shapes_estimated = true,
+    .sampled = 65_536,
+};
 const error_outcome: report.Outcome = .{ .file = "b.csv", .result = .@"error", .problem = .{ .header_width = .{ .header_fields = 3, .fields = 4 } } };
 
 test "docs/REPORT.md: the reports' fields, as thresh writes them" {
@@ -215,7 +232,7 @@ test "docs/REPORT.md: the reports' fields, as thresh writes them" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    var v: validate.Validator = try .init(testing.allocator, &sample_schema, verdict('"').dialect, .{});
+    var v: validate.Validator = try .init(testing.allocator, &sample_schema, verdict('"').dialect, .{ .stats = true });
     defer v.deinit();
     var p: reference.Parser = .init(sample_input, .rfc4180, .{});
     var fields: std.ArrayList(Field) = .empty;
@@ -240,6 +257,14 @@ test "docs/REPORT.md: the reports' fields, as thresh writes them" {
         try written(a, report.writeFileReport, .{ try report.fileOf(a, read, .{ .verdict = verdict('"'), .validator = &v }), true }),
         try written(a, report.writeFileReport, .{ try report.fileOf(a, error_outcome, .{ .verdict = verdict(null) }), true }),
         try written(a, report.writeFileReport, .{ try report.fileOf(a, error_outcome, .{}), true }),
+        // A column's statistics, every field of them.
+        try written(a, report.writeFileReport, .{ report.File{ .outcome = ok_outcome, .read = .{
+            .columns = &.{.{ .name = "lug_kg", .type = .decimal, .nulls = 0, .mismatches = 0, .conformance = 1, .stats = full_stats }},
+            .rows_rejected = 0,
+            .rejected_sample = &.{},
+            .row_errors = .initFill(0),
+            .repeated_header_rows = &.{},
+        } }, true }),
     });
     _ = try expectDocumented(a, "summary", report.format_version, &.{
         try written(a, report.writeSummary, .{ &[_]report.Outcome{ ok_outcome, error_outcome }, @as(u8, 2) }),
@@ -301,7 +326,7 @@ test "docs/REPORT.md: the schema's fields, as infer writes and --schema reads th
         .format_version = schema.format_version,
         .columns = &.{
             .{ .name = "lug_id", .type = .int64, .nullable = false, .inferred = true, .conformance = 0.5, .samples = &.{"1"}, .widened_by = "b.csv" },
-            .{ .name = "lug_kg", .type = .decimal, .precision = 18, .scale = 2 },
+            .{ .name = "lug_kg", .type = .decimal, .precision = 18, .scale = 2, .stats = full_stats },
             .{ .name = "picked_on", .type = .date, .format = "%d/%m/%Y", .day_first = true, .nulls = &.{"-"} },
             .{ .name = "cultivar", .type = .@"enum", .values = &.{ "Starfall", "Quillon" }, .case_insensitive = true },
             .{ .name = "remark", .type = .string, .max_len = 200, .utf8 = .replace },

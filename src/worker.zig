@@ -15,6 +15,7 @@ const validate = @import("validate.zig");
 const report = @import("report.zig");
 const Problem = @import("problem.zig").Problem;
 const infer = @import("infer.zig");
+const stats = @import("stats.zig");
 const Encoding = @import("types.zig").Encoding;
 
 pub const Env = struct {
@@ -46,6 +47,11 @@ pub const Options = struct {
     /// lib.infer and lib.inferFiles: files read at once, on threads of the
     /// call's own; 0 for one a CPU core.
     jobs: usize = 1,
+    /// Each column's statistics (stats.zig) in validate's report. They
+    /// cost a validate up to twice its time on a file small enough to be
+    /// sampled whole, so the CLI asks for them only with a report to put
+    /// them in. infer always has them.
+    stats: bool = true,
     /// Strings read as null in every column, besides the schema's (infer:
     /// besides "").
     nulls: []const []const u8 = &.{},
@@ -133,6 +139,8 @@ pub const Reader = struct {
             .strict = opts.strict,
             .day_first = opts.day_first,
             .ragged = opts.ragged,
+            .stats = opts.stats,
+            .stats_stride = statsStride(sniffed.in.data(), sniffed.in.size, verdict),
         });
         errdefer v.deinit();
         var scanner: records.Scanner = try .init(env.gpa, verdict.dialect, .{
@@ -229,6 +237,17 @@ pub const Reader = struct {
         return report.fileOf(arena, out, .{ .verdict = r.verdict, .validator = &r.v, .encoding = r.opts.encoding });
     }
 };
+
+/// The stride a file of size bytes is sampled at for its columns'
+/// statistics, from the line breaks in the first 64 KiB on hand: the
+/// sniffer's own count is of the records it scored, not of its sample. A
+/// line break inside quotes only makes rows look shorter, so fewer are
+/// sampled.
+fn statsStride(data: []const u8, size: u64, v: dialect.Verdict) u64 {
+    const head = data[@min(v.start, data.len)..@min(data.len, 1 << 16)];
+    const newline: u8 = if (v.dialect.newline == .cr) '\r' else '\n';
+    return stats.strideFor(size, std.mem.countScalar(u8, head, newline), head.len);
+}
 
 /// Why a file stops at its sniff, before it is read, if it does: its
 /// dialect is not settled, or the sample's quotes look like data.
@@ -332,6 +351,7 @@ pub fn inferFile(env: Env, opts: Options, nulls: []const []const u8, path: []con
         .nulls = nulls,
         .encoding = opts.encoding,
         .day_first = opts.day_first,
+        .stats_stride = statsStride(in.data(), in.size, verdict),
     });
     var s: records.Scanner = try .init(gpa, verdict.dialect, .{
         .reference = .{ .start = verdict.start, .keep_empty = opts.keep_empty },

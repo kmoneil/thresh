@@ -5,6 +5,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
+const stats = @import("stats.zig");
 
 pub const Type = enum {
     bool,
@@ -109,6 +110,21 @@ pub const Column = struct {
     /// The file that took the column's type down the lattice, when infer
     /// merged several.
     widened_by: ?[]const u8 = null,
+    /// infer: what the column's values are like (stats.zig).
+    stats: ?stats.Summary = null,
+
+    /// How the column's least and greatest value are written.
+    pub fn statsFormat(c: Column) stats.Format {
+        return switch (c.type) {
+            .int64 => .int,
+            .float64 => .float,
+            .decimal => .{ .decimal = c.scale },
+            .date => .date,
+            .timestamp => .timestamp,
+            .time => .time,
+            .bool, .string, .@"enum", .binary => .none,
+        };
+    }
 
     /// The column as JSON: its name and type, and only the fields that
     /// say something, so a written schema reads like a hand-written one.
@@ -157,6 +173,13 @@ pub const Column = struct {
         if (c.inferred) |i| {
             try s.objectField("inferred");
             try s.write(i);
+        }
+        if (c.stats) |st| {
+            try s.objectField("stats");
+            const emit = s.options.emit_null_optional_fields;
+            s.options.emit_null_optional_fields = false;
+            defer s.options.emit_null_optional_fields = emit;
+            try s.write(st);
         }
         try s.endObject();
     }
@@ -214,6 +237,7 @@ fn dupeField(a: Allocator, x: anytype) Allocator.Error!@TypeOf(x) {
             return out;
         },
         ?[]const u8, ?[]const []const u8 => if (x) |v| try dupeField(a, v) else null,
+        ?stats.Summary => if (x) |v| try v.dupe(a) else null,
         else => x,
     };
 }

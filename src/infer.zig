@@ -48,6 +48,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const dp = @import("dateparsa");
 const schema = @import("schema.zig");
+const stats = @import("stats.zig");
 const types = @import("types.zig");
 
 /// The lattice, top first.
@@ -131,6 +132,8 @@ pub const ColumnState = struct {
     misfit_row: u64 = 0,
     /// Values a --threshold let the column refuse: its conformance.
     tolerated: u64 = 0,
+    /// What its values are like (stats.zig), in the inferrer's arena.
+    stats: ?*stats.Column = null,
 };
 
 /// The most values the rest of a column may refuse and still be followed.
@@ -141,6 +144,9 @@ pub const Options = struct {
     nulls: []const []const u8 = &.{""},
     encoding: types.Encoding = .utf8,
     day_first: bool = false,
+    /// Every stats_stride-th row is sampled for the columns' distinct,
+    /// most common values and shapes (stats.strideFor).
+    stats_stride: u64 = 1,
 };
 
 /// One file's pass 1.
@@ -159,6 +165,12 @@ pub const Inferrer = struct {
     wide_rows: u64 = 0,
     wide_line: u64 = 0,
     format_buf: [128]u8 = undefined,
+    /// The row being read is one the columns' statistics sample.
+    sampled: bool = false,
+    /// The instant time last read, in microseconds, and the number
+    /// numberFrom last read, for the column's least and greatest.
+    last_time: i64 = 0,
+    last_number: ?stats.Extreme = null,
 
     pub fn init(arena: Allocator, options: Options) Inferrer {
         return .{ .arena = arena, .options = options };
@@ -169,10 +181,16 @@ pub const Inferrer = struct {
     pub fn header(f: *Inferrer, names: ?[]const []const u8, width: usize) Allocator.Error!void {
         if (names) |ns| {
             f.named = true;
-            for (try schema.headerNames(f.arena, ns)) |name| try f.columns.append(f.arena, .{ .name = name });
+            for (try schema.headerNames(f.arena, ns)) |name| try f.addColumn(name);
             return;
         }
-        for (0..width) |i| try f.columns.append(f.arena, .{ .name = try std.fmt.allocPrint(f.arena, "column{d}", .{i + 1}) });
+        for (0..width) |i| try f.addColumn(try std.fmt.allocPrint(f.arena, "column{d}", .{i + 1}));
+    }
+
+    fn addColumn(f: *Inferrer, name: []const u8) Allocator.Error!void {
+        const s = try f.arena.create(stats.Column);
+        s.* = try .init(f.arena, f.options.encoding);
+        try f.columns.append(f.arena, .{ .name = name, .stats = s });
     }
 
     /// One record's values, in the header's order. A record wider than a
@@ -186,8 +204,9 @@ pub const Inferrer = struct {
             return;
         }
         f.rows += 1;
+        f.sampled = (f.rows - 1) % f.options.stats_stride == 0;
         while (f.columns.items.len < values.len) {
-            try f.columns.append(f.arena, .{ .name = try std.fmt.allocPrint(f.arena, "column{d}", .{f.columns.items.len + 1}) });
+            try f.addColumn(try std.fmt.allocPrint(f.arena, "column{d}", .{f.columns.items.len + 1}));
         }
         for (values, f.columns.items[0..values.len]) |v, *c| try f.observe(c, v);
     }
@@ -198,6 +217,7 @@ pub const Inferrer = struct {
     }
 
     fn observe(f: *Inferrer, c: *ColumnState, v: []const u8) Allocator.Error!void {
+        if (c.stats) |s| s.field(v);
         if (f.isNull(v)) {
             c.nulls += 1;
             return;
@@ -207,16 +227,20 @@ pub const Inferrer = struct {
         c.values += 1;
         c.max_len = @max(c.max_len, v.len);
         try f.sample(c, v);
+        if (c.stats) |s| s.value(v, f.sampled);
         if (c.kind == .string) return f.noteString(c, v);
         const t = std.mem.trim(u8, v, " \t");
         const before = Lattice.of(c);
+        f.last_number = null;
         c.kind = f.narrow(c, t);
+        if (c.stats) |s| f.extreme(s, c.kind, t);
         if (c.kind == .string and before.kind != .null) {
             // Sent to string: keep the column as it stood, to follow the rest.
             const r = c.rest orelse try f.arena.create(ColumnState);
             r.* = c.*;
             before.restore(r);
             r.rest = null;
+            r.stats = null;
             c.rest = r;
             c.misfits = 1;
             c.misfit_row = if (f.line != 0) f.line else f.rows;
@@ -235,6 +259,23 @@ pub const Inferrer = struct {
         before.restore(r);
         c.misfits += 1;
         if (c.misfits > max_misfits) c.rest = null;
+    }
+
+    /// t, a value the column now has kind for, into its least and
+    /// greatest. A number counts from a bool column's first values on, as
+    /// 1 and 0 are the start of an int64 column too; a date or timestamp
+    /// as the instant it was read as.
+    fn extreme(f: *const Inferrer, s: *stats.Column, kind: Kind, t: []const u8) void {
+        switch (kind) {
+            // A bool column's 1s and 0s may be the start of an int64's.
+            .bool => if (t.len == 1 and (t[0] == '0' or t[0] == '1')) s.int(t[0] - '0'),
+            .int64, .decimal, .float64 => if (f.last_number) |x| switch (x) {
+                .int => |n| s.int(n),
+                .float => |v| s.float(v),
+            },
+            .date, .timestamp => s.int(f.last_time),
+            .null, .string => {},
+        }
     }
 
     fn noteString(f: *const Inferrer, c: *ColumnState, v: []const u8) void {
@@ -268,9 +309,9 @@ pub const Inferrer = struct {
                 // 1s and 0s are int64s; true and yes are not numbers.
                 if (c.bool_words) return .string;
                 c.int_digits = 1;
-                return numberFrom(c, v, .int64);
+                return numberFrom(c, v, .int64, &f.last_number);
             },
-            .int64, .decimal, .float64 => return numberFrom(c, v, c.kind),
+            .int64, .decimal, .float64 => return numberFrom(c, v, c.kind, &f.last_number),
             .date, .timestamp => return f.time(c, v) orelse .string,
             .string => return .string,
         }
@@ -284,7 +325,7 @@ pub const Inferrer = struct {
             // the lattice says bool, and the next value settles it.
             return .bool;
         }
-        const k = numberFrom(c, v, .int64);
+        const k = numberFrom(c, v, .int64, &f.last_number);
         if (k != .string) return k;
         return f.time(c, v) orelse .string;
     }
@@ -293,6 +334,7 @@ pub const Inferrer = struct {
     fn time(f: *Inferrer, c: *ColumnState, v: []const u8) ?Kind {
         const r = dp.parseWith(v, .{ .prefer_day_first = f.options.day_first }) catch return null;
         if (r.kind != .absolute or r.layout.source != .program) return null;
+        f.last_time = types.date.micros(r.time);
         var w: std.Io.Writer = .fixed(&f.format_buf);
         r.layout.formatString(.strftime, v, &w) catch {
             c.format_mixed = true;
@@ -426,36 +468,56 @@ fn hasTimeDirective(format: []const u8) bool {
 
 /// The digits of a decimal: before the point (leading zeros not counted)
 /// and after it. Null when v is not one.
-fn decimalShape(v: []const u8) ?struct { int: usize, frac: usize } {
+fn decimalShape(v: []const u8) ?struct { int: usize, frac: usize, value: ?f64 } {
     var i: usize = 0;
-    if (v.len > 0 and (v[0] == '-' or v[0] == '+')) i = 1;
+    var negative = false;
+    if (v.len > 0 and (v[0] == '-' or v[0] == '+')) {
+        negative = v[0] == '-';
+        i = 1;
+    }
     var int: usize = 0;
     var frac: usize = 0;
     var any = false;
     var significant = false;
+    // The digits as an integer while they fit one exactly, for the value.
+    var mantissa: u64 = 0;
+    var digits: usize = 0;
     while (i < v.len and std.ascii.isDigit(v[i])) : (i += 1) {
         any = true;
         if (v[i] != '0') significant = true;
         if (significant) int += 1;
+        digits += 1;
+        if (digits <= 18) mantissa = mantissa * 10 + (v[i] - '0');
     }
     if (i < v.len and v[i] == '.') {
         i += 1;
         while (i < v.len and std.ascii.isDigit(v[i])) : (i += 1) {
             any = true;
             frac += 1;
+            digits += 1;
+            if (digits <= 18) mantissa = mantissa * 10 + (v[i] - '0');
         }
     }
     if (!any or i != v.len) return null;
-    return .{ .int = int, .frac = frac };
+    const pow10 = [_]f64{ 1, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18 };
+    // One division of exact numbers, as parseFloat rounds it, while the
+    // digits fit; past 18 of them, parseFloat itself.
+    const value: ?f64 = if (digits <= 18) blk: {
+        const m: f64 = @floatFromInt(mantissa);
+        break :blk (if (negative) -m else m) / pow10[frac];
+    } else std.fmt.parseFloat(f64, v) catch null;
+    return .{ .int = int, .frac = frac, .value = value };
 }
 
 /// The numeric type, at least from, that takes v as well as every value the
 /// column has had: int64, then a decimal of up to 38 digits, then float64.
-fn numberFrom(c: *ColumnState, v: []const u8, from: Kind) Kind {
+/// number is v's value, read on the way, for the column's statistics.
+fn numberFrom(c: *ColumnState, v: []const u8, from: Kind, number: *?stats.Extreme) Kind {
     if (from == .int64) {
-        if (types.int.parse(v)) |_| {
+        if (types.int.parse(v)) |n| {
             const shape = decimalShape(v).?;
             c.int_digits = @intCast(@max(c.int_digits, shape.int));
+            number.* = .{ .int = n };
             return .int64;
         } else |_| {}
     }
@@ -466,13 +528,15 @@ fn numberFrom(c: *ColumnState, v: []const u8, from: Kind) Kind {
             if (@as(usize, int) + scale <= max_precision) {
                 c.int_digits = int;
                 c.scale = scale;
+                if (shape.value) |x| number.* = .{ .float = x };
                 return .decimal;
             }
         }
     }
-    if (types.float.parse(v) != null) {
+    if (types.float.parse(v)) |x| {
         // Digits alone, more than a float64 keeps: a key, not a quantity.
         if (integerDigits(v)) |n| if (n > float_exact_digits) return .string;
+        number.* = .{ .float = x };
         return .float64;
     }
     return .string;
@@ -556,6 +620,12 @@ pub fn columnsOf(arena: Allocator, states: []const ColumnState) Allocator.Error!
             },
             else => {},
         }
+        if (s.stats) |st| {
+            // A decimal's integers here are its values, not scaled ones as
+            // validate's are.
+            if (o.type == .decimal and st.order == .int) st.float(@floatFromInt(st.imin));
+            o.stats = try st.summary(arena, o.statsFormat());
+        }
     }
     return out;
 }
@@ -565,6 +635,7 @@ pub fn columnsOf(arena: Allocator, states: []const ColumnState) Allocator.Error!
 /// at string). file is the one b came from, named when it widened a.
 pub fn merge(a: *ColumnState, b: ColumnState, file: []const u8) void {
     const before = a.kind;
+    if (a.stats) |x| if (b.stats) |y| x.merge(y);
     a.nulls += b.nulls;
     a.values += b.values;
     a.tolerated += b.tolerated;
@@ -628,11 +699,49 @@ fn join(a: *const ColumnState, b: ColumnState) Kind {
 
 const testing = std.testing;
 
+test "decimalShape's value is parseFloat's" {
+    try testing.expectEqual(@as(?f64, -17.5), decimalShape("-17.50").?.value);
+    try testing.expectEqual(@as(?f64, 0.25), decimalShape("+.25").?.value);
+    // Past 18 digits, parseFloat's own.
+    try testing.expectEqual(@as(?f64, 1234567890.1234567891), decimalShape("1234567890.1234567891").?.value);
+    var buf: [16]u8 = undefined;
+    for (0..3000) |n| {
+        const v = try std.fmt.bufPrint(&buf, "{d}.{d:0>3}", .{ n / 7, n % 1000 });
+        try testing.expectEqual(try std.fmt.parseFloat(f64, v), decimalShape(v).?.value.?);
+    }
+}
+
 fn inferOne(arena: Allocator, values: []const []const u8) !ColumnState {
     var f: Inferrer = .init(arena, .{});
     try f.header(&.{"c"}, 1);
     for (values) |v| try f.record(&.{v});
     return f.columns.items[0];
+}
+
+test "statistics follow the column's type as it widens" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // 1 is read as a bool first, then the column is an int64: 1 counts.
+    const ids = (try columnsOf(a, &.{try inferOne(a, &.{ "1", "40", "", "7" })}))[0];
+    try testing.expectEqual(schema.Type.int64, ids.type);
+    try testing.expectEqualStrings("1", ids.stats.?.min.?);
+    try testing.expectEqualStrings("40", ids.stats.?.max.?);
+    try testing.expectEqual(@as(u64, 3), ids.stats.?.values);
+    try testing.expectEqual(@as(u64, 1), ids.stats.?.empty);
+    // int64, then a decimal: written at the decimal's scale.
+    const kg = (try columnsOf(a, &.{try inferOne(a, &.{ "12", "3.5", "-100.25" })}))[0];
+    try testing.expectEqualStrings("-100.25", kg.stats.?.min.?);
+    try testing.expectEqualStrings("12.00", kg.stats.?.max.?);
+    const days = (try columnsOf(a, &.{try inferOne(a, &.{ "2026-09-14", "2026-01-02", "2026-12-31" })}))[0];
+    try testing.expectEqual(schema.Type.date, days.type);
+    try testing.expectEqualStrings("2026-01-02", days.stats.?.min.?);
+    try testing.expectEqualStrings("2026-12-31", days.stats.?.max.?);
+    // A string column has lengths, not a least and greatest.
+    const words = (try columnsOf(a, &.{try inferOne(a, &.{ "pear", "fig", "pear" })}))[0];
+    try testing.expectEqual(@as(?[]const u8, null), words.stats.?.min);
+    try testing.expectEqual(stats.Summary.Range{ .min = 3, .max = 4 }, words.stats.?.length.?);
+    try testing.expectEqualStrings("pear", words.stats.?.top[0].value);
 }
 
 test "the lattice moves down and only down" {

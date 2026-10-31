@@ -46,7 +46,29 @@
           "value": "99999999999999999999",
           "code": "int_overflow"
         }
-      ]
+      ],
+      "stats": {
+        "values": 58,
+        "empty": 1,
+        "length": {
+          "min": 1,
+          "max": 20
+        },
+        "min": "1",
+        "max": "60",
+        "distinct": 58,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9",
+            "count": 57
+          },
+          {
+            "shape": "9a",
+            "count": 1
+          }
+        ]
+      }
     },
     {
       "name": "code",
@@ -60,7 +82,36 @@
           "value": "OPEN",
           "code": "not_in_enum"
         }
-      ]
+      ],
+      "stats": {
+        "values": 59,
+        "empty": 0,
+        "length": {
+          "min": 4,
+          "max": 7
+        },
+        "distinct": 4,
+        "top": [
+          {
+            "value": "open",
+            "count": 28
+          },
+          {
+            "value": "closed",
+            "count": 17
+          },
+          {
+            "value": "pending",
+            "count": 13
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a",
+            "count": 59
+          }
+        ]
+      }
     },
     {
       "name": "amount",
@@ -84,7 +135,33 @@
           "value": "12,50",
           "code": "not_decimal"
         }
-      ]
+      ],
+      "stats": {
+        "values": 59,
+        "empty": 0,
+        "length": {
+          "min": 5,
+          "max": 16
+        },
+        "min": "-4888.98",
+        "max": "19898.78",
+        "distinct": 59,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9.9",
+            "count": 43
+          },
+          {
+            "shape": "-9.9",
+            "count": 15
+          },
+          {
+            "shape": "9,9",
+            "count": 1
+          }
+        ]
+      }
     },
     {
       "name": "ratio",
@@ -103,7 +180,33 @@
           "value": "abc",
           "code": "not_float"
         }
-      ]
+      ],
+      "stats": {
+        "values": 48,
+        "empty": 11,
+        "length": {
+          "min": 3,
+          "max": 6
+        },
+        "min": "0.0122",
+        "max": "0.9629",
+        "distinct": 48,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9.9",
+            "count": 46
+          },
+          {
+            "shape": "9.9.9",
+            "count": 1
+          },
+          {
+            "shape": "a",
+            "count": 1
+          }
+        ]
+      }
     },
     {
       "name": "flag",
@@ -117,7 +220,32 @@
           "value": "maybe",
           "code": "not_bool"
         }
-      ]
+      ],
+      "stats": {
+        "values": 59,
+        "empty": 0,
+        "length": {
+          "min": 4,
+          "max": 5
+        },
+        "distinct": 3,
+        "top": [
+          {
+            "value": "true",
+            "count": 29
+          },
+          {
+            "value": "false",
+            "count": 29
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a",
+            "count": 59
+          }
+        ]
+      }
     },
     {
       "name": "created",
@@ -133,7 +261,30 @@
           "value": "2024-02-30",
           "code": "not_in_format"
         }
-      ]
+      ],
+      "stats": {
+        "values": 59,
+        "empty": 0,
+        "length": {
+          "min": 10,
+          "max": 10
+        },
+        "min": "2019-01-14",
+        "max": "2026-12-28",
+        "distinct": 58,
+        "top": [
+          {
+            "value": "2019-01-14",
+            "count": 2
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "9-9-9",
+            "count": 59
+          }
+        ]
+      }
     },
     {
       "name": "updated",
@@ -149,7 +300,29 @@
           "value": "3 days ago",
           "code": "not_in_format"
         }
-      ]
+      ],
+      "stats": {
+        "values": 59,
+        "empty": 0,
+        "length": {
+          "min": 10,
+          "max": 19
+        },
+        "min": "2019-01-07T03:35:57Z",
+        "max": "2026-10-12T21:05:08Z",
+        "distinct": 59,
+        "top": [],
+        "shapes": [
+          {
+            "shape": "9-9-9 9:9:9",
+            "count": 58
+          },
+          {
+            "shape": "9 a a",
+            "count": 1
+          }
+        ]
+      }
     },
     {
       "name": "name",
@@ -168,7 +341,52 @@
           "value": "caf�",
           "code": "invalid_utf8"
         }
-      ]
+      ],
+      "stats": {
+        "values": 59,
+        "empty": 0,
+        "length": {
+          "min": 4,
+          "max": 60
+        },
+        "distinct": 46,
+        "top": [
+          {
+            "value": "Fatima Kowalski",
+            "count": 4
+          },
+          {
+            "value": "Jo Kowalski",
+            "count": 3
+          },
+          {
+            "value": "Iñigo OBrien",
+            "count": 3
+          },
+          {
+            "value": "Dev OBrien",
+            "count": 2
+          },
+          {
+            "value": "Jo OBrien",
+            "count": 2
+          }
+        ],
+        "shapes": [
+          {
+            "shape": "a a",
+            "count": 26
+          },
+          {
+            "shape": "aUa a",
+            "count": 6
+          },
+          {
+            "shape": "a aUa",
+            "count": 5
+          }
+        ]
+      }
     }
   ],
   "problems": [],
