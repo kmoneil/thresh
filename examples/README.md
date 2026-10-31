@@ -55,11 +55,11 @@ $ thresh validate data/harvest_dirty.csv --schema harvest.schema.json --reject r
 fail  data/harvest_dirty.csv  30 rows  4 rejected  1 MB/s
 [exit 1]
 $ cat rejects/harvest_dirty.csv.rejects.csv
-lug_id,picked_on,orchard_row,lug_kg,cultivar,bruised,remark,_row,_errors
-4,2026-09-05,R05,"18,5",Marrowdew,false,,5,lug_kg:not a decimal
-8,2026-09-31,R09,19.2,Brookwood,false,,9,picked_on:not in the column's format
-12,2026-09-13,R01,18.7,Marrowdew,maybe,,13,bruised:not a bool
-21,extra,2026-09-22,R10,14.5,Ember Pip,false,ladder 2,22,*:a different number of fields
+lug_id,picked_on,orchard_row,lug_kg,cultivar,bruised,remark,_row,_errors,_extra
+4,2026-09-05,R05,"18,5",Marrowdew,false,,5,lug_kg:not a decimal,
+8,2026-09-31,R09,19.2,Brookwood,false,,9,picked_on:not in the column's format,
+12,2026-09-13,R01,18.7,Marrowdew,maybe,,13,bruised:not a bool,
+21,extra,2026-09-22,R10,14.5,Ember Pip,false,22,*:a different number of fields,ladder 2
 ```
 
 The empty key passed: an inferred column takes nulls. Say it may not, and
@@ -71,8 +71,8 @@ $ thresh validate data/harvest_dirty.csv --schema strict.schema.json --reject re
 fail  data/harvest_dirty.csv  30 rows  5 rejected  1 MB/s
 [exit 1]
 $ grep lug_id rejects/harvest_dirty.csv.rejects.csv
-lug_id,picked_on,orchard_row,lug_kg,cultivar,bruised,remark,_row,_errors
-,2026-09-17,R05,17.7,Marrowdew,false,,17,lug_id:null in a non-nullable column
+lug_id,picked_on,orchard_row,lug_kg,cultivar,bruised,remark,_row,_errors,_extra
+,2026-09-17,R05,17.7,Marrowdew,false,,17,lug_id:null in a non-nullable column,
 ```
 
 The report has the rest: per column, its nulls, its mismatches, how much
@@ -223,9 +223,9 @@ $ thresh validate data/remarks.csv --delimiter , --columns "lug_id:int64,picked_
 fail  data/remarks.csv  30 rows  20 rejected  1 MB/s
 [exit 1]
 $ head -3 rejects/remarks.csv.rejects.csv
-lug_id,picked_on,remark,lug_kg,_row,_errors
-2,2026-09-03,late pick, shade side,16.9,3,*:a different number of fields
-3,2026-09-04,sunburn, windfall, small,14.4,4,*:a different number of fields
+lug_id,picked_on,remark,lug_kg,_row,_errors,_extra
+2,2026-09-03,late pick, shade side,3,*:a different number of fields,16.9
+3,2026-09-04,sunburn, windfall,4,*:a different number of fields," small,14.4"
 ```
 
 ## Inch marks in a file that never quotes

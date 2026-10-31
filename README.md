@@ -26,11 +26,11 @@ $ thresh validate data/harvest_dirty.csv --schema harvest.schema.json --reject r
 fail  data/harvest_dirty.csv  30 rows  4 rejected  1 MB/s
 [exit 1]
 $ cat rejects/harvest_dirty.csv.rejects.csv
-lug_id,picked_on,orchard_row,lug_kg,cultivar,bruised,remark,_row,_errors
-4,2026-09-05,R05,"18,5",Marrowdew,false,,5,lug_kg:not a decimal
-8,2026-09-31,R09,19.2,Brookwood,false,,9,picked_on:not in the column's format
-12,2026-09-13,R01,18.7,Marrowdew,maybe,,13,bruised:not a bool
-21,extra,2026-09-22,R10,14.5,Ember Pip,false,ladder 2,22,*:a different number of fields
+lug_id,picked_on,orchard_row,lug_kg,cultivar,bruised,remark,_row,_errors,_extra
+4,2026-09-05,R05,"18,5",Marrowdew,false,,5,lug_kg:not a decimal,
+8,2026-09-31,R09,19.2,Brookwood,false,,9,picked_on:not in the column's format,
+12,2026-09-13,R01,18.7,Marrowdew,maybe,,13,bruised:not a bool,
+21,extra,2026-09-22,R10,14.5,Ember Pip,false,22,*:a different number of fields,ladder 2
 ```
 
 The report, one JSON file per input, has the rest: per column its nulls,
@@ -77,8 +77,9 @@ every option.
 
 **Reports.** `--report DIR` writes a JSON report per file and a
 `summary.json`; `--json` prints one object per file; `--reject DIR`
-writes each failing row with its source line (`_row`) and its errors
-(`_errors`). [docs/REPORT.md](docs/REPORT.md) describes every field and
+writes each failing row with its source line (`_row`), its errors
+(`_errors`) and a wide row's fields past the header (`_extra`).
+[docs/REPORT.md](docs/REPORT.md) describes every field and
 what may change between versions; [docs/PROBLEMS.md](docs/PROBLEMS.md)
 lists every code.
 

@@ -101,6 +101,8 @@ pub const Validator = struct {
     cells: []?types.Value,
     reject_header_written: bool = false,
     scratch: std.ArrayList(u8) = .empty,
+    /// A wide row's fields past the header, for the reject file's _extra.
+    extra: std.ArrayList(u8) = .empty,
     errors: std.ArrayList(u8) = .empty,
     values: std.ArrayList([]const u8) = .empty,
 
@@ -150,6 +152,7 @@ pub const Validator = struct {
         v.repeated_lines.deinit(v.gpa);
         v.structural.deinit(v.gpa);
         v.scratch.deinit(v.gpa);
+        v.extra.deinit(v.gpa);
         v.errors.deinit(v.gpa);
         v.values.deinit(v.gpa);
         v.arena.deinit();
@@ -177,7 +180,14 @@ pub const Validator = struct {
             v.names = names[0..schema_mod.headerWidth(names, width)];
             v.width = v.names.len;
             v.header_seen = true;
-        } else v.width = width;
+        } else {
+            v.width = width;
+            // The reject file's header, a name a field: the schema's by
+            // position, and columnN past them.
+            const names = try a.alloc([]const u8, width);
+            for (names, 0..) |*n, i| n.* = if (i < s.columns.len) s.columns[i].name else try std.fmt.allocPrint(a, "column{d}", .{i + 1});
+            v.names = names;
+        }
 
         if (by_name) {
             // Named as infer names them, so its schema matches its files.
@@ -343,7 +353,10 @@ pub const Validator = struct {
     }
 
     /// Counts the row as rejected and writes it to the reject file: its
-    /// fields as read, then _row (its source line) and _errors.
+    /// fields as read, a short row's padded to the header's width, then
+    /// _row (its source line), _errors and _extra (a wide row's fields past
+    /// the header, joined by the file's delimiter). Every line is as wide
+    /// as the header, so a reader that goes by it reads every row.
     fn rejectRow(v: *Validator, rec: Record, fields: []const Field, data: []const u8, base: u64) (Allocator.Error || Io.Writer.Error)!void {
         v.rejected += 1;
         if (v.rejected_sample.items.len < max_samples) try v.rejected_sample.append(v.gpa, rec.line);
@@ -354,14 +367,23 @@ pub const Validator = struct {
                 try csv.field(w, n, .{});
                 try csv.delimiter(w, .{});
             }
-            try w.writeAll("_row,_errors\n");
+            try w.writeAll("_row,_errors,_extra\n");
         }
-        for (fields) |f| {
-            try csv.field(w, try v.valueOf(f, data, base), .{});
+        for (0..v.names.len) |i| {
+            if (i < fields.len) try csv.field(w, try v.valueOf(fields[i], data, base), .{});
             try csv.delimiter(w, .{});
         }
         try w.print("{d},", .{rec.line});
         try csv.field(w, v.errors.items, .{});
+        try csv.delimiter(w, .{});
+        if (fields.len > v.names.len) {
+            v.extra.clearRetainingCapacity();
+            for (fields[v.names.len..], 0..) |f, i| {
+                if (i > 0) try v.extra.append(v.gpa, v.dialect.delimiter);
+                try v.extra.appendSlice(v.gpa, try v.valueOf(f, data, base));
+            }
+            try csv.field(w, v.extra.items, .{});
+        }
         try w.writeByte('\n');
     }
 
@@ -453,11 +475,62 @@ test "cells: mismatches, nulls and samples per column" {
     try testing.expectEqual(@as(u64, 1), v.stats[2].mismatches);
     try testing.expect(!v.passed());
     try testing.expectEqualStrings(
-        \\ID,Status,amount,_row,_errors
-        \\,open,2,4,id:null in a non-nullable column
-        \\4,maybe,"12,50",5,amount:not a decimal;status:not one of the enum's values
+        \\ID,Status,amount,_row,_errors,_extra
+        \\,open,2,4,id:null in a non-nullable column,
+        \\4,maybe,"12,50",5,amount:not a decimal;status:not one of the enum's values,
         \\
     , rejects.written());
+}
+
+/// Each record of a reject file's text: its fields' count, and its last.
+fn rejectLines(text: []const u8) !std.ArrayList(struct { usize, []const u8 }) {
+    var out: std.ArrayList(struct { usize, []const u8 }) = .empty;
+    errdefer out.deinit(testing.allocator);
+    var p: reference.Parser = .init(text, .rfc4180, .{});
+    var fields: std.ArrayList(Field) = .empty;
+    defer fields.deinit(testing.allocator);
+    while (try p.next(testing.allocator, &fields)) |_| try out.append(testing.allocator, .{ fields.items.len, fields.items[fields.items.len - 1].raw(text) });
+    return out;
+}
+
+test "the reject file is as wide as its header on every line" {
+    // A short row, a wide one, and one of the right width with a bad value.
+    const input = "id,amount,status\n1,1.50\n2,3.00,open,x,y\n3,bad,open\n";
+    var rejects: Io.Writer.Allocating = .init(testing.allocator);
+    defer rejects.deinit();
+    var v = try run(input, &orders, .{}, &rejects);
+    defer v.deinit();
+    try testing.expectEqualStrings(
+        \\id,amount,status,_row,_errors,_extra
+        \\1,1.50,,2,*:a different number of fields,
+        \\2,3.00,open,3,*:a different number of fields,"x,y"
+        \\3,bad,open,4,amount:not a decimal,
+        \\
+    , rejects.written());
+    var lines = try rejectLines(rejects.written());
+    defer lines.deinit(testing.allocator);
+    for (lines.items) |l| try testing.expectEqual(@as(usize, 6), l[0]);
+
+    // Without a header, by position, in a file wider than the schema: its
+    // names, then columnN.
+    const position: Schema = .{ .columns = orders.columns[0..2], .match = .position };
+    var r2: Io.Writer.Allocating = .init(testing.allocator);
+    defer r2.deinit();
+    var h: Validator = try .init(testing.allocator, &position, .rfc4180, .{});
+    defer h.deinit();
+    h.reject = &r2.writer;
+    const body = "1,x,a\n2,2.00,b,c\n";
+    var p: reference.Parser = .init(body, .rfc4180, .{});
+    var fields: std.ArrayList(Field) = .empty;
+    defer fields.deinit(testing.allocator);
+    try h.columns(null, 3, body, 0);
+    while (try p.next(testing.allocator, &fields)) |rec| try h.record(rec, fields.items, body, 0);
+    try testing.expectEqualStrings(
+        \\id,amount,column3,_row,_errors,_extra
+        \\1,x,a,1,amount:not a decimal,
+        \\2,2.00,b,2,*:a different number of fields,c
+        \\
+    , r2.written());
 }
 
 test "rows: ragged and broken rows count in row_errors, in no column, and against the file" {

@@ -55,7 +55,7 @@ value of another type than its row says.
 
 | Document | Version | Date | What changed |
 | --- | --- | --- | --- |
-| reports | 1 | 2026-10-31 | The first versioned format. Against what thresh wrote before: `format_version` added; the report's `structural`, the outcome's `problem` and a sample's `reason`, sentences that `problems[].message` and `samples[].code` now carry, removed; a row rejected whole counts in `row_errors` and no longer as a mismatch in every column, and `conformance` is over the rows read into columns |
+| reports | 1 | 2026-10-31 | The first versioned format. Against what thresh wrote before: `format_version` added; the report's `structural`, the outcome's `problem` and a sample's `reason`, sentences that `problems[].message` and `samples[].code` now carry, removed; a row rejected whole counts in `row_errors` and no longer as a mismatch in every column, and `conformance` is over the rows read into columns; the reject file gains `_extra`, and every line of it is as wide as its header |
 | schema | 1 | 2026-10-31 | `format_version` added |
 
 ## The file report
@@ -234,11 +234,15 @@ checked.
 
 Not JSON, but read by programs too, and versioned with the reports. With
 `--reject DIR`, each file with a rejected row has `DIR/<file>.rejects.csv`:
-RFC 4180 CSV (commas, double quotes, LF), a header of the file's column
-names (the schema's, for a file without a header), then each rejected
-row's fields as read, and two more:
+RFC 4180 CSV (commas, double quotes, LF). Its header is a name for each
+of the file's fields (the header's; for a file without one, the schema's
+by position, then `column4` and so on past them), then `_row`, `_errors`
+and `_extra`. Every line is as wide as the header: a rejected row's
+fields as read, a short row's padded with empty fields, then:
 
 - `_row`: the source line the row starts on, from 1.
 - `_errors`: what was wrong, `column:reason` for each value, joined by
   `;`, the reason as its sentence in [PROBLEMS.md](PROBLEMS.md#reasons);
   a whole row's (a ragged one, say) is `*:reason`.
+- `_extra`: a row wider than the header, its fields past it, joined by
+  the file's own delimiter as one field; empty for any other row.
