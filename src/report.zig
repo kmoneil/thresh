@@ -108,7 +108,7 @@ pub fn writeFileReport(w: *Io.Writer, o: Outcome, d: Details) Stringify.Error!vo
             try s.objectField("mismatches");
             try s.write(st.mismatches);
             try s.objectField("conformance");
-            try writeFraction(&s, validate.conformance(st, v.rows));
+            try writeFraction(&s, validate.conformance(st, v.columnRows()));
             if (c.format) |f| {
                 try s.objectField("format");
                 try s.write(f);

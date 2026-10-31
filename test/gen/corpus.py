@@ -985,9 +985,7 @@ def dirty_file(fname, d, encoding, missing):
             else:
                 raw = "%sBad%s quote" % (d.quote, d.quote)
                 values[-1] = raw
-            for n in names:
-                if n != missing:
-                    stats[n]["mismatches"] += 1
+            # Rejected whole: in row_errors, not in any column.
             rejected.append(line)
         else:
             if col is not None:
