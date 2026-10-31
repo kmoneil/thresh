@@ -1005,7 +1005,7 @@ def dirty_file(fname, d, encoding, missing):
         "rows_rejected": len(rejected),
         "rejected_sample": rejected[:10],
         "columns": [{"name": n, "mismatches": stats[n]["mismatches"], "nulls": stats[n]["nulls"]} for n in names],
-        "structural": ["the schema's column '%s' is not in the header" % missing] if missing else [],
+        "problems": [{"code": "column_missing", "column": missing}] if missing else [],
     }
     return w, columns, expect
 

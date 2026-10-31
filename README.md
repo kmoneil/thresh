@@ -78,7 +78,9 @@ every option.
 **Reports.** `--report DIR` writes a JSON report per file and a
 `summary.json`; `--json` prints one object per file; `--reject DIR`
 writes each failing row with its source line (`_row`) and its errors
-(`_errors`).
+(`_errors`). [docs/REPORT.md](docs/REPORT.md) describes every field and
+what may change between versions; [docs/PROBLEMS.md](docs/PROBLEMS.md)
+lists every code.
 
 **Exit status.** 0 every file passed; 1 a file failed validation but
 every file was processed (infer: the files disagree on their columns); 2

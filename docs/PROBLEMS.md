@@ -37,12 +37,12 @@ are the options that make it, named as `thresh --help` names them:
 | `encoding` | a list: read the file with `--encoding` set to any one of them |
 | `threshold` | a number: `--threshold` set to it |
 
-Where they appear:
+Where they appear ([REPORT.md](REPORT.md) has every field of each):
 
-- A file's report (`--report DIR`): `problems`, every structural problem,
-  beside `structural`, their sentences.
+- A file's report (`--report DIR`): `problems`, every problem that
+  stopped or failed the file.
 - `summary.json`'s `results`, and each `--json` line: `problems`, the file's
-  first problem (or none), beside `problem`, its sentence.
+  first problem (or none).
 - stderr: the sentence.
 
 ### A file thresh cannot read
@@ -125,8 +125,8 @@ A report's `warnings` and `sniff`'s are lists of codes. None stops a file.
 ## Reasons
 
 Why a value or a row was rejected. A report's column `samples` carry the
-code as `code` beside `reason`, its sentence; `row_errors` counts rows by
-code; a reject file's `_errors` names the sentence.
+code as `code`; `row_errors` counts rows by code; a reject file's
+`_errors` names the sentence.
 
 | Code | Sentence |
 | --- | --- |

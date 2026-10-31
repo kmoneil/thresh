@@ -1,4 +1,5 @@
 {
+  "format_version": 1,
   "file": "dirty-tab-sq-crlf-h-latin1.csv",
   "bytes": 4592,
   "rows": 60,
@@ -33,20 +34,17 @@
         {
           "row": 41,
           "value": "12a",
-          "code": "not_int",
-          "reason": "not an int64"
+          "code": "not_int"
         },
         {
           "row": 45,
           "value": "",
-          "code": "null_value",
-          "reason": "null in a non-nullable column"
+          "code": "null_value"
         },
         {
           "row": 49,
           "value": "99999999999999999999",
-          "code": "int_overflow",
-          "reason": "out of int64 range"
+          "code": "int_overflow"
         }
       ]
     },
@@ -60,8 +58,7 @@
         {
           "row": 53,
           "value": "OPEN",
-          "code": "not_in_enum",
-          "reason": "not one of the enum's values"
+          "code": "not_in_enum"
         }
       ]
     },
@@ -75,14 +72,12 @@
         {
           "row": 57,
           "value": "1234567890123.45",
-          "code": "decimal_precision",
-          "reason": "too many digits for the decimal's precision"
+          "code": "decimal_precision"
         },
         {
           "row": 61,
           "value": "1.234",
-          "code": "decimal_scale",
-          "reason": "too many digits after the point for the decimal's scale"
+          "code": "decimal_scale"
         }
       ]
     },
@@ -96,14 +91,12 @@
         {
           "row": 5,
           "value": "abc",
-          "code": "not_float",
-          "reason": "not a float64"
+          "code": "not_float"
         },
         {
           "row": 25,
           "value": "1.2.3",
-          "code": "not_float",
-          "reason": "not a float64"
+          "code": "not_float"
         }
       ]
     },
@@ -117,8 +110,7 @@
         {
           "row": 9,
           "value": "maybe",
-          "code": "not_bool",
-          "reason": "not a bool"
+          "code": "not_bool"
         }
       ]
     },
@@ -134,8 +126,7 @@
         {
           "row": 13,
           "value": "2024-02-30",
-          "code": "not_in_format",
-          "reason": "not in the column's format"
+          "code": "not_in_format"
         }
       ]
     },
@@ -151,8 +142,7 @@
         {
           "row": 17,
           "value": "3 days ago",
-          "code": "not_in_format",
-          "reason": "not in the column's format"
+          "code": "not_in_format"
         }
       ]
     },
@@ -166,13 +156,11 @@
         {
           "row": 21,
           "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-          "code": "too_long",
-          "reason": "longer than max_len"
+          "code": "too_long"
         }
       ]
     }
   ],
-  "structural": [],
   "problems": [],
   "rows_rejected": 15,
   "rejected_sample": [

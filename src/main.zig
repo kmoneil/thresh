@@ -219,6 +219,7 @@ fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer
         return code.worst(.unreadable);
     }
     const s: schema.Schema = .{
+        .format_version = schema.format_version,
         .columns = try infer.columnsOf(a, merged.items),
         .nulls = ctx.nulls,
         .match = if (all_headers) .name else .position,
@@ -467,8 +468,7 @@ fn sniff(env: Env, cfg: cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
         sniffed.in.close(env.io, env.gpa);
         const v = sniffed.verdict;
         if (cfg.json) {
-            try std.json.Stringify.value(.{ .file = path, .dialect = v, .warnings = v.warnings }, .{}, out);
-            try out.writeByte('\n');
+            try report.writeSniffLine(out, path, v);
         } else {
             try out.print("{s}: {f} confidence={t}", .{ path, v.dialect, v.confidence });
             if (@as(u8, @bitCast(v.warnings)) != 0) {
@@ -509,6 +509,7 @@ test {
     _ = report;
     _ = problem;
     _ = @import("problems_doc_test.zig");
+    _ = @import("format_test.zig");
     _ = worker;
     _ = infer;
     _ = pool;

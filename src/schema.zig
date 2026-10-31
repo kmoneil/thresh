@@ -162,7 +162,17 @@ pub const Column = struct {
     }
 };
 
+/// The version of the schema's format: what infer writes, and the newest
+/// parseJson reads. A schema without one is read as version 1, as a
+/// hand-written one is. A field added leaves it as it is (an older thresh
+/// refuses the field by name); a field removed or renamed, or one whose
+/// meaning changes, takes it to the next number, with a line in
+/// docs/REPORT.md's changes. The reports have their own, report.format_version.
+pub const format_version: u32 = 1;
+
 pub const Schema = struct {
+    /// Null when the schema leaves it out: version 1.
+    format_version: ?u32 = null,
     columns: []const Column,
     /// Strings read as null in every column.
     nulls: []const []const u8 = &.{""},
@@ -267,9 +277,14 @@ pub fn parseInline(gpa: Allocator, spec: []const u8, diag: *Diagnostic) Error!Ow
     return .{ .schema = schema, .arena = arena };
 }
 
-/// What JSON's types cannot say: names unique, decimals that fit, an
-/// enum with values, a threshold that is a fraction.
+/// What JSON's types cannot say: a version this thresh reads, names
+/// unique, decimals that fit, an enum with values, a threshold that is a
+/// fraction.
 fn check(s: Schema, diag: *Diagnostic) error{InvalidSchema}!void {
+    if (s.format_version) |v| {
+        if (v == 0) return diag.fail("format_version 0: versions start at 1", .{});
+        if (v > format_version) return diag.fail("format_version {d}: a newer thresh wrote this schema; this one reads up to version {d}", .{ v, format_version });
+    }
     if (s.columns.len == 0) return diag.fail("no columns", .{});
     for (s.columns, 0..) |c, i| {
         if (std.mem.trim(u8, c.name, " \t").len == 0) return diag.fail("column {d} has no name", .{i + 1});
@@ -379,6 +394,18 @@ test "bad schemas say why" {
     try expectRefused("{\"columns\":[{\"name\":\"a\",\"type\":\"decimal\",\"precision\":40}]}", "a: precision 40: from 1 to 38");
     try expectRefused("{\"columns\":[{\"name\":\"a\",\"type\":\"enum\"}]}", "a: an enum with no values");
     try expectRefused("{\"columns\":[{\"name\":\"a\",\"type\":\"bool\"}],\"threshold\":2}", "threshold 2: a fraction from 0 to 1");
+    try expectRefused("{\"format_version\":2,\"columns\":[{\"name\":\"a\",\"type\":\"bool\"}]}", "format_version 2: a newer thresh wrote this schema; this one reads up to version 1");
+    try expectRefused("{\"format_version\":0,\"columns\":[{\"name\":\"a\",\"type\":\"bool\"}]}", "format_version 0: versions start at 1");
+}
+
+test "a schema reads with its format_version, and without one" {
+    var diag: Diagnostic = .{};
+    var with = try parseJson(testing.allocator, "{\"format_version\":1,\"columns\":[{\"name\":\"a\",\"type\":\"bool\"}]}", &diag);
+    defer with.deinit();
+    try testing.expectEqual(@as(?u32, 1), with.schema.format_version);
+    var without = try parseJson(testing.allocator, "{\"columns\":[{\"name\":\"a\",\"type\":\"bool\"}]}", &diag);
+    defer without.deinit();
+    try testing.expectEqual(@as(?u32, null), without.schema.format_version);
 }
 
 test "inline errors" {
