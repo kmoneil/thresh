@@ -82,7 +82,9 @@ def main():
             rewritten += lines[last:start]
             for cmd, want, code in steps(lines[start:end]):
                 p = subprocess.run([sh, "-c", cmd], cwd=here, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-                got = p.stdout.decode("utf-8", "replace").rstrip("\n")
+                # A line as a terminal shows it: a program that writes CRLF
+                # on Windows (Python's print does) ends its lines the same.
+                got = p.stdout.decode("utf-8", "replace").replace("\r\n", "\n").rstrip("\n")
                 got = got.split("\n") if got else []
                 rewritten.append("$ " + cmd)
                 rewritten += got
