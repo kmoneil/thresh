@@ -344,7 +344,7 @@ fn expectReport(a: Allocator, name: []const u8, got_text: []const u8, want_text:
     const want = try std.json.parseFromSliceLeaky(std.json.Value, a, want_text, .{});
     const g = got.object;
     const w = want.object;
-    inline for (.{ "result", "rows", "rows_rejected", "rejected_sample", "structural" }) |key| {
+    inline for (.{ "result", "rows", "rows_rejected", "rejected_sample", "problems" }) |key| {
         if (!jsonEql(g.get(key).?, w.get(key).?)) {
             std.debug.print("{s}: {s} is {f}, the generator says {f}\n", .{ name, key, std.json.fmt(g.get(key).?, .{}), std.json.fmt(w.get(key).?, .{}) });
             return error.TestUnexpectedResult;
@@ -362,12 +362,19 @@ fn expectReport(a: Allocator, name: []const u8, got_text: []const u8, want_text:
     }
 }
 
+/// a is the report's, b the generator's: an object of the generator's
+/// says the keys it knows (a problem's code and parameters, not its
+/// sentence), and the report's has each of them the same.
 fn jsonEql(a: std.json.Value, b: std.json.Value) bool {
     return switch (a) {
         .integer => |x| b == .integer and b.integer == x,
         .string => |x| b == .string and std.mem.eql(u8, x, b.string),
         .array => |x| b == .array and x.items.len == b.array.items.len and for (x.items, b.array.items) |p, q| {
             if (!jsonEql(p, q)) break false;
+        } else true,
+        .object => |x| b == .object and for (b.object.keys(), b.object.values()) |k, v| {
+            const mine = x.get(k) orelse break false;
+            if (!jsonEql(mine, v)) break false;
         } else true,
         else => false,
     };
@@ -376,9 +383,10 @@ fn jsonEql(a: std.json.Value, b: std.json.Value) bool {
 /// The report, its "file" written as the base name, is the checked-in
 /// test/golden one byte for byte; -Dupdate-golden writes it instead.
 fn expectGolden(io: Io, a: Allocator, name: []const u8, got_text: []const u8) !void {
-    const first_nl = std.mem.findScalar(u8, got_text, '\n').?;
-    const second_nl = first_nl + 1 + std.mem.findScalar(u8, got_text[first_nl + 1 ..], '\n').?;
-    const normal = try std.fmt.allocPrint(a, "{s}\n  \"file\": \"{s}\",{s}", .{ got_text[0..first_nl], name, got_text[second_nl..] });
+    const key = "\n  \"file\": ";
+    const start = std.mem.find(u8, got_text, key).? + 1;
+    const end = start + std.mem.findScalar(u8, got_text[start..], '\n').?;
+    const normal = try std.fmt.allocPrint(a, "{s}  \"file\": \"{s}\",{s}", .{ got_text[0..start], name, got_text[end..] });
     const path = try std.fmt.allocPrint(a, "{s}/{s}.report.json", .{ build_options.golden_dir, name });
     if (build_options.update_golden) {
         try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = normal });

@@ -1,4 +1,5 @@
 {
+  "format_version": 1,
   "file": "dirty-comma-dq-lf-h-missing-column.csv",
   "bytes": 4188,
   "rows": 60,
@@ -83,9 +84,6 @@
       "mismatches": 0,
       "conformance": 1.0
     }
-  ],
-  "structural": [
-    "the schema's column 'flag' is not in the header"
   ],
   "problems": [
     {

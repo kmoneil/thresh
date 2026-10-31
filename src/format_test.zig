@@ -1,0 +1,312 @@
+//! docs/REPORT.md against the code. Each JSON document thresh writes is
+//! written here with every field it can have, and held to the doc's table
+//! for it: every field written has a row, of the type the row says, and
+//! every row is a field thresh still writes. So a field renamed or removed
+//! fails this until the doc drops its row, which docs/REPORT.md's
+//! "Versions" says needs a new format_version. Only main.zig's tests
+//! reference this file, as only its module embeds the doc.
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+const testing = std.testing;
+const dialect = @import("dialect.zig");
+const Field = @import("records.zig").Field;
+const reference = @import("reference.zig");
+const report = @import("report.zig");
+const schema = @import("schema.zig");
+const validate = @import("validate.zig");
+
+const doc_text = @embedFile("report_doc");
+
+/// A field's JSON types, as a row's second cell names them. A problem is an
+/// object PROBLEMS.md describes, held to it by problems_doc_test.zig.
+const Kind = enum { string, integer, number, boolean, null, array, object, problem };
+const Kinds = std.EnumSet(Kind);
+
+const Row = struct { kinds: Kinds, meaning: []const u8 };
+const Rows = std.StringArrayHashMapUnmanaged(Row);
+
+/// The table after `<!-- fields: name -->`: each row's field, the types
+/// named in backticks in its second cell, and its third.
+fn documented(a: Allocator, name: []const u8) !Rows {
+    const marker = try std.fmt.allocPrint(a, "<!-- fields: {s} -->", .{name});
+    const at = std.mem.find(u8, doc_text, marker) orelse {
+        std.debug.print("docs/REPORT.md: no {s}\n", .{marker});
+        return error.TestUnexpectedResult;
+    };
+    var rows: Rows = .empty;
+    var lines = std.mem.splitScalar(u8, doc_text[at + marker.len ..], '\n');
+    _ = lines.next();
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "|")) break;
+        if (!std.mem.startsWith(u8, line, "| `")) continue;
+        var cells = std.mem.splitScalar(u8, line, '|');
+        _ = cells.next();
+        const path = std.mem.trim(u8, cells.next().?, " `");
+        var ticks = std.mem.splitScalar(u8, cells.next() orelse "", '`');
+        var row: Row = .{ .kinds = .empty, .meaning = std.mem.trim(u8, cells.next() orelse "", " ") };
+        var inside = false;
+        while (ticks.next()) |t| : (inside = !inside) {
+            if (!inside) continue;
+            row.kinds.insert(std.meta.stringToEnum(Kind, t) orelse {
+                std.debug.print("docs/REPORT.md: {s} `{s}`: no type '{s}'\n", .{ name, path, t });
+                return error.TestUnexpectedResult;
+            });
+        }
+        try rows.put(a, path, row);
+    }
+    return rows;
+}
+
+fn kindOf(v: std.json.Value) Kind {
+    return switch (v) {
+        .null => .null,
+        .bool => .boolean,
+        .integer => .integer,
+        .float, .number_string => .number,
+        .string => .string,
+        .array => .array,
+        .object => .object,
+    };
+}
+
+/// Each field under v, at its path: `a.b` for a field of an object,
+/// `a[]` for an array's items, `a{}` for a map's values (a row for
+/// `a{}` says a is one), and no further into a problem. An array's
+/// objects need no row of their own: their fields have them.
+fn walk(a: Allocator, rows: *const Rows, seen: *std.StringArrayHashMapUnmanaged(Kinds), path: []const u8, v: std.json.Value) !void {
+    const items_of_their_own = v == .object and std.mem.endsWith(u8, path, "[]") and !rows.contains(path);
+    if (path.len > 0 and !items_of_their_own) {
+        const kind: Kind = if (v == .object and rows.contains(path) and rows.get(path).?.kinds.contains(.problem)) kind: {
+            const code = v.object.get("code");
+            const message = v.object.get("message");
+            if (code == null or code.? != .string or message == null or message.? != .string) {
+                std.debug.print("`{s}`: a problem without its code and message\n", .{path});
+                return error.TestUnexpectedResult;
+            }
+            break :kind .problem;
+        } else kindOf(v);
+        const kinds = try seen.getOrPut(a, path);
+        if (!kinds.found_existing) kinds.value_ptr.* = .empty;
+        kinds.value_ptr.insert(kind);
+        if (kind == .problem) return;
+    }
+    switch (v) {
+        .array => |items| {
+            const sub = try std.fmt.allocPrint(a, "{s}[]", .{path});
+            for (items.items) |item| try walk(a, rows, seen, sub, item);
+        },
+        .object => |o| {
+            const map = try std.fmt.allocPrint(a, "{s}{{}}", .{path});
+            for (o.keys(), o.values()) |k, item| {
+                const sub = if (rows.contains(map)) map else if (path.len == 0) k else try std.fmt.allocPrint(a, "{s}.{s}", .{ path, k });
+                try walk(a, rows, seen, sub, item);
+            }
+        },
+        else => {},
+    }
+}
+
+/// The documents against the doc's table for name; each says it is
+/// version.
+fn expectDocumented(a: Allocator, name: []const u8, version: u32, texts: []const []const u8) !std.StringArrayHashMapUnmanaged(Kinds) {
+    const rows = try documented(a, name);
+    var seen: std.StringArrayHashMapUnmanaged(Kinds) = .empty;
+    for (texts) |text| {
+        const v = try std.json.parseFromSliceLeaky(std.json.Value, a, text, .{});
+        const said = v.object.get("format_version") orelse .null;
+        if (said != .integer or said.integer != version) {
+            std.debug.print("a {s} says format_version {f}, not {d}\n", .{ name, std.json.fmt(said, .{}), version });
+            return error.TestUnexpectedResult;
+        }
+        try walk(a, &rows, &seen, "", v);
+    }
+    var ok = true;
+    for (seen.keys(), seen.values()) |path, kinds| {
+        const row = rows.get(path) orelse {
+            std.debug.print("docs/REPORT.md: the {s} writes `{s}`, which has no row: add one (a field added needs no new format_version)\n", .{ name, path });
+            ok = false;
+            continue;
+        };
+        var it = kinds.iterator();
+        while (it.next()) |k| {
+            if (row.kinds.contains(k) or (k == .integer and row.kinds.contains(.number))) continue;
+            std.debug.print("docs/REPORT.md: the {s}'s `{s}` is {t} where its row says otherwise: a field's type changed needs a new format_version\n", .{ name, path, k });
+            ok = false;
+        }
+    }
+    for (rows.keys()) |path| if (!seen.contains(path)) {
+        std.debug.print("docs/REPORT.md: the {s}'s `{s}` has a row and thresh did not write it: a field removed or renamed needs a new format_version (docs/REPORT.md, \"Versions\"); a field kept needs a value here that writes it\n", .{ name, path });
+        ok = false;
+    };
+    if (!ok) return error.TestUnexpectedResult;
+    return seen;
+}
+
+/// Each of E's values is named in backticks in the row for path.
+fn expectValues(a: Allocator, name: []const u8, path: []const u8, comptime E: type) !void {
+    const rows = try documented(a, name);
+    const meaning = (rows.get(path) orelse return error.TestUnexpectedResult).meaning;
+    for (std.enums.values(E)) |e| {
+        const want = try std.fmt.allocPrint(a, "`{t}`", .{e});
+        if (std.mem.find(u8, meaning, want) == null) {
+            std.debug.print("docs/REPORT.md: the {s}'s `{s}` does not list {s}: a value added to a closed list needs a new format_version\n", .{ name, path, want });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+/// A file with a value that does not fit, ambiguous dates, a column the
+/// schema does not have, a repeated header and a ragged row.
+const sample_input =
+    "id,made,seen,note\n" ++
+    "1,2024-01-02,03/04/2024,a\n" ++
+    "x,2024-01-03,05/06/2024,b\n" ++
+    "id,made,seen,note\n" ++
+    "4,2024-01-04,07/08/2024,c,d\n" ++
+    "5,2024-01-05,09/10/2024,e\n";
+
+const sample_schema: schema.Schema = .{ .columns = &.{
+    .{ .name = "id", .type = .int64 },
+    .{ .name = "made", .type = .date, .format = "%Y-%m-%d" },
+    .{ .name = "seen", .type = .date },
+} };
+
+fn verdict(quote: ?u8) dialect.Verdict {
+    return .{
+        .dialect = .{ .delimiter = ',', .quote = quote, .escape = .doubled, .newline = .lf, .header = true, .comment = '#' },
+        .confidence = .high,
+        .score = 1.5,
+        .consistency = 1,
+        .fields = 4,
+        .records = 6,
+        .sample_len = sample_input.len,
+        .start = 0,
+        .warnings = .{ .utf8_bom = true },
+        .runners_up = .{ .{ .delimiter = ';', .score = 0.25 }, .{ .delimiter = '\t', .score = 0.125 } },
+    };
+}
+
+fn written(a: Allocator, comptime f: anytype, args: anytype) ![]const u8 {
+    var w: Io.Writer.Allocating = .init(a);
+    try @call(.auto, f, .{&w.writer} ++ args);
+    return w.written();
+}
+
+const ok_outcome: report.Outcome = .{ .file = "a.csv", .bytes = 120, .rows = 5, .result = .pass, .written = "out/a.csv" };
+const error_outcome: report.Outcome = .{ .file = "b.csv", .result = .@"error", .problem = .{ .header_width = .{ .header_fields = 3, .fields = 4 } } };
+
+test "docs/REPORT.md: the reports' fields, as thresh writes them" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var v: validate.Validator = try .init(testing.allocator, &sample_schema, verdict('"').dialect, .{});
+    defer v.deinit();
+    var p: reference.Parser = .init(sample_input, .rfc4180, .{});
+    var fields: std.ArrayList(Field) = .empty;
+    defer fields.deinit(testing.allocator);
+    var first = true;
+    while (try p.next(testing.allocator, &fields)) |rec| {
+        if (first) {
+            first = false;
+            try v.columns(fields.items, fields.items.len, sample_input, 0);
+        } else try v.record(rec, fields.items, sample_input, 0);
+    }
+    try v.structural.append(testing.allocator, .{ .column_missing = .{ .column = "qty" } });
+    const read: report.Outcome = .{
+        .file = "a.csv",
+        .bytes = sample_input.len,
+        .rows = v.rows,
+        .rows_rejected = v.rejected,
+        .result = .fail,
+        .timing = .{ .sniff_ns = 1_000_000, .parse_ns = 2_000_000, .write_ns = 3_000_000 },
+    };
+    _ = try expectDocumented(a, "report", report.format_version, &.{
+        try written(a, report.writeFileReport, .{ read, report.Details{ .verdict = verdict('"'), .schema = &sample_schema, .validator = &v } }),
+        try written(a, report.writeFileReport, .{ error_outcome, report.Details{ .verdict = verdict(null) } }),
+        try written(a, report.writeFileReport, .{ error_outcome, report.Details{} }),
+    });
+    _ = try expectDocumented(a, "summary", report.format_version, &.{
+        try written(a, report.writeSummary, .{ &[_]report.Outcome{ ok_outcome, error_outcome }, @as(u8, 2) }),
+    });
+    _ = try expectDocumented(a, "line", report.format_version, &.{
+        try written(a, report.writeJsonLine, .{ok_outcome}),
+        try written(a, report.writeJsonLine, .{error_outcome}),
+    });
+    _ = try expectDocumented(a, "sniff", report.format_version, &.{
+        try written(a, report.writeSniffLine, .{ "a.csv", verdict('"') }),
+        try written(a, report.writeSniffLine, .{ "b.csv", verdict(null) }),
+    });
+
+    for ([_][]const u8{ "report", "sniff" }) |name| {
+        try expectValues(a, name, "dialect.escape", dialect.Dialect.Escape);
+        try expectValues(a, name, "dialect.newline", dialect.Dialect.Newline);
+        try expectValues(a, name, "dialect.confidence", dialect.Confidence);
+    }
+    try expectValues(a, "report", "result", report.Result);
+    try expectValues(a, "summary", "results[].result", report.Result);
+    try expectValues(a, "line", "result", report.Result);
+    try expectValues(a, "report", "columns[].type", schema.Type);
+}
+
+test "docs/REPORT.md: the schema's fields, as infer writes and --schema reads them" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Every field set, so each is written.
+    const full: schema.Schema = .{
+        .format_version = schema.format_version,
+        .columns = &.{
+            .{ .name = "id", .type = .int64, .nullable = false, .inferred = true, .conformance = 0.5, .samples = &.{"1"}, .widened_by = "b.csv" },
+            .{ .name = "amount", .type = .decimal, .precision = 18, .scale = 2 },
+            .{ .name = "made", .type = .date, .format = "%d/%m/%Y", .day_first = true, .nulls = &.{"-"} },
+            .{ .name = "status", .type = .@"enum", .values = &.{ "open", "closed" }, .case_insensitive = true },
+            .{ .name = "note", .type = .string, .max_len = 200, .utf8 = .replace },
+            .{ .name = "ok", .type = .bool, .true_values = &.{"Y"}, .false_values = &.{"N"} },
+        },
+        .nulls = &.{ "", "NULL" },
+        .match = .name,
+        .threshold = 0.99,
+        .sampled = true,
+    };
+    var w: Io.Writer.Allocating = .init(a);
+    try schema.writeJson(full, &w.writer);
+    const text = w.written();
+    const seen = try expectDocumented(a, "schema", schema.format_version, &.{text});
+    // A field of the structs that the schema above leaves out would be
+    // one the doc is never held to.
+    inline for (@typeInfo(schema.Schema).@"struct".field_names) |f| try testing.expect(seen.contains(f));
+    inline for (@typeInfo(schema.Column).@"struct".field_names) |f| try testing.expect(seen.contains("columns[]." ++ f));
+    // What infer writes, --schema reads.
+    var diag: schema.Diagnostic = .{};
+    var back = try schema.parseJson(testing.allocator, text, &diag);
+    back.deinit();
+
+    try expectValues(a, "schema", "columns[].type", schema.Type);
+    try expectValues(a, "schema", "columns[].utf8", schema.Utf8Policy);
+    try expectValues(a, "schema", "match", schema.Match);
+}
+
+test "docs/REPORT.md: its changes reach each version thresh writes" {
+    const changes = doc_text[std.mem.find(u8, doc_text, "\n## Changes\n").?..];
+    for ([_]struct { []const u8, u32 }{ .{ "reports", report.format_version }, .{ "schema", schema.format_version } }) |c| {
+        var last: u32 = 0;
+        var lines = std.mem.splitScalar(u8, changes, '\n');
+        _ = lines.next();
+        _ = lines.next();
+        while (lines.next()) |line| {
+            if (line.len > 0 and !std.mem.startsWith(u8, line, "|")) break;
+            var cells = std.mem.splitScalar(u8, line, '|');
+            _ = cells.next();
+            if (!std.mem.eql(u8, std.mem.trim(u8, cells.next() orelse "", " "), c[0])) continue;
+            last = @max(last, std.fmt.parseInt(u32, std.mem.trim(u8, cells.next().?, " "), 10) catch continue);
+        }
+        if (last != c[1]) {
+            std.debug.print("docs/REPORT.md: the changes reach {s} version {d}; thresh writes {d}\n", .{ c[0], last, c[1] });
+            return error.TestUnexpectedResult;
+        }
+    }
+}

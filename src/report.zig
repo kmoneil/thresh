@@ -1,6 +1,8 @@
 //! What a run says about each file: the per-file JSON report, written by
 //! the worker as it finishes so a crash elsewhere loses nothing already
-//! done; summary.json over them all; and a line per file on stderr.
+//! done; summary.json over them all; and a line per file on stderr, or a
+//! JSON object per file on stdout. docs/REPORT.md describes every field,
+//! and src/format_test.zig holds the code to it.
 
 const std = @import("std");
 const Io = std.Io;
@@ -10,6 +12,13 @@ const Problem = @import("problem.zig").Problem;
 const schema = @import("schema.zig");
 const types = @import("types.zig");
 const validate = @import("validate.zig");
+
+/// The version of every JSON document this file writes (the report,
+/// summary.json, the --json lines and sniff's): each starts with it. A
+/// field added leaves it as it is; a field removed or renamed, or a value
+/// that changes type or meaning, takes it to the next number, with a line
+/// in docs/REPORT.md's changes. The schema has its own, schema.format_version.
+pub const format_version: u32 = 1;
 
 pub const Result = enum {
     pass,
@@ -68,6 +77,8 @@ pub const Details = struct {
 pub fn writeFileReport(w: *Io.Writer, o: Outcome, d: Details) Stringify.Error!void {
     var s: Stringify = .{ .writer = w, .options = .{ .whitespace = .indent_2 } };
     try s.beginObject();
+    try s.objectField("format_version");
+    try s.write(format_version);
     try s.objectField("file");
     try s.write(o.file);
     try s.objectField("bytes");
@@ -127,8 +138,6 @@ pub fn writeFileReport(w: *Io.Writer, o: Outcome, d: Details) Stringify.Error!vo
                     try writeText(&s, sample.value, d.encoding);
                     try s.objectField("code");
                     try s.write(sample.reason);
-                    try s.objectField("reason");
-                    try s.write(sample.reason.text());
                     try s.endObject();
                 }
                 try s.endArray();
@@ -182,13 +191,8 @@ pub fn writeFileReport(w: *Io.Writer, o: Outcome, d: Details) Stringify.Error!vo
     try w.writeByte('\n');
 }
 
-/// "structural", each problem's sentence, and "problems", each as its
-/// code, parameters and fix.
+/// "problems": each as its code, sentence, parameters and fix.
 fn writeProblems(s: *Stringify, problems: []const Problem) Stringify.Error!void {
-    try s.objectField("structural");
-    try s.beginArray();
-    for (problems) |p| try p.writeMessage(s);
-    try s.endArray();
     try s.objectField("problems");
     try s.write(problems);
 }
@@ -247,6 +251,8 @@ pub fn writeSummary(w: *Io.Writer, outcomes: []const Outcome, exit: u8) Stringif
         rejected += o.rows_rejected;
     }
     try s.beginObject();
+    try s.objectField("format_version");
+    try s.write(format_version);
     try s.objectField("files");
     try s.write(outcomes.len);
     inline for (.{ .{ "passed", .pass }, .{ "failed", .fail }, .{ "errors", .@"error" } }) |f| {
@@ -261,14 +267,20 @@ pub fn writeSummary(w: *Io.Writer, outcomes: []const Outcome, exit: u8) Stringif
     try s.write(exit);
     try s.objectField("results");
     try s.beginArray();
-    for (outcomes) |o| try writeOutcome(&s, o);
+    for (outcomes) |o| try writeOutcome(&s, o, false);
     try s.endArray();
     try s.endObject();
     try w.writeByte('\n');
 }
 
-fn writeOutcome(s: *Stringify, o: Outcome) Stringify.Error!void {
+/// A file's outcome: on its own a document (a --json line), so versioned;
+/// in summary.json's results, not.
+fn writeOutcome(s: *Stringify, o: Outcome, versioned: bool) Stringify.Error!void {
     try s.beginObject();
+    if (versioned) {
+        try s.objectField("format_version");
+        try s.write(format_version);
+    }
     try s.objectField("file");
     try s.write(o.file);
     try s.objectField("result");
@@ -277,8 +289,6 @@ fn writeOutcome(s: *Stringify, o: Outcome) Stringify.Error!void {
     try s.write(o.rows);
     try s.objectField("rows_rejected");
     try s.write(o.rows_rejected);
-    try s.objectField("problem");
-    if (o.problem) |p| try p.writeMessage(s) else try s.write(null);
     try s.objectField("problems");
     try s.write(if (o.problem) |*p| p[0..1] else &[_]Problem{});
     // Its name may not be the input's: pool.uniqueNames.
@@ -302,7 +312,24 @@ pub fn writeLine(w: *Io.Writer, o: Outcome) Io.Writer.Error!void {
 /// The same as one compact JSON object, for --json.
 pub fn writeJsonLine(w: *Io.Writer, o: Outcome) Stringify.Error!void {
     var s: Stringify = .{ .writer = w };
-    try writeOutcome(&s, o);
+    try writeOutcome(&s, o, true);
+    try w.writeByte('\n');
+}
+
+/// sniff --json: a file's dialect, how sure, and its warnings, as one
+/// compact JSON object.
+pub fn writeSniffLine(w: *Io.Writer, file: []const u8, v: dialect.Verdict) Stringify.Error!void {
+    var s: Stringify = .{ .writer = w };
+    try s.beginObject();
+    try s.objectField("format_version");
+    try s.write(format_version);
+    try s.objectField("file");
+    try s.write(file);
+    try s.objectField("dialect");
+    try s.write(v);
+    try s.objectField("warnings");
+    try s.write(v.warnings);
+    try s.endObject();
     try w.writeByte('\n');
 }
 

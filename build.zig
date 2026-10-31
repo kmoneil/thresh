@@ -34,8 +34,9 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "dateparsa", .module = dateparsa.module("dateparsa") }},
     });
     mod.addOptions("build_options", options);
-    // A test holds the codes' doc to the code.
+    // Tests hold the codes' doc and the reports' doc to the code.
     mod.addAnonymousImport("problems_doc", .{ .root_source_file = b.path("docs/PROBLEMS.md") });
+    mod.addAnonymousImport("report_doc", .{ .root_source_file = b.path("docs/REPORT.md") });
 
     // `zig build` installs thresh into zig-out/bin, and
     // `zig build run -- sniff a.csv` runs it.
@@ -248,7 +249,7 @@ const cli_checks = [_]struct {
     },
     .{
         .args = &.{ "sniff", "test/cli/orders.csv", "--json" },
-        .stdout = "{\"file\":\"test/cli/orders.csv\",\"dialect\":{\"delimiter\":\",\",\"quote\":\"\\\"\",\"escape\":\"doubled\",\"newline\":\"lf\",\"header\":true," ++
+        .stdout = "{\"format_version\":1,\"file\":\"test/cli/orders.csv\",\"dialect\":{\"delimiter\":\",\",\"quote\":\"\\\"\",\"escape\":\"doubled\",\"newline\":\"lf\",\"header\":true," ++
             "\"confidence\":\"high\",\"score\":1.39,\"runners_up\":[{\"delimiter\":\"\\t\",\"score\":0.19},{\"delimiter\":\"|\",\"score\":0.19}]},\"warnings\":[]}\n",
     },
     .{
@@ -301,13 +302,13 @@ const cli_checks = [_]struct {
     },
     .{
         .args = &.{ "validate", "test/cli/orders.csv", "--columns", "id:int64,amount:int64", "--json" },
-        .stdout = "{\"file\":\"test/cli/orders.csv\",\"result\":\"fail\",\"rows\":2,\"rows_rejected\":2,\"problem\":null,\"problems\":[]}\n",
+        .stdout = "{\"format_version\":1,\"file\":\"test/cli/orders.csv\",\"result\":\"fail\",\"rows\":2,\"rows_rejected\":2,\"problems\":[]}\n",
         .code = 1,
     },
     .{
-        // A problem as its sentence and as its code.
+        // A problem as its code, its sentence and its parameters.
         .args = &.{ "validate", "test/cli/orders.csv", "--columns", "id:int64,name:string,qty:int64", "--json" },
-        .stdout = "{\"file\":\"test/cli/orders.csv\",\"result\":\"fail\",\"rows\":2,\"rows_rejected\":0,\"problem\":\"the schema's column 'qty' is not in the header\"," ++
+        .stdout = "{\"format_version\":1,\"file\":\"test/cli/orders.csv\",\"result\":\"fail\",\"rows\":2,\"rows_rejected\":0," ++
             "\"problems\":[{\"code\":\"column_missing\",\"message\":\"the schema's column 'qty' is not in the header\",\"column\":\"qty\"}]}\n",
         .code = 1,
     },
@@ -320,6 +321,7 @@ const cli_checks = [_]struct {
         .args = &.{ "infer", "test/cli/orders.csv" },
         .stdout =
         \\{
+        \\  "format_version": 1,
         \\  "columns": [
         \\    {
         \\      "name": "id",
@@ -415,13 +417,13 @@ const cli_checks = [_]struct {
     },
     .{
         .args = &.{ "convert", "test/cli/orders.csv", "--to", "csv", "--out", ".zig-cache/cli-out/convert", "--json" },
-        .stdout = "{\"file\":\"test/cli/orders.csv\",\"result\":\"pass\",\"rows\":2,\"rows_rejected\":0,\"problem\":null,\"problems\":[],\"written\":\".zig-cache/cli-out/convert/orders.csv\"}\n",
+        .stdout = "{\"format_version\":1,\"file\":\"test/cli/orders.csv\",\"result\":\"pass\",\"rows\":2,\"rows_rejected\":0,\"problems\":[],\"written\":\".zig-cache/cli-out/convert/orders.csv\"}\n",
     },
     .{
         // Names unique with their extensions, alike without: each output its own.
         .args = &.{ "convert", "test/cli/orders.csv", "test/cli/orders.txt", "--to", "csv", "--out", ".zig-cache/cli-out/stems", "--json", "--jobs", "1" },
-        .stdout = "{\"file\":\"test/cli/orders.csv\",\"result\":\"pass\",\"rows\":2,\"rows_rejected\":0,\"problem\":null,\"problems\":[],\"written\":\".zig-cache/cli-out/stems/orders.csv\"}\n" ++
-            "{\"file\":\"test/cli/orders.txt\",\"result\":\"pass\",\"rows\":1,\"rows_rejected\":0,\"problem\":null,\"problems\":[],\"written\":\".zig-cache/cli-out/stems/orders-2.csv\"}\n",
+        .stdout = "{\"format_version\":1,\"file\":\"test/cli/orders.csv\",\"result\":\"pass\",\"rows\":2,\"rows_rejected\":0,\"problems\":[],\"written\":\".zig-cache/cli-out/stems/orders.csv\"}\n" ++
+            "{\"format_version\":1,\"file\":\"test/cli/orders.txt\",\"result\":\"pass\",\"rows\":1,\"rows_rejected\":0,\"problems\":[],\"written\":\".zig-cache/cli-out/stems/orders-2.csv\"}\n",
     },
     .{
         .args = &.{ "run", "test/cli/orders.csv", "--columns", "id:int64,amount:int64", "--to", "csv", "--out", ".zig-cache/cli-out/run", "--strict", "--quiet" },
