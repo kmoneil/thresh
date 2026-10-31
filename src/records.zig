@@ -61,12 +61,107 @@ pub const Record = struct {
     /// The source line it starts on, from 1, counting line breaks inside
     /// quoted fields too, the way an editor numbers them.
     line: u64,
+    /// Line breaks inside its quoted fields: the lines it spans, less one.
+    inner_lines: u64 = 0,
     problem: ?Problem = null,
     /// Quote characters inside unquoted fields: data, and a warning.
     stray_quotes: u32 = 0,
     /// It ended in a line break other than the dialect's.
     foreign_newline: bool = false,
 };
+
+/// Whether a file's quotes are data, not quoting: `"` an inch mark in a
+/// file that never quotes, say. A value that starts with one opens a quoted
+/// field that runs on, over delimiters and line breaks, to the next value
+/// that ends in one, and the lines between fold into one record, which is
+/// as wide as a row often enough to pass. So each record that spans lines
+/// is read again without quotes: lines that each split into a whole row are
+/// rows folded together; any other is quoted text with line breaks in it,
+/// which is what quoting is for. A record on one line is not looked at, so
+/// a file with no line breaks inside quotes pays one comparison a record.
+pub const QuoteCheck = struct {
+    /// Records whose every line is a whole row without quotes, the lines
+    /// they hold, and the line the first starts on.
+    folded: u64 = 0,
+    folded_lines: u64 = 0,
+    first: u64 = 0,
+    /// Records across lines that are not rows folded together.
+    multiline: u64 = 0,
+
+    /// rec, in data from base, in a file whose rows are width fields wide.
+    pub fn record(c: *QuoteCheck, rec: Record, width: usize, d: Dialect, data: []const u8, base: u64) void {
+        // One field a row: every line splits into a whole row.
+        if (rec.inner_lines == 0 or width < 2) return;
+        var rest = data[@intCast(rec.start - base)..@intCast(rec.end - base)];
+        // Its own line break ends it and is not one of its lines.
+        if (std.mem.endsWith(u8, rest, "\r\n")) {
+            rest.len -= 2;
+        } else if (rest.len > 0 and (rest[rest.len - 1] == '\n' or rest[rest.len - 1] == '\r')) rest.len -= 1;
+        while (true) {
+            const nl = std.mem.findAny(u8, rest, "\r\n");
+            if (std.mem.countScalar(u8, rest[0 .. nl orelse rest.len], d.delimiter) != width - 1) {
+                c.multiline += 1;
+                return;
+            }
+            const n = nl orelse break;
+            rest = rest[n + @as(usize, if (rest[n] == '\r' and n + 1 < rest.len and rest[n + 1] == '\n') 2 else 1) ..];
+        }
+        if (c.folded == 0) c.first = rec.line;
+        c.folded += 1;
+        c.folded_lines += rec.inner_lines + 1;
+    }
+
+    /// The quotes look like data: more records are rows folded together
+    /// than quoted text across lines, in a file whose unquoted fields hold
+    /// quotes too (stray_quotes), as a file that never quotes does.
+    pub fn isData(c: QuoteCheck, stray_quotes: u64) bool {
+        return c.folded > c.multiline and stray_quotes > 0;
+    }
+};
+
+test QuoteCheck {
+    const d: Dialect = .{ .delimiter = '|', .quote = '"', .escape = .doubled, .newline = .crlf, .header = true };
+    // Inch marks in a file that never quotes: the quote opened on line 2
+    // closes on line 4, and lines 2 to 4 fold into one record of 3 fields.
+    const data = "lug_id|bin|cultivar\r\n1|\"36|Starfall\r\n2|48 in|Quillon\r\n3|36\"|Brookwood\r\n4|36\" deep|Starfall\r\n";
+    var p: reference.Parser = .init(data, d, .{});
+    var fields: std.ArrayList(Field) = .empty;
+    defer fields.deinit(std.testing.allocator);
+    var c: QuoteCheck = .{};
+    var stray: u64 = 0;
+    var seen: usize = 0;
+    while (try p.next(std.testing.allocator, &fields)) |rec| : (seen += 1) {
+        c.record(rec, 3, d, data, 0);
+        stray += rec.stray_quotes;
+    }
+    try std.testing.expectEqual(@as(usize, 3), seen);
+    try std.testing.expectEqual(@as(u64, 1), c.folded);
+    try std.testing.expectEqual(@as(u64, 3), c.folded_lines);
+    try std.testing.expectEqual(@as(u64, 2), c.first);
+    try std.testing.expect(c.isData(stray));
+
+    // Quoted text with a line break in it, as quoting means: not rows.
+    var q: QuoteCheck = .{};
+    const text = "lug_id,remark\n1,\"two lines\nof a remark, and, commas\"\n";
+    var p2: reference.Parser = .init(text, .rfc4180, .{});
+    while (try p2.next(std.testing.allocator, &fields)) |rec| q.record(rec, 2, .rfc4180, text, 0);
+    try std.testing.expectEqual(@as(u64, 0), q.folded);
+    try std.testing.expectEqual(@as(u64, 1), q.multiline);
+    try std.testing.expect(!q.isData(1));
+    // In a narrow file a line of text can split into a whole row by chance
+    // (one comma, two columns): with no quote inside an unquoted field, a
+    // file that quotes, it is not taken for data.
+    var narrow: QuoteCheck = .{};
+    const chance = "lug_id,remark\n1,\"late pick\nshade side, small\"\n";
+    var p3: reference.Parser = .init(chance, .rfc4180, .{});
+    while (try p3.next(std.testing.allocator, &fields)) |rec| narrow.record(rec, 2, .rfc4180, chance, 0);
+    try std.testing.expectEqual(@as(u64, 1), narrow.folded);
+    try std.testing.expect(!narrow.isData(0));
+    // A line break inside quotes in a one-column file says nothing.
+    var one: QuoteCheck = .{};
+    one.record(.{ .start = 0, .end = 6, .line = 1, .inner_lines = 1 }, 1, .rfc4180, "\"a\nb\"\n", 0);
+    try std.testing.expectEqual(@as(u64, 0), one.folded + one.multiline);
+}
 
 /// The bytes with their escapes undone: a doubled quote to one, and under
 /// backslash escaping a backslash and the byte after it to that byte (a
@@ -333,7 +428,7 @@ pub const Scanner = struct {
                 w.next = i;
                 s.cur = data.len;
                 defer s.line += inner_lines;
-                return .{ .start = s.base + rec_start, .end = s.base + data.len, .line = s.line };
+                return .{ .start = s.base + rec_start, .end = s.base + data.len, .line = s.line, .inner_lines = inner_lines };
             }
             const e = w.start + s.positions[i];
             const f = s.classify(field_start, e, &inner_lines) orelse return null;
@@ -361,6 +456,7 @@ pub const Scanner = struct {
                 .start = s.base + rec_start,
                 .end = s.base + end,
                 .line = s.line,
+                .inner_lines = inner_lines,
                 .foreign_newline = nl != s.dialect.newline,
             };
         }

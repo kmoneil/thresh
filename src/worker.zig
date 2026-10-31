@@ -270,10 +270,14 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
 
     out.rows = v.rows;
     out.rows_rejected = v.rejected;
-    out.result = if (v.passed()) .pass else .fail;
+    // Quotes that are data folded lines into rows: what was read is not
+    // the file's rows, so none of it is kept.
+    const misread = cfg.pins.quote == null and v.quotes.isData(v.stray_quotes);
+    if (misread) try v.structural.insert(v.gpa, 0, .{ .quote_is_data = .{ .records = v.quotes.folded, .lines = v.quotes.folded_lines, .line = v.quotes.first } });
+    out.result = if (misread) .@"error" else if (v.passed()) .pass else .fail;
     if (output) |*o| {
         // A failing file's good rows are still written, unless --strict.
-        const keep = out.result == .pass or !cfg.strict;
+        const keep = out.result == .pass or (out.result == .fail and !cfg.strict);
         // Done whether or not finish succeeds: it releases the output either way.
         output_done = true;
         const tw = now(io);
@@ -464,12 +468,16 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
     var header_names: []const []const u8 = &.{};
     var repeated: u64 = 0;
     var repeated_line: u64 = 0;
+    var quotes: records.QuoteCheck = .{};
+    var stray: u64 = 0;
     const limit = cfg.sample_rows orelse std.math.maxInt(u64);
     read: while (f.rows < limit) {
         batch.clear();
         const state = try batch.fill(gpa, &s, .{});
         for (0..batch.len()) |i| {
             if (f.rows >= limit) break :read;
+            quotes.record(batch.records.items[i], verdict.fields, verdict.dialect, in.data(), in.base);
+            stray += batch.records.items[i].stray_quotes;
             if (batch.records.items[i].problem != null) continue;
             try records.values(gpa, batch.recordFields(i), in.data(), in.base, verdict.dialect, &scratch, &values);
             if (header_pending) {
@@ -502,6 +510,11 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
     }
     out.timing.parse_ns = since(io, t1);
     out.rows = f.rows;
+    // Rows folded together by quotes that are data: no schema from them.
+    if (cfg.pins.quote == null and quotes.isData(stray)) {
+        out.problem = .{ .quote_is_data = .{ .records = quotes.folded, .lines = quotes.folded_lines, .line = quotes.first } };
+        return .{ .outcome = out };
+    }
     // Read as UTF-8 and not UTF-8: a guess of replace would turn every
     // accented letter of a Windows export into U+FFFD, so say what to do.
     for (f.columns.items) |c| if (c.invalid_utf8) {

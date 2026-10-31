@@ -88,6 +88,8 @@ pub const Validator = struct {
     foreign_newlines: u64 = 0,
     /// --strict made a ragged row fail the file.
     strict_failure: bool = false,
+    /// Whether the quotes are data: records.QuoteCheck.
+    quotes: records.QuoteCheck = .{},
     reject: ?*Io.Writer = null,
     /// Where accepted rows go, for the writers.
     batch: ?*builders.Batch = null,
@@ -221,6 +223,7 @@ pub const Validator = struct {
 
     /// One data record: its row errors, then each column's cell.
     pub fn record(v: *Validator, rec: Record, fields: []const Field, data: []const u8, base: u64) (Allocator.Error || Io.Writer.Error)!void {
+        v.quotes.record(rec, v.width, v.dialect, data, base);
         // The header again: not a row, and said so.
         if (v.header_seen and fields.len == v.names.len and try v.isHeader(fields, data, base)) {
             v.repeated_headers += 1;

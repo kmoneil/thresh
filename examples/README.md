@@ -228,6 +228,26 @@ lug_id,picked_on,remark,lug_kg,_row,_errors
 3,2026-09-04,sunburn, windfall, small,14.4,4,*:a different number of fields
 ```
 
+## Inch marks in a file that never quotes
+
+The bins are measured in inches, `36"`, and nothing in the file is
+quoted. On row 12 the mark was typed before the number, `"36`, and a
+value that starts with a quote reads as a quoted field: it runs on, over
+delimiters and line breaks, to the next value that ends in one, and the
+rows between fold into one as wide as a row. A loader would load it as
+one row with a strange value in it, or stop at a later row it cannot
+fit. thresh sees that each folded line is a whole row without the quotes
+and stops.
+
+```console
+$ thresh infer data/bins.txt --out bins.schema.json
+error data/bins.txt  the quotes look like data: 1 record holds 4 lines inside quotes, the first on line 13, and each of those lines is a whole row without them; pin --quote none to read quotes as data
+thresh: no file to infer a schema from
+[exit 2]
+$ thresh infer data/bins.txt --out bins.schema.json --quote none
+infer data/bins.txt  30 rows  4 columns
+```
+
 ## A header one name short
 
 The export added a column and not its name: 3 names over rows of 4

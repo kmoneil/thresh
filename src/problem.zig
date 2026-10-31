@@ -41,6 +41,9 @@ pub const Problem = union(enum) {
     dialect_unsettled: struct { score: f64 },
     /// Row 1 is a header of another width than the rows.
     header_width: struct { header_fields: usize, fields: usize },
+    /// Quotes that are data (records.QuoteCheck): values that start with
+    /// one folded lines into records, so the rows are not the file's.
+    quote_is_data: struct { records: u64, lines: u64, line: u64 },
 
     // The file against its schema: each fails it.
     match_needs_header,
@@ -80,6 +83,7 @@ pub const Problem = union(enum) {
     /// encoding any of the list.
     pub const Suggest = struct {
         header: ?enum { yes, no } = null,
+        quote: ?enum { none } = null,
         encoding: ?[]const []const u8 = null,
         threshold: ?f64 = null,
 
@@ -88,6 +92,10 @@ pub const Problem = union(enum) {
             if (sg.header) |h| {
                 try s.objectField("header");
                 try s.write(h);
+            }
+            if (sg.quote) |q| {
+                try s.objectField("quote");
+                try s.write(q);
             }
             if (sg.encoding) |e| {
                 try s.objectField("encoding");
@@ -105,6 +113,7 @@ pub const Problem = union(enum) {
         return switch (p) {
             .utf16_with_encoding => .{ .encoding = &.{"utf8"} },
             .header_width => .{ .header = .no },
+            .quote_is_data => .{ .quote = .none },
             .column_not_utf8 => .{ .encoding = &.{ "cp1252", "latin1" } },
             .column_misfits => |m| .{ .threshold = m.threshold },
             else => null,
@@ -144,6 +153,7 @@ pub const Problem = union(enum) {
             .not_reached => try w.writeAll("not reached: interrupted"),
             .dialect_unsettled => |x| try w.print("the dialect is not settled (confidence low, score {d:.2}); pin it with --delimiter, --quote, --escape, --newline and --header", .{x.score}),
             .header_width => |x| try w.print("row 1 is a header of {d} names over rows of {d} fields, and which names go with which columns cannot be told; fix the header, or pin --header no to read row 1 as data", .{ x.header_fields, x.fields }),
+            .quote_is_data => |x| try w.print("the quotes look like data: {d} record{s} {s} {d} lines inside quotes, the first on line {d}, and each of those lines is a whole row without them; pin --quote none to read quotes as data", .{ x.records, plural(x.records), if (x.records == 1) "holds" else "hold", x.lines, x.line }),
             .match_needs_header => try w.writeAll("match by name needs a header"),
             .column_missing => |x| try w.print("the schema's column '{s}' is not in the header", .{x.column}),
             .column_extra => |x| try w.print("the header's column '{s}' is not in the schema", .{x.column}),
@@ -294,6 +304,7 @@ test "every code says what the CLI has always said" {
         .{ .not_reached, "not reached: interrupted" },
         .{ .{ .dialect_unsettled = .{ .score = 0.9234 } }, "the dialect is not settled (confidence low, score 0.92); pin it with --delimiter, --quote, --escape, --newline and --header" },
         .{ .{ .header_width = .{ .header_fields = 69, .fields = 70 } }, "row 1 is a header of 69 names over rows of 70 fields, and which names go with which columns cannot be told; fix the header, or pin --header no to read row 1 as data" },
+        .{ .{ .quote_is_data = .{ .records = 1, .lines = 3, .line = 82 } }, "the quotes look like data: 1 record holds 3 lines inside quotes, the first on line 82, and each of those lines is a whole row without them; pin --quote none to read quotes as data" },
         .{ .match_needs_header, "match by name needs a header" },
         .{ .{ .column_missing = .{ .column = "amount" } }, "the schema's column 'amount' is not in the header" },
         .{ .{ .column_extra = .{ .column = "note" } }, "the header's column 'note' is not in the schema" },

@@ -85,6 +85,15 @@ for i, d in enumerate(rows(6, 30)):
     lines.append(",".join([d["lug_id"], d["picked_on"], remark, d["lug_kg"]]))
 write("remarks.csv", "\n".join(lines) + "\n")
 
+# Inch marks in a file that never quotes: a 36" bin, and on row 12 one
+# typed before its number, which opens a quote the next 36" closes.
+lines = ["lug_id|orchard_row|bin|cultivar"]
+for d in rows(13, 30):
+    i = int(d["lug_id"])
+    size = '"36' if i == 12 else ('36"' if i % 5 == 0 else "48 in")
+    lines.append("|".join([d["lug_id"], d["orchard_row"], size, d["cultivar"]]))
+write("bins.txt", "\n".join(lines) + "\n")
+
 # Two exports joined: the second's header comes again, in other case.
 first, second = rows(7, 20), rows(8, 20, start=21)
 text = csv(COLUMNS[:4], first) + ",".join(c.upper() for c in COLUMNS[:4]) + "\n"

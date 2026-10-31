@@ -36,6 +36,7 @@ are the options that make it, named as `thresh --help` names them:
 | `header` | `"yes"` or `"no"`: pin `--header` to it |
 | `encoding` | a list: read the file with `--encoding` set to any one of them |
 | `threshold` | a number: `--threshold` set to it |
+| `quote` | `"none"`: pin `--quote none`, so a quote character is data |
 
 Where they appear ([REPORT.md](REPORT.md) has every field of each):
 
@@ -65,6 +66,7 @@ The file's result is `error` (exit 2).
 | `not_reached` | | Ctrl-C before the run reached the file |
 | `dialect_unsettled` | `score` | the sniffer is not sure enough of the dialect (confidence low) to read the file; pin it |
 | `header_width` | `header_fields`, `fields` | row 1 is a header of another width than the rows, so which name goes with which column cannot be told; suggests `header: "no"` |
+| `quote_is_data` | `records`, `lines`, `line`, the first | the file's quotes look like data, as in a file that never quotes and uses `"` for inches: values that start with one folded `lines` lines into `records` records, each line a whole row without the quotes, in a file with quotes inside unquoted fields too; what was read is not the file's rows, so nothing is written. Never with `--quote` pinned; suggests `quote: "none"` |
 | `column_not_utf8` | `column`, `row` | infer, reading as UTF-8, found a column that is not; suggests `encoding: ["cp1252", "latin1"]` |
 
 ### A file that fails its schema

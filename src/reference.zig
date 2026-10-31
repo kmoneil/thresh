@@ -69,6 +69,8 @@ pub const Parser = struct {
             break;
         }
         var rec: Record = .{ .start = p.pos, .end = undefined, .line = p.line };
+        // The line break that ends it, which is not inside it.
+        var ended: u64 = 0;
         while (true) {
             try fields.append(gpa, p.field(&rec));
             if (p.pos >= in.len) break;
@@ -77,9 +79,11 @@ pub const Parser = struct {
                 continue;
             }
             if (p.lineBreak() != p.dialect.newline) rec.foreign_newline = true;
+            ended = 1;
             break;
         }
         rec.end = p.pos;
+        rec.inner_lines = p.line - rec.line - ended;
         return rec;
     }
 
