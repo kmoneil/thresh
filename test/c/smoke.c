@@ -70,6 +70,10 @@ int main(void) {
     thresh_string_free(json);
     o.jobs = 0;
 
+    CHECK(thresh_describe(t, lugs, NULL, &o, &json) == THRESH_OK);
+    CHECK(json != NULL && strstr(json, "\"inferred\": true") != NULL);
+    thresh_string_free(json);
+
     CHECK(thresh_columns(t, columns, &schema) == THRESH_OK);
     CHECK(thresh_validate(t, lugs, schema, &o, &json) == THRESH_OK);
     /* The report is indented, as the CLI writes it. */

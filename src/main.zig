@@ -102,11 +102,54 @@ fn execute(env: Env, args: []const []const u8, out: *Io.Writer, err: *Io.Writer)
         .validate => validateFiles(env, &cfg, out, err),
         .infer => inferFiles(env, &cfg, out, err),
         .run => validateFiles(env, &cfg, out, err),
-        .convert => if (cfg.schema != null or cfg.columns != null)
-            validateFiles(env, &cfg, out, err)
-        else
-            convertInferred(env, &cfg, out, err),
+        .convert => convertFiles(env, &cfg, out, err),
+        .describe => describeFiles(env, &cfg, out, err),
     };
+}
+
+/// convert: against the schema given, or each file's own, inferred.
+fn convertFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
+    if (cfg.schema != null or cfg.columns != null) return validateFiles(env, cfg, out, err);
+    return convertInferred(env, cfg, out, err);
+}
+
+/// describe: each file's description (lib.describe, files in parallel),
+/// on stdout in the order given: indented, or a line apiece with --json,
+/// which then is all stdout holds. The exit is the worst file's.
+fn describeFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
+    var owned: ?lib.OwnedSchema = if (cfg.schema != null or cfg.columns != null) (try loadSchema(env, cfg, err)) orelse return .usage else null;
+    defer if (owned) |*o| o.deinit();
+    const Ctx = struct {
+        options: lib.Options,
+        schema: ?*const lib.Schema,
+        files: []const []const u8,
+        texts: [][]const u8,
+        compact: bool,
+
+        fn run(ctx: *anyopaque, w: *pool.Worker, i: usize) anyerror!report.Outcome {
+            const c: *@This() = @ptrCast(@alignCast(ctx));
+            const d = try lib.describe(w.env, w.scratch.allocator(), c.files[i], c.schema, c.options);
+            // The text outlives the file: the run's arena.
+            var text: Io.Writer.Allocating = .init(w.keep);
+            lib.writeDescription(&text.writer, d, c.compact) catch return error.OutOfMemory;
+            c.texts[i] = text.written();
+            return d.file.outcome;
+        }
+    };
+    var ctx: Ctx = .{
+        .options = try optionsOf(env.arena, cfg),
+        .schema = if (owned) |*o| &o.schema else null,
+        .files = cfg.files,
+        .texts = try env.arena.alloc([]const u8, cfg.files.len),
+        .compact = cfg.json,
+    };
+    @memset(ctx.texts, "");
+    const outcomes = try runPool(env, cfg, .{ .ctx = &ctx, .files = cfg.files, .run = Ctx.run }, out, err, cfg.json);
+    if (interrupt.requested()) return interrupted(err);
+    for (ctx.texts) |t| try out.writeAll(t);
+    var code: Exit = .ok;
+    for (outcomes) |o| code = code.worst(@fromBackingInt(o.result.exitCode()));
+    return code;
 }
 
 /// How each file is read, from the flags; Ctrl-C (interrupt) cancels.
@@ -528,6 +571,8 @@ test "--shapes-only: none of a file's values leaves thresh; --shape-names, none 
         &.{ "infer", file, "--out", schema_out },
         &.{ "infer", file },
         &.{ "sniff", file, "--json" },
+        &.{ "describe", file },
+        &.{ "describe", file, "--columns", columns, "--json" },
     };
     for (runs) |args| {
         // Without the flags the markers are there: the test sees them.
@@ -555,6 +600,26 @@ test "--shapes-only: none of a file's values leaves thresh; --shape-names, none 
             };
         }
     }
+}
+
+test "describe --json: stdout is a description a line, one a file, in their order" {
+    const t = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var out: Io.Writer.Allocating = .init(t.allocator);
+    defer out.deinit();
+    var err: Io.Writer.Allocating = .init(t.allocator);
+    defer err.deinit();
+    const files = [_][]const u8{ "test/c/lugs.csv", "test/cli/orders.csv", "test/c/none.csv" };
+    const code = try execute(.{ .io = t.io, .gpa = t.allocator, .arena = a }, &.{ "describe", files[0], files[1], files[2], "--json" }, &out.writer, &err.writer);
+    try t.expectEqual(Exit.unreadable, code);
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, out.written(), "\n"), '\n');
+    for (files) |f| {
+        const d = try std.json.parseFromSliceLeaky(std.json.Value, a, lines.next().?, .{});
+        try t.expectEqualStrings(f, d.object.get("file").?.string);
+    }
+    try t.expectEqual(@as(?[]const u8, null), lines.next());
 }
 
 test "worst keeps the higher status" {

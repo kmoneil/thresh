@@ -15,6 +15,8 @@ pub const usage =
     \\  validate   check each file against --schema; report and reject file
     \\  convert    write each file --to csv or arrow; infers types with no --schema
     \\  run        validate and convert in one pass (--schema, --to, --out)
+    \\  describe   everything about each file in one JSON document: read against
+    \\             --schema, or one inferred from it; with --shapes-only, no data
     \\
     \\Dialect (each pins one dimension; the sniffer scores the rest):
     \\      --delimiter C      one ASCII byte, tab, \t or \xHH
@@ -71,7 +73,7 @@ pub const usage =
     \\
 ;
 
-pub const Command = enum { sniff, infer, validate, convert, run };
+pub const Command = enum { sniff, infer, validate, convert, run, describe };
 
 pub const Format = enum { csv, arrow, parquet };
 
@@ -185,7 +187,7 @@ const Flag = enum {
     /// The commands a flag means something to; null for all of them.
     fn commands(f: Flag) ?[]const Command {
         return switch (f) {
-            .sample => &.{.infer},
+            .sample => &.{ .infer, .describe },
             .out => &.{ .infer, .convert, .run },
             .to, .out_delimiter, .out_newline, .normalize_dates, .arrow_file => &.{ .convert, .run },
             else => null,
@@ -214,7 +216,7 @@ pub fn parse(gpa: std.mem.Allocator, args: []const []const u8, diag: *Diagnostic
     // A defer, not an errdefer: --help after a file returns early too.
     defer p.files.deinit(gpa);
     while (p.i < args.len) : (p.i += 1) if (try p.one()) |action| return action;
-    p.cfg.command = p.command orelse return diag.fail("no command: sniff, infer, validate, convert or run", .{});
+    p.cfg.command = p.command orelse return diag.fail("no command: sniff, infer, validate, convert, run or describe", .{});
     try check(&p.cfg, p.seen, p.files.items.len, diag);
     p.cfg.files = try p.files.toOwnedSlice(gpa);
     return .{ .run = p.cfg };
@@ -267,7 +269,7 @@ const Parser = struct {
         }
         if (std.mem.eql(u8, arg, "help")) return .help;
         p.command = std.meta.stringToEnum(Command, arg) orelse
-            return p.diag.fail("no command '{s}': sniff, infer, validate, convert or run", .{arg});
+            return p.diag.fail("no command '{s}': sniff, infer, validate, convert, run or describe", .{arg});
         return null;
     }
 
@@ -419,7 +421,7 @@ fn checkPins(pins: Pins, diag: *Diagnostic) error{Usage}!void {
 /// What each command needs.
 fn checkCommand(cfg: *const Config, diag: *Diagnostic) error{Usage}!void {
     switch (cfg.command) {
-        .sniff, .infer => {},
+        .sniff, .infer, .describe => {},
         .validate => if (cfg.schema == null and cfg.columns == null)
             return diag.fail("validate needs --schema or --columns", .{}),
         .convert => {
@@ -577,8 +579,8 @@ test "help and version win wherever they are" {
 }
 
 test "usage errors" {
-    try expectUsage(&.{}, "no command: sniff, infer, validate, convert or run");
-    try expectUsage(&.{"split"}, "no command 'split': sniff, infer, validate, convert or run");
+    try expectUsage(&.{}, "no command: sniff, infer, validate, convert, run or describe");
+    try expectUsage(&.{"split"}, "no command 'split': sniff, infer, validate, convert, run or describe");
     try expectUsage(&.{"sniff"}, "sniff: no input files");
     try expectUsage(&.{ "sniff", "a", "--bogus" }, "no option --bogus");
     try expectUsage(&.{ "sniff", "a", "--delimiter" }, "--delimiter needs a value");

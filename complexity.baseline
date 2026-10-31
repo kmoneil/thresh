@@ -23,7 +23,6 @@ src/records.zig	Scanner.classify	19	28	33	3	3	3
 src/records.zig	Scanner.next	14	26	17	3	1	1
 src/reference.zig	Parser.next	16	29	28	4	1	1
 src/render.zig	validateNamed	19	22	47	2	4	4
-src/report.zig	writeFileReport	27	66	137	6	3	3
 src/schema.zig	check	18	35	17	3	2	2
 src/schema.zig	parseInline	14	28	31	3	2	2
 src/stats.zig	writeOrdered	21	18	28	2	3	3

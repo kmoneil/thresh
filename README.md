@@ -29,6 +29,7 @@ on its way.
 | **Validate** | every row against a schema. A bad row is set aside with its line and the reason; the good rows go on. |
 | **Convert** | the good rows to clean CSV, or to Arrow that pyarrow, polars and DuckDB read straight in. |
 | **Report** | JSON in a [versioned format](docs/REPORT.md), every problem a stable [code](docs/PROBLEMS.md), with the fix where there is one, and what each column holds: its range, distinct values, the most common values and shapes. |
+| **Describe** | everything about a file in one JSON document, bounded whatever its size, for a person, code or an AI; with `--shapes-only`, none of its data. |
 | **Embed** | a [C library](docs/C.md) that hands rows and rejects to Arrow consumers in the same process, without a copy. |
 
 ## Quick start
@@ -113,6 +114,7 @@ thresh infer    <file>... [--out schema.json]   type inference across files; wri
 thresh validate <file>... --schema s.json       report, and rejected rows with their reasons
 thresh convert  <file>... --to csv|arrow        writes output; infers types if no --schema
 thresh run      <file>... --schema s.json --to arrow --out dir/
+thresh describe <file>... [--schema s.json]     everything about each file in one JSON document
 ```
 
 Files run in parallel, one per worker (`--jobs`, default one per CPU).
