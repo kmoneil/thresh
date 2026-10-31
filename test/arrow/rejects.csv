@@ -1,0 +1,14 @@
+lug_id,cultivar,lug_kg,picked_on,remark
+1,Starfall,17.50,2026-09-14,
+2,Quillon,18.00,2026-09-14,dry
+x,Quillon,18.00,2026-09-14,an id that is not one
+4,Brookwood,heavy,someday,"two wrong, one row"
+5,Starfall,16.25
+6,Quillon,15.00,2026-09-15,"a remark over
+two lines",past the header,and more
+7,Nonesuch,14.75,2026-09-15,not a cultivar
+8,Starfall,13.50,2026-09-16,"quoted ""inch"" marks"
+9,Brookwood,12.00,2026-09-16,
+10,Quillon,11.25,2026-09-17,frost
+11,Starfall,10.50,2026-09-17,
+12,Brookwood,19.75,2026-09-18,late

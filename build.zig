@@ -170,14 +170,32 @@ pub fn build(b: *std.Build) void {
     b.step("bench-install", "Install the benchmark binary").dependOn(&b.addInstallArtifact(bench_exe, .{}).step);
 
     // The Arrow writer read back by pyarrow (and DuckDB when installed),
-    // value for value against the CSV path. Needs python3 with pyarrow:
-    // `uv run --with pyarrow --with duckdb zig build arrow-check`.
+    // value for value against the CSV path, and the library's Arrow C
+    // streams imported by pyarrow, against both. Needs python3 with
+    // pyarrow: `uv run --with pyarrow --with duckdb zig build arrow-check`.
+    const cstream = b.addLibrary(.{
+        .name = "thresh_cstream",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/arrow/cstream.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "thresh", .module = b.createModule(.{
+                .root_source_file = b.path("src/root.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "dateparsa", .module = dateparsa.module("dateparsa") }},
+            }) }},
+        }),
+    });
     const arrow_check = b.addSystemCommand(&.{ "python3", "-I" });
     arrow_check.addFileArg(b.path("test/arrow/check.py"));
     arrow_check.addArtifactArg(exe);
     arrow_check.addDirectoryArg(corpus_dir);
+    arrow_check.addArtifactArg(cstream);
     arrow_check.has_side_effects = true;
-    b.step("arrow-check", "Read thresh's Arrow output back with pyarrow (needs python3 with pyarrow)").dependOn(&arrow_check.step);
+    b.step("arrow-check", "Read thresh's Arrow output and C streams back with pyarrow (needs python3 with pyarrow)").dependOn(&arrow_check.step);
 
     // The parallel driver at scale: 10,000 files in one run, throughput by
     // --jobs, and a Ctrl-C mid-run. Run it optimized:

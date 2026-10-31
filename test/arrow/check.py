@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """The Arrow writer against independent readers: pyarrow, and DuckDB when
-it can read the files.
+it can read the files; and the library's Arrow C streams, imported by
+pyarrow.
 
     uv run --with pyarrow --with duckdb --with pytz zig build arrow-check
-    python3 test/arrow/check.py THRESH CORPUS_DIR      (with pyarrow installed)
+    python3 test/arrow/check.py THRESH CORPUS_DIR CSTREAM_LIB    (with pyarrow installed)
 
 For every clean corpus file, thresh writes Arrow (the stream format and,
 with --arrow-file, the file format) and CSV with dates normalized to RFC
@@ -14,9 +15,16 @@ every value must be the one the CSV holds, read as the column's Arrow
 type. DuckDB, when installed with its community arrow extension
 (INSTALL arrow FROM community), must read both files itself, through
 read_arrow, to the same values pyarrow does.
+
+The same file read through the library (lib.readArrow, behind the test
+library's one C call) must give pyarrow, through the C Data Interface,
+the table it read from the IPC stream, and a rejects stream that holds
+what the reject file does, its codes the sentences of PROBLEMS.md's
+reasons table.
 """
 
 import csv
+import ctypes
 import datetime
 import decimal
 import io
@@ -65,6 +73,68 @@ def expected(text, typ):
     if pa.types.is_string(typ):
         return text
     raise AssertionError("no comparison for %s" % typ)
+
+
+class ArrowArrayStream(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_void_p) for name in ("get_schema", "get_next", "get_last_error", "release", "private_data")]
+
+
+CSTREAM = None
+
+
+def c_streams(path, schema, encoding):
+    """The file read through the library: its rows and its rejected rows,
+    each a table pyarrow imported from an Arrow C stream."""
+    rows, rejects = ArrowArrayStream(), ArrowArrayStream()
+    code = CSTREAM.thresh_test_read(path.encode(), schema.encode() if schema else None, encoding.encode(), ctypes.byref(rows), ctypes.byref(rejects))
+    if code != 0:
+        raise AssertionError("%s: the library's read gave %d" % (path, code))
+    tables = [pa.RecordBatchReader._import_from_c(ctypes.addressof(s)).read_all() for s in (rows, rejects)]
+    # Imported: pyarrow holds them, and marked the structs released.
+    if rows.release or rejects.release:
+        raise AssertionError("%s: a stream pyarrow imported is not marked released" % path)
+    return tables
+
+
+def reasons():
+    """Each reason's code to its sentence, from docs/PROBLEMS.md."""
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    with open(os.path.join(root, "docs", "PROBLEMS.md")) as f:
+        text = f.read()
+    table = text[text.index("## Reasons") :]
+    out = dict(re.findall(r"^\| `(\w+)` \| (.+?)(?: \(a whole row\))? \|$", table, re.M))
+    if "not_int" not in out or "ragged" not in out:
+        raise AssertionError("no reasons table in PROBLEMS.md")
+    return out
+
+
+REASONS = None
+
+
+def check_rejects(name, mode, table, reject_file):
+    """The rejects stream against the reject file: the same rows, a short
+    row's missing fields null where the file pads them, the errors as
+    codes where it has sentences."""
+    if not os.path.exists(reject_file):
+        if table.num_rows:
+            raise AssertionError("%s (%s): %d rejected rows streamed, no reject file" % (name, mode, table.num_rows))
+        return
+    with open(reject_file, newline="", encoding="utf-8") as f:
+        lines = list(csv.reader(f))
+    header, lines = lines[0], lines[1:]
+    if table.column_names != header:
+        raise AssertionError("%s (%s): rejects columns %s, the reject file's %s" % (name, mode, table.column_names, header))
+    if table.num_rows != len(lines):
+        raise AssertionError("%s (%s): %d rejected rows streamed, the reject file %d" % (name, mode, table.num_rows, len(lines)))
+    width = len(header) - 3
+    columns = [table.column(i).to_pylist() for i in range(table.num_columns)]
+    for r, line in enumerate(lines):
+        got = [c[r] for c in columns]
+        fields = ["" if v is None else v for v in got[:width]]
+        errors = ";".join("%s:%s" % (e["column"] or "*", REASONS[e["code"]]) for e in got[width + 1])
+        streamed = fields + [str(got[width]), errors, got[width + 2] or ""]
+        if streamed != line:
+            raise AssertionError("%s (%s): rejected row %d streamed as %r, the reject file %r" % (name, mode, r, streamed, line))
 
 
 def same(a, b):
@@ -119,7 +189,7 @@ def check(thresh, corpus, name, out, mode):
     d = os.path.join(out, mode)
     run(thresh, [mode] + common + ["--to", "arrow", "--out", d])
     run(thresh, [mode] + common + ["--to", "arrow", "--arrow-file", "--out", d])
-    run(thresh, [mode] + common + ["--to", "csv", "--normalize-dates", "--out", d])
+    run(thresh, [mode] + common + ["--to", "csv", "--normalize-dates", "--out", d, "--reject", d])
 
     with open(os.path.join(d, stem + ".arrows"), "rb") as f:
         table = ipc.open_stream(f).read_all()
@@ -127,6 +197,12 @@ def check(thresh, corpus, name, out, mode):
         from_file = ipc.open_file(f).read_all()
     if not table.equals(from_file):
         raise AssertionError("%s (%s): the stream and the file format differ" % (name, mode))
+    # The library's C streams: the IPC stream's table, which the rest of
+    # this checks against the CSV, and the reject file's rows.
+    streamed, rejected = c_streams(path, common[common.index("--schema") + 1] if mode == "run" else None, common[3])
+    if not streamed.equals(table):
+        raise AssertionError("%s (%s): the C stream's table differs from the IPC stream's:\n%s\n%s" % (name, mode, streamed.schema, table.schema))
+    check_rejects(name, mode, rejected, os.path.join(d, os.path.basename(path) + ".rejects.csv"))
     with open(os.path.join(d, stem + ".csv"), newline="", encoding="utf-8") as f:
         rows = list(csv.reader(f))
     header, rows = rows[0], rows[1:]
@@ -194,22 +270,29 @@ DUCK = None
 
 
 def main():
-    global DUCK
+    global DUCK, CSTREAM, REASONS
     thresh, corpus = sys.argv[1], sys.argv[2]
+    CSTREAM = ctypes.CDLL(sys.argv[3])
+    CSTREAM.thresh_test_read.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p]
+    CSTREAM.thresh_test_read.restype = ctypes.c_int
+    REASONS = reasons()
     csv.field_size_limit(1 << 30)
     DUCK = duck_connection()
     with open(os.path.join(corpus, "index.txt")) as f:
         names = f.read().split()
     seen = set()
-    # Every type the corpus lacks: time, binary, an enum with nulls.
-    types = os.path.join(os.path.dirname(os.path.abspath(__file__)), "types.csv")
+    here = os.path.dirname(os.path.abspath(__file__))
     with tempfile.TemporaryDirectory() as out:
-        seen.update(check(thresh, corpus, types, out, "run"))
+        # Every type the corpus lacks: time, binary, an enum with nulls.
+        seen.update(check(thresh, corpus, os.path.join(here, "types.csv"), out, "run"))
+        # Rows rejected every way: a bad value, two in a row, a short row,
+        # a wide one with a field over two lines, a value not in the enum.
+        seen.update(check(thresh, corpus, os.path.join(here, "rejects.csv"), out, "run"))
         for name in names:
             for mode in ("run", "convert"):
                 seen.update(check(thresh, corpus, name, out, mode))
     print(
-        "arrow-check: %d files, both modes, stream and file format, pyarrow%s; types %s"
+        "arrow-check: %d files, both modes, stream and file format and the library's C streams, pyarrow%s; types %s"
         % (len(names), " and DuckDB" if DUCK else "", ", ".join(sorted(seen))),
         file=sys.stderr,
     )

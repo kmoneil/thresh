@@ -130,7 +130,7 @@ A report's `warnings` and `sniff`'s are lists of codes. None stops a file.
 
 Why a value or a row was rejected. A report's column `samples` carry the
 code as `code`; `row_errors` counts rows by code; a reject file's
-`_errors` names the sentence.
+`_errors` names the sentence, and the library's rejects stream the code.
 
 | Code | Sentence |
 | --- | --- |

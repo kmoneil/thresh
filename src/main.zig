@@ -439,6 +439,7 @@ test {
     _ = @import("validate.zig");
     _ = @import("write/csv.zig");
     _ = @import("write/arrow.zig");
+    _ = @import("write/arrow_c.zig");
     _ = @import("write/flatbuf.zig");
     _ = @import("builders.zig");
     _ = report;

@@ -94,6 +94,8 @@ pub const Validator = struct {
     /// Whether the quotes are data: records.QuoteCheck.
     quotes: records.QuoteCheck = .{},
     reject: ?*Io.Writer = null,
+    /// Where rejected rows go as columns, for the Arrow export.
+    rejects: ?*builders.Rejects = null,
     /// Where accepted rows go, for the writers.
     batch: ?*builders.Batch = null,
     /// The row's text and value per schema column, for the batch.
@@ -104,6 +106,8 @@ pub const Validator = struct {
     /// A wide row's fields past the header, for the reject file's _extra.
     extra: std.ArrayList(u8) = .empty,
     errors: std.ArrayList(u8) = .empty,
+    /// The row's errors as codes, as errors has them in sentences.
+    codes: std.ArrayList(builders.RowError) = .empty,
     values: std.ArrayList([]const u8) = .empty,
 
     pub fn init(gpa: Allocator, s: *const Schema, d: Dialect, options: Options) Allocator.Error!Validator {
@@ -154,6 +158,7 @@ pub const Validator = struct {
         v.scratch.deinit(v.gpa);
         v.extra.deinit(v.gpa);
         v.errors.deinit(v.gpa);
+        v.codes.deinit(v.gpa);
         v.values.deinit(v.gpa);
         v.arena.deinit();
     }
@@ -247,11 +252,13 @@ pub const Validator = struct {
         v.stray_quotes += rec.stray_quotes;
         if (rec.foreign_newline) v.foreign_newlines += 1;
         v.errors.clearRetainingCapacity();
+        v.codes.clearRetainingCapacity();
         if (rec.end > base and !endsLine(data[@intCast(rec.end - 1 - base)])) try v.cutOff(rec, fields.len);
         if (v.rowError(rec, fields.len)) |r| {
             v.row_errors.getPtr(r).* += 1;
             v.whole += 1;
             try v.errors.print(v.gpa, "*:{s}", .{r.text()});
+            try v.codes.append(v.gpa, .{ .column = null, .reason = r });
             return v.rejectRow(rec, fields, data, base);
         }
         // Every value at once, so none overwrites another: the batch keeps
@@ -336,6 +343,7 @@ pub const Validator = struct {
         });
         if (v.errors.items.len > 0) try v.errors.append(v.gpa, ';');
         try v.errors.print(v.gpa, "{s}:{s}", .{ c.name, r.text() });
+        try v.codes.append(v.gpa, .{ .column = c.name, .reason = r });
     }
 
     fn isNull(v: *const Validator, c: *const Column, value: []const u8) bool {
@@ -356,10 +364,26 @@ pub const Validator = struct {
     /// fields as read, a short row's padded to the header's width, then
     /// _row (its source line), _errors and _extra (a wide row's fields past
     /// the header, joined by the file's delimiter). Every line is as wide
-    /// as the header, so a reader that goes by it reads every row.
+    /// as the header, so a reader that goes by it reads every row. The
+    /// same row goes to the rejects batch when there is one, a short row's
+    /// missing fields as nulls.
     fn rejectRow(v: *Validator, rec: Record, fields: []const Field, data: []const u8, base: u64) (Allocator.Error || Io.Writer.Error)!void {
         v.rejected += 1;
         if (v.rejected_sample.items.len < max_samples) try v.rejected_sample.append(v.gpa, rec.line);
+        if (v.reject == null and v.rejects == null) return;
+        const wide = fields.len > v.names.len;
+        if (wide) {
+            v.extra.clearRetainingCapacity();
+            for (fields[v.names.len..], 0..) |f, i| {
+                if (i > 0) try v.extra.append(v.gpa, v.dialect.delimiter);
+                try v.extra.appendSlice(v.gpa, try v.valueOf(f, data, base));
+            }
+        }
+        if (v.rejects) |r| {
+            try r.begin(v.names.len);
+            for (0..v.names.len) |i| try r.field(i, if (i < fields.len) try v.valueOf(fields[i], data, base) else null);
+            try r.end(rec.line, v.codes.items, if (wide) v.extra.items else null);
+        }
         const w = v.reject orelse return;
         if (!v.reject_header_written) {
             v.reject_header_written = true;
@@ -376,14 +400,7 @@ pub const Validator = struct {
         try w.print("{d},", .{rec.line});
         try csv.field(w, v.errors.items, .{});
         try csv.delimiter(w, .{});
-        if (fields.len > v.names.len) {
-            v.extra.clearRetainingCapacity();
-            for (fields[v.names.len..], 0..) |f, i| {
-                if (i > 0) try v.extra.append(v.gpa, v.dialect.delimiter);
-                try v.extra.appendSlice(v.gpa, try v.valueOf(f, data, base));
-            }
-            try csv.field(w, v.extra.items, .{});
-        }
+        if (wide) try csv.field(w, v.extra.items, .{});
         try w.writeByte('\n');
     }
 
