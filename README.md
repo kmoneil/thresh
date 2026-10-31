@@ -99,7 +99,7 @@ arrow FROM community; LOAD arrow; COPY (FROM read_arrow('x.arrows')) TO
 Zig 0.17.0.
 
 ```sh
-zig build --release       # zig-out/bin/thresh, ReleaseSafe: what a release ships
+zig build --release       # zig-out/bin/thresh and libthresh, ReleaseSafe: what a release ships
 zig build                 # Debug
 zig build test            # unit tests, the corpus, the command and examples/
                           # (-Dcorpus=false skips the parts needing python3)
@@ -111,6 +111,13 @@ zig build scale -Doptimize=ReleaseFast  # 10,000 files, MB/s by --jobs, Ctrl-C
 zig build fuzz            # replay the fuzz seeds; tools/fuzz.sh [LIMIT] fuzzes
 zig build arrow-check     # Arrow output and C streams read back by pyarrow and DuckDB
 ```
+
+**As a C library.** The same build installs libthresh, static and
+shared, and its header, `zig-out/include/thresh.h`: sniff, infer and
+validate return the JSON documents of [docs/REPORT.md](docs/REPORT.md),
+and read hands rows and rejected rows to pyarrow, polars or DuckDB as
+Arrow C streams, without a copy. [docs/C.md](docs/C.md) has the calls,
+ownership and threads.
 
 ## Speed
 
@@ -144,13 +151,13 @@ compiles that is almost certainly wrong.
 ## Status
 
 Early, and tried on real feeds. Problems are codes as well as sentences,
-the reports have a [versioned format](docs/REPORT.md), and the CLI is
-built on a library (`src/lib.zig`) that hands rows and rejects out as
-Arrow C streams. Next: thresh as a C library and a Python package,
-[threshio](https://pypi.org/project/threshio/), that checks a file before
-the rest of your code runs, describes it in one document (for people,
-code or an AI, with a shapes-only mode that leaves the data out), and
-hands rows and rejects to pyarrow, polars or DuckDB without a copy.
+the reports have a [versioned format](docs/REPORT.md), and thresh is a
+[C library](docs/C.md) as well as a command. Next: a Python package,
+[threshio](https://pypi.org/project/threshio/), over the C library, that
+checks a file before the rest of your code runs, describes it in one
+document (for people, code or an AI, with a shapes-only mode that leaves
+the data out), and hands rows and rejects to pyarrow, polars or DuckDB
+without a copy.
 
 ## License
 

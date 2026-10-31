@@ -11,6 +11,7 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const testing = std.testing;
 const dialect = @import("dialect.zig");
+const lib = @import("lib.zig");
 const Problem = @import("problem.zig").Problem;
 const Field = @import("records.zig").Field;
 const reference = @import("reference.zig");
@@ -21,8 +22,9 @@ const validate = @import("validate.zig");
 const doc_text = @embedFile("report_doc");
 
 /// A field's JSON types, as a row's second cell names them. A problem is an
-/// object PROBLEMS.md describes, held to it by problems_doc_test.zig.
-const Kind = enum { string, integer, number, boolean, null, array, object, problem };
+/// object PROBLEMS.md describes, held to it by problems_doc_test.zig; a
+/// schema is one the schema's own table describes, held to it below.
+const Kind = enum { string, integer, number, boolean, null, array, object, problem, schema };
 const Kinds = std.EnumSet(Kind);
 
 const Row = struct { kinds: Kinds, meaning: []const u8 };
@@ -74,8 +76,8 @@ fn kindOf(v: std.json.Value) Kind {
 
 /// Each field under v, at its path: `a.b` for a field of an object,
 /// `a[]` for an array's items, `a{}` for a map's values (a row for
-/// `a{}` says a is one), and no further into a problem. An array's
-/// objects need no row of their own: their fields have them.
+/// `a{}` says a is one), and no further into a problem or a schema. An
+/// array's objects need no row of their own: their fields have them.
 fn walk(a: Allocator, rows: *const Rows, seen: *std.StringArrayHashMapUnmanaged(Kinds), path: []const u8, v: std.json.Value) !void {
     const items_of_their_own = v == .object and std.mem.endsWith(u8, path, "[]") and !rows.contains(path);
     if (path.len > 0 and !items_of_their_own) {
@@ -87,11 +89,17 @@ fn walk(a: Allocator, rows: *const Rows, seen: *std.StringArrayHashMapUnmanaged(
                 return error.TestUnexpectedResult;
             }
             break :kind .problem;
+        } else if (v == .object and rows.contains(path) and rows.get(path).?.kinds.contains(.schema)) kind: {
+            if (v.object.get("columns") == null) {
+                std.debug.print("`{s}`: a schema without its columns\n", .{path});
+                return error.TestUnexpectedResult;
+            }
+            break :kind .schema;
         } else kindOf(v);
         const kinds = try seen.getOrPut(a, path);
         if (!kinds.found_existing) kinds.value_ptr.* = .empty;
         kinds.value_ptr.insert(kind);
-        if (kind == .problem) return;
+        if (kind == .problem or kind == .schema) return;
     }
     switch (v) {
         .array => |items| {
@@ -239,7 +247,24 @@ test "docs/REPORT.md: the reports' fields, as thresh writes them" {
     _ = try expectDocumented(a, "sniff", report.format_version, &.{
         try written(a, report.writeSniffLine, .{ "a.csv", verdict('"'), &[_]Problem{.{ .quote_is_data = .{ .records = 1, .lines = 3, .line = 62 } }} }),
         try written(a, report.writeSniffLine, .{ "b.csv", verdict(null), &[_]Problem{} }),
+        // The library's sniff of a file it cannot read.
+        try written(a, report.writeSniffLine, .{ "c.csv", null, &[_]Problem{.no_such_file} }),
     });
+    // Two files, one unreadable; a note on a file and one on the run; the
+    // files disagree. And a run with nothing to infer from.
+    const files = [_]lib.Columns{ .{ .outcome = ok_outcome }, .{ .outcome = error_outcome } };
+    _ = try expectDocumented(a, "infer", report.format_version, &.{
+        try written(a, lib.writeInferResult, .{ &files, lib.Merged{
+            .schema = sample_schema,
+            .notes = &.{
+                .{ .after = 0, .problem = .{ .header_repeated = .{ .line = 4, .count = 1 } } },
+                .{ .after = null, .problem = .{ .columns_thin = .{ .columns = &.{"lug_id"}, .count = 1, .few_values = 5 } } },
+            },
+            .disagreement = .{ .files_widths = .{ .min = 3, .max = 4 } },
+        } }),
+        try written(a, lib.writeInferResult, .{ files[1..], lib.Merged{ .stop = .nothing_to_infer } }),
+    });
+    try expectValues(a, "infer", "files[].result", enum { pass, @"error" });
 
     for ([_][]const u8{ "report", "sniff" }) |name| {
         try expectValues(a, name, "dialect.escape", dialect.Dialect.Escape);
@@ -279,6 +304,13 @@ test "docs/REPORT.md: the schema's fields, as infer writes and --schema reads th
     const seen = try expectDocumented(a, "schema", schema.format_version, &.{text});
     // A field of the structs that the schema above leaves out would be
     // one the doc is never held to.
+    // The schema an infer result holds is written the same way.
+    var nested: Io.Writer.Allocating = .init(a);
+    try lib.writeInferResult(&nested.writer, &.{}, .{ .schema = full });
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, nested.written(), .{});
+    var alone: Io.Writer.Allocating = .init(a);
+    try std.json.Stringify.value(parsed.object.get("schema").?, .{}, &alone.writer);
+    _ = try expectDocumented(a, "schema", schema.format_version, &.{alone.written()});
     inline for (@typeInfo(schema.Schema).@"struct".field_names) |f| try testing.expect(seen.contains(f));
     inline for (@typeInfo(schema.Column).@"struct".field_names) |f| try testing.expect(seen.contains("columns[]." ++ f));
     // What infer writes, --schema reads.

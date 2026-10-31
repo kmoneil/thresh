@@ -426,18 +426,22 @@ pub fn writeJsonLine(w: *Io.Writer, o: Outcome) Stringify.Error!void {
 }
 
 /// sniff --json: a file's dialect, how sure, its warnings, and what stops
-/// it (worker.verdictProblem), as one compact JSON object.
-pub fn writeSniffLine(w: *Io.Writer, file: []const u8, v: dialect.Verdict, problems: []const Problem) Stringify.Error!void {
+/// it (worker.verdictProblem), as one compact JSON object. With no verdict
+/// (the library's sniff of a file it could not read), no dialect, and the
+/// problem why.
+pub fn writeSniffLine(w: *Io.Writer, file: []const u8, verdict: ?dialect.Verdict, problems: []const Problem) Stringify.Error!void {
     var s: Stringify = .{ .writer = w };
     try s.beginObject();
     try s.objectField("format_version");
     try s.write(format_version);
     try s.objectField("file");
     try s.write(file);
-    try s.objectField("dialect");
-    try s.write(v);
+    if (verdict) |v| {
+        try s.objectField("dialect");
+        try s.write(v);
+    }
     try s.objectField("warnings");
-    try s.write(v.warnings);
+    try s.write(if (verdict) |v| v.warnings else dialect.Warnings{});
     try s.objectField("problems");
     try s.write(problems);
     try s.endObject();

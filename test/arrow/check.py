@@ -4,7 +4,7 @@ it can read the files; and the library's Arrow C streams, imported by
 pyarrow.
 
     uv run --with pyarrow --with duckdb --with pytz zig build arrow-check
-    python3 test/arrow/check.py THRESH CORPUS_DIR CSTREAM_LIB    (with pyarrow installed)
+    python3 test/arrow/check.py THRESH CORPUS_DIR LIBTHRESH    (with pyarrow installed)
 
 For every clean corpus file, thresh writes Arrow (the stream format and,
 with --arrow-file, the file format) and CSV with dates normalized to RFC
@@ -16,11 +16,12 @@ type. DuckDB, when installed with its community arrow extension
 (INSTALL arrow FROM community), must read both files itself, through
 read_arrow, to the same values pyarrow does.
 
-The same file read through the library (lib.readArrow, behind the test
-library's one C call) must give pyarrow, through the C Data Interface,
-the table it read from the IPC stream, and a rejects stream that holds
-what the reject file does, its codes the sentences of PROBLEMS.md's
-reasons table.
+The same file read through libthresh's C ABI (include/thresh.h, loaded
+with ctypes as a Python package would: thresh_infer for the inferred
+schema, thresh_read for the streams) must give pyarrow, through the C
+Data Interface, the table it read from the IPC stream, and a rejects
+stream that holds what the reject file does, its codes the sentences of
+PROBLEMS.md's reasons table.
 """
 
 import csv
@@ -79,16 +80,90 @@ class ArrowArrayStream(ctypes.Structure):
     _fields_ = [(name, ctypes.c_void_p) for name in ("get_schema", "get_next", "get_last_error", "release", "private_data")]
 
 
-CSTREAM = None
+class Options(ctypes.Structure):
+    """thresh_options, as include/thresh.h lays it out."""
+
+    _fields_ = [
+        ("size", ctypes.c_size_t),
+        ("flags", ctypes.c_uint32),
+        ("quote", ctypes.c_int32),
+        ("delimiter", ctypes.c_uint8),
+        ("escape", ctypes.c_uint8),
+        ("newline", ctypes.c_uint8),
+        ("header", ctypes.c_uint8),
+        ("comment", ctypes.c_uint8),
+        ("ragged", ctypes.c_uint8),
+        ("encoding", ctypes.c_char_p),
+        ("nulls", ctypes.POINTER(ctypes.c_char_p)),
+        ("nulls_len", ctypes.c_size_t),
+        ("sample_bytes", ctypes.c_uint64),
+        ("sample_rows", ctypes.c_uint64),
+        ("threshold", ctypes.c_double),
+        ("jobs", ctypes.c_uint32),
+        ("cancel", ctypes.c_void_p),
+    ]
 
 
-def c_streams(path, schema, encoding):
-    """The file read through the library: its rows and its rejected rows,
-    each a table pyarrow imported from an Arrow C stream."""
-    rows, rejects = ArrowArrayStream(), ArrowArrayStream()
-    code = CSTREAM.thresh_test_read(path.encode(), schema.encode() if schema else None, encoding.encode(), ctypes.byref(rows), ctypes.byref(rejects))
+LIB = None
+HANDLE = None
+WANT_ROWS, WANT_REJECTS = 1, 2
+
+
+def load(path):
+    global LIB, HANDLE
+    LIB = ctypes.CDLL(path)
+    p, s, i, u = ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_uint32
+    out = ctypes.POINTER(ctypes.c_void_p)
+    sigs = {
+        "thresh_new": ([], p),
+        "thresh_error": ([p], s),
+        "thresh_string_free": ([p], None),
+        "thresh_infer": ([p, ctypes.POINTER(s), ctypes.c_size_t, ctypes.POINTER(Options), out], i),
+        "thresh_read": ([p, s, s, ctypes.POINTER(Options), u, out, out], i),
+        "thresh_reader_rows": ([p, ctypes.POINTER(ArrowArrayStream)], i),
+        "thresh_reader_rejects": ([p, ctypes.POINTER(ArrowArrayStream)], i),
+        "thresh_reader_free": ([p], None),
+    }
+    for name, (args, res) in sigs.items():
+        f = getattr(LIB, name)
+        f.argtypes, f.restype = args, res
+    HANDLE = LIB.thresh_new()
+
+
+def taken(p):
+    """A string libthresh returned, freed."""
+    text = ctypes.string_at(p).decode()
+    LIB.thresh_string_free(p)
+    return text
+
+
+def expect_ok(code, what):
     if code != 0:
-        raise AssertionError("%s: the library's read gave %d" % (path, code))
+        raise AssertionError("%s: status %d, %s" % (what, code, LIB.thresh_error(HANDLE).decode()))
+
+
+def c_streams(path, schema_path, encoding):
+    """The file read through libthresh: its rows and its rejected rows,
+    each a table pyarrow imported from an Arrow C stream. With no schema,
+    the one thresh_infer gives for the file alone, as convert infers."""
+    o = Options(size=ctypes.sizeof(Options), encoding=encoding.encode())
+    json_out = ctypes.c_void_p()
+    if schema_path:
+        with open(schema_path, "rb") as f:
+            schema = f.read()
+    else:
+        paths = (ctypes.c_char_p * 1)(path.encode())
+        expect_ok(LIB.thresh_infer(HANDLE, paths, 1, ctypes.byref(o), ctypes.byref(json_out)), path)
+        schema = json.dumps(json.loads(taken(json_out))["schema"]).encode()
+    reader = ctypes.c_void_p()
+    expect_ok(LIB.thresh_read(HANDLE, path.encode(), schema, ctypes.byref(o), WANT_ROWS | WANT_REJECTS, ctypes.byref(reader), ctypes.byref(json_out)), path)
+    if not reader:
+        raise AssertionError("%s: stopped before it was read: %s" % (path, taken(json_out)))
+    rows, rejects = ArrowArrayStream(), ArrowArrayStream()
+    expect_ok(LIB.thresh_reader_rows(reader, ctypes.byref(rows)), path)
+    expect_ok(LIB.thresh_reader_rejects(reader, ctypes.byref(rejects)), path)
+    # The streams hold what they read from.
+    LIB.thresh_reader_free(reader)
     tables = [pa.RecordBatchReader._import_from_c(ctypes.addressof(s)).read_all() for s in (rows, rejects)]
     # Imported: pyarrow holds them, and marked the structs released.
     if rows.release or rejects.release:
@@ -270,11 +345,9 @@ DUCK = None
 
 
 def main():
-    global DUCK, CSTREAM, REASONS
+    global DUCK, REASONS
     thresh, corpus = sys.argv[1], sys.argv[2]
-    CSTREAM = ctypes.CDLL(sys.argv[3])
-    CSTREAM.thresh_test_read.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p]
-    CSTREAM.thresh_test_read.restype = ctypes.c_int
+    load(sys.argv[3])
     REASONS = reasons()
     csv.field_size_limit(1 << 30)
     DUCK = duck_connection()
@@ -292,7 +365,7 @@ def main():
             for mode in ("run", "convert"):
                 seen.update(check(thresh, corpus, name, out, mode))
     print(
-        "arrow-check: %d files, both modes, stream and file format and the library's C streams, pyarrow%s; types %s"
+        "arrow-check: %d files, both modes, stream and file format and libthresh's C streams, pyarrow%s; types %s"
         % (len(names), " and DuckDB" if DUCK else "", ", ".join(sorted(seen))),
         file=sys.stderr,
     )

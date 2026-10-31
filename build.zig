@@ -53,6 +53,61 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = mod })).step);
 
+    // libthresh: include/thresh.h over src/capi.zig, static and shared,
+    // into zig-out/lib and zig-out/include. On Windows the names keep the
+    // DLL's import library and its .pdb from meeting the static library's
+    // and the executable's.
+    const capi_mod = b.createModule(.{
+        .root_source_file = b.path("src/capi.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{.{ .name = "dateparsa", .module = dateparsa.module("dateparsa") }},
+    });
+    capi_mod.addOptions("build_options", options);
+    const windows = target.result.os.tag == .windows;
+    const static_lib = b.addLibrary(.{ .linkage = .static, .name = if (windows) "libthresh_static" else "thresh", .root_module = capi_mod });
+    // A C toolchain other than Zig's may lack what 128-bit decimals call.
+    static_lib.bundle_compiler_rt = true;
+    const shared_lib = b.addLibrary(.{ .linkage = .dynamic, .name = if (windows) "libthresh" else "thresh", .root_module = capi_mod });
+    b.installArtifact(static_lib);
+    b.installArtifact(shared_lib);
+    b.installFile("include/thresh.h", "include/thresh.h");
+
+    // The C ABI's tests, with the header translated so they hold its
+    // layout to the library's; and a C program through the header, linked
+    // to each library.
+    const capi_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/capi.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "dateparsa", .module = dateparsa.module("dateparsa") },
+            .{ .name = "thresh_h", .module = b.addTranslateC(.{ .root_source_file = b.path("include/thresh.h"), .target = target, .optimize = optimize }).createModule() },
+        },
+    });
+    capi_test_mod.addOptions("build_options", options);
+    // Its own tests: the library's run in the test above.
+    const capi_test = b.addRunArtifact(b.addTest(.{ .name = "capi-test", .root_module = capi_test_mod, .filters = &.{"capi.test."} }));
+    capi_test.setCwd(b.path("."));
+    capi_test.addFileInput(b.path("test/c/lugs.csv"));
+    test_step.dependOn(&capi_test.step);
+    for ([_]*std.Build.Step.Compile{ static_lib, shared_lib }) |l| {
+        const smoke = b.addExecutable(.{
+            .name = b.fmt("c-smoke-{t}", .{l.linkage.?}),
+            .root_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true }),
+        });
+        smoke.root_module.addCSourceFile(.{ .file = b.path("test/c/smoke.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic" } });
+        smoke.root_module.addIncludePath(b.path("include"));
+        smoke.root_module.linkLibrary(l);
+        const run_smoke = b.addRunArtifact(smoke);
+        run_smoke.setCwd(b.path("."));
+        run_smoke.addFileInput(b.path("test/c/lugs.csv"));
+        run_smoke.expectExitCode(0);
+        test_step.dependOn(&run_smoke.step);
+    }
+
     // The program itself on a few inputs, for what its tests cannot see from
     // inside: arguments, files, the output streams and the exit status.
     for (cli_checks) |check| {
@@ -170,30 +225,15 @@ pub fn build(b: *std.Build) void {
     b.step("bench-install", "Install the benchmark binary").dependOn(&b.addInstallArtifact(bench_exe, .{}).step);
 
     // The Arrow writer read back by pyarrow (and DuckDB when installed),
-    // value for value against the CSV path, and the library's Arrow C
-    // streams imported by pyarrow, against both. Needs python3 with
-    // pyarrow: `uv run --with pyarrow --with duckdb zig build arrow-check`.
-    const cstream = b.addLibrary(.{
-        .name = "thresh_cstream",
-        .linkage = .dynamic,
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("test/arrow/cstream.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-            .imports = &.{.{ .name = "thresh", .module = b.createModule(.{
-                .root_source_file = b.path("src/root.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{.{ .name = "dateparsa", .module = dateparsa.module("dateparsa") }},
-            }) }},
-        }),
-    });
+    // value for value against the CSV path, and libthresh's Arrow C streams
+    // imported by pyarrow through its C ABI, against both. Needs python3
+    // with pyarrow: `uv run --with pyarrow --with duckdb zig build
+    // arrow-check`.
     const arrow_check = b.addSystemCommand(&.{ "python3", "-I" });
     arrow_check.addFileArg(b.path("test/arrow/check.py"));
     arrow_check.addArtifactArg(exe);
     arrow_check.addDirectoryArg(corpus_dir);
-    arrow_check.addArtifactArg(cstream);
+    arrow_check.addArtifactArg(shared_lib);
     arrow_check.has_side_effects = true;
     b.step("arrow-check", "Read thresh's Arrow output and C streams back with pyarrow (needs python3 with pyarrow)").dependOn(&arrow_check.step);
 
