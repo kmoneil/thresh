@@ -180,6 +180,164 @@
     37,
     41
   ],
+  "rejected_lines": [
+    {
+      "row": 5,
+      "text": "\"4\",\"pending\",\"-801.48\",\"0.0590\",\"true\",\"2021-09-01\",\"2021-09-14 00:59:16\",\"Bad\" quote",
+      "errors": [
+        {
+          "code": "bad_quote"
+        }
+      ]
+    },
+    {
+      "row": 9,
+      "text": "\"12a\",\"open\",\"7913.84\",\"0.7503\",\"true\",\"2025-11-09\",\"2026-10-14 02:02:42\",\"Dev Smith\"",
+      "errors": [
+        {
+          "column": "id",
+          "code": "not_int"
+        }
+      ]
+    },
+    {
+      "row": 13,
+      "text": "\"\",\"pending\",\"4694.97\",\"0.0613\",\"false\",\"2026-04-19\",\"2023-04-24 09:57:56\",\"Jo OBrien\"",
+      "errors": [
+        {
+          "column": "id",
+          "code": "null_value"
+        }
+      ]
+    },
+    {
+      "row": 17,
+      "text": "\"99999999999999999999\",\"pending\",\"3180.32\",\"\",\"true\",\"2026-05-15\",\"2024-04-24 14:18:57\",\"Fatima Smith\"",
+      "errors": [
+        {
+          "column": "id",
+          "code": "int_overflow"
+        }
+      ]
+    },
+    {
+      "row": 21,
+      "text": "\"20\",\"OPEN\",\"3290.51\",\"0.5206\",\"false\",\"2021-01-22\",\"2026-05-21 20:01:49\",\"Chloé OBrien\"",
+      "errors": [
+        {
+          "column": "code",
+          "code": "not_in_enum"
+        }
+      ]
+    },
+    {
+      "row": 25,
+      "text": "\"24\",\"open\",\"1234567890123.45\",\"0.5377\",\"false\",\"2020-10-03\",\"2024-12-18 18:03:05\",\"Ana Smith\"",
+      "errors": [
+        {
+          "column": "amount",
+          "code": "decimal_precision"
+        }
+      ]
+    },
+    {
+      "row": 29,
+      "text": "\"28\",\"closed\",\"1.234\",\"0.7886\",\"false\",\"2022-09-17\",\"2025-09-13 00:14:26\",\"Émile Ng\"",
+      "errors": [
+        {
+          "column": "amount",
+          "code": "decimal_scale"
+        }
+      ]
+    },
+    {
+      "row": 33,
+      "text": "\"32\",\"closed\",\"12,50\",\"0.9104\",\"true\",\"2022-02-11\",\"2020-04-19 15:40:57\",\"Fatima Lee\"",
+      "errors": [
+        {
+          "column": "amount",
+          "code": "not_decimal"
+        }
+      ]
+    },
+    {
+      "row": 37,
+      "text": "\"36\",\"open\",\"15432.27\",\"abc\",\"false\",\"2020-02-27\",\"2022-10-08 18:21:13\",\"Bo Smith\"",
+      "errors": [
+        {
+          "column": "ratio",
+          "code": "not_float"
+        }
+      ]
+    },
+    {
+      "row": 41,
+      "text": "\"40\",\"closed\",\"-4630.93\",\"0.4771\",\"maybe\",\"2023-02-07\",\"2026-12-02 13:01:10\",\"Günter DSouza\"",
+      "errors": [
+        {
+          "column": "flag",
+          "code": "not_bool"
+        }
+      ]
+    },
+    {
+      "row": 45,
+      "text": "\"44\",\"open\",\"8878.32\",\"0.0588\",\"true\",\"2024-02-30\",\"2023-03-21 14:18:21\",\"Günter Ng\"",
+      "errors": [
+        {
+          "column": "created",
+          "code": "not_in_format"
+        }
+      ]
+    },
+    {
+      "row": 49,
+      "text": "\"48\",\"open\",\"-4402.15\",\"0.6860\",\"false\",\"2023-04-22\",\"3 days ago\",\"Fatima Østergaard\"",
+      "errors": [
+        {
+          "column": "updated",
+          "code": "not_in_format"
+        }
+      ]
+    },
+    {
+      "row": 53,
+      "text": "\"52\",\"closed\",\"1905.06\",\"0.7532\",\"true\",\"2021-12-09\",\"2026-07-10 00:31:17\",\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
+      "errors": [
+        {
+          "column": "name",
+          "code": "too_long"
+        }
+      ]
+    },
+    {
+      "row": 57,
+      "text": "\"56\",\"open\",\"4223.78\",\"0.3800\",\"false\",\"2023-07-03\",\"2024-09-17 14:31:38\",\"caf�\"",
+      "errors": [
+        {
+          "column": "name",
+          "code": "invalid_utf8"
+        }
+      ]
+    },
+    {
+      "row": 61,
+      "text": "\"60\",\"closed\",\"16011.45\",\"\",\"true\",\"2020-08-13\",\"2022-08-15 17:48:32\"",
+      "errors": [
+        {
+          "code": "ragged"
+        }
+      ]
+    }
+  ],
+  "limits": {
+    "samples": 10,
+    "sample_bytes": 200,
+    "rejected_sample": 10,
+    "rejected_lines": 20,
+    "line_bytes": 300,
+    "repeated_header_rows": 10
+  },
   "row_errors": {
     "ragged": 1,
     "bad_quote": 1

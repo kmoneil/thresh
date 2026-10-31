@@ -45,6 +45,22 @@ pub const Options = struct {
 pub const max_samples = 10;
 /// A sample's value is cut to this many bytes.
 pub const max_sample_len = 200;
+/// The most rejected rows the report shows as the file has them, and the
+/// bytes it keeps of each.
+pub const max_lines = 20;
+pub const max_line_len = 300;
+
+/// A rejected row as the file has it.
+pub const Line = struct {
+    /// The source line it starts on.
+    row: u64,
+    /// Its bytes, delimiters and quotes too, without its line break: its
+    /// first max_line_len, cut at a character.
+    text: []const u8,
+    /// All of its bytes.
+    len: u64,
+    errors: []const builders.RowError,
+};
 
 pub const Sample = struct { row: u64, value: []const u8, reason: Reason };
 
@@ -77,6 +93,8 @@ pub const Validator = struct {
     /// them, so they count in no column.
     whole: u64 = 0,
     rejected_sample: std.ArrayList(u64) = .empty,
+    /// The first rejected rows, as the file has them.
+    rejected_lines: std.ArrayList(Line) = .empty,
     row_errors: std.EnumArray(Reason, u64) = .initFill(0),
     structural: std.ArrayList(Problem) = .empty,
     extra_columns: bool = false,
@@ -153,6 +171,7 @@ pub const Validator = struct {
         v.gpa.free(v.raw);
         v.gpa.free(v.cells);
         v.rejected_sample.deinit(v.gpa);
+        v.rejected_lines.deinit(v.gpa);
         v.repeated_lines.deinit(v.gpa);
         v.structural.deinit(v.gpa);
         v.scratch.deinit(v.gpa);
@@ -370,6 +389,7 @@ pub const Validator = struct {
     fn rejectRow(v: *Validator, rec: Record, fields: []const Field, data: []const u8, base: u64) (Allocator.Error || Io.Writer.Error)!void {
         v.rejected += 1;
         if (v.rejected_sample.items.len < max_samples) try v.rejected_sample.append(v.gpa, rec.line);
+        if (v.rejected_lines.items.len < max_lines) try v.keepLine(rec, data, base);
         if (v.reject == null and v.rejects == null) return;
         const wide = fields.len > v.names.len;
         if (wide) {
@@ -402,6 +422,24 @@ pub const Validator = struct {
         try csv.delimiter(w, .{});
         if (wide) try csv.field(w, v.extra.items, .{});
         try w.writeByte('\n');
+    }
+
+    /// The rejected row rec as the file has it, and its errors, for the
+    /// report.
+    fn keepLine(v: *Validator, rec: Record, data: []const u8, base: u64) Allocator.Error!void {
+        if (rec.start < base or rec.end < rec.start) return;
+        var raw = data[@intCast(rec.start - base)..@intCast(rec.end - base)];
+        if (std.mem.endsWith(u8, raw, "\n")) raw = raw[0 .. raw.len - 1];
+        if (std.mem.endsWith(u8, raw, "\r")) raw = raw[0 .. raw.len - 1];
+        var cut = @min(raw.len, max_line_len);
+        // Not inside a UTF-8 character; a single-byte encoding has none.
+        if (v.options.encoding == .utf8) {
+            while (cut > 0 and cut < raw.len and raw[cut] & 0xc0 == 0x80) cut -= 1;
+        }
+        const a = v.arena.allocator();
+        const errors = try a.alloc(builders.RowError, v.codes.items.len);
+        for (errors, v.codes.items) |*e, c| e.* = .{ .column = if (c.column) |n| try a.dupe(u8, n) else null, .reason = c.reason };
+        try v.rejected_lines.append(v.gpa, .{ .row = rec.line, .text = try a.dupe(u8, raw[0..cut]), .len = raw.len, .errors = errors });
     }
 
     /// Whether fields are the header's names again, trimmed and in any
@@ -508,6 +546,41 @@ fn rejectLines(text: []const u8) !std.ArrayList(struct { usize, []const u8 }) {
     defer fields.deinit(testing.allocator);
     while (try p.next(testing.allocator, &fields)) |_| try out.append(testing.allocator, .{ fields.items.len, fields.items[fields.items.len - 1].raw(text) });
     return out;
+}
+
+test "the report keeps rejected rows as the file has them: line breaks, quotes, a cut at a character" {
+    var rejects: Io.Writer.Allocating = .init(testing.allocator);
+    defer rejects.deinit();
+    // 299 bytes of "a", then a two-byte character over the 300th byte.
+    const long = "3,2.00,\"" ++ @as([291]u8, @splat('a')) ++ "é\"\r\n";
+    var v = try run("id,amount,status\r\nx,1.00,open\r\n2,1.00,\"cl\r\nosed\"\r\n" ++ long, &orders, .{}, &rejects);
+    defer v.deinit();
+    const lines = v.rejected_lines.items;
+    try testing.expectEqual(@as(usize, 3), lines.len);
+    try testing.expectEqualStrings("x,1.00,open", lines[0].text);
+    try testing.expectEqual(@as(u64, 2), lines[0].row);
+    try testing.expectEqualStrings("id", lines[0].errors[0].column.?);
+    try testing.expectEqual(Reason.not_int, lines[0].errors[0].reason);
+    // The line break inside its quotes is the row's; its own is not.
+    try testing.expectEqualStrings("2,1.00,\"cl\r\nosed\"", lines[1].text);
+    try testing.expectEqual(Reason.not_in_enum, lines[1].errors[0].reason);
+    // Cut before the character it would split, its whole length kept.
+    try testing.expectEqual(@as(usize, 299), lines[2].text.len);
+    try testing.expectEqual(@as(u64, long.len - 2), lines[2].len);
+}
+
+test "the report keeps the first twenty rejected rows, and counts them all" {
+    var rejects: Io.Writer.Allocating = .init(testing.allocator);
+    defer rejects.deinit();
+    var text: Io.Writer.Allocating = .init(testing.allocator);
+    defer text.deinit();
+    try text.writer.writeAll("id,amount,status\n");
+    for (0..25) |i| try text.writer.print("x{d},1.00,open\n", .{i});
+    var v = try run(text.written(), &orders, .{}, &rejects);
+    defer v.deinit();
+    try testing.expectEqual(@as(u64, 25), v.rejected);
+    try testing.expectEqual(@as(usize, max_lines), v.rejected_lines.items.len);
+    try testing.expectEqualStrings("x19,1.00,open", v.rejected_lines.items[max_lines - 1].text);
 }
 
 test "the reject file is as wide as its header on every line" {

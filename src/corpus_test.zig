@@ -344,6 +344,14 @@ fn expectReport(a: Allocator, name: []const u8, got_text: []const u8, want_text:
             return error.TestUnexpectedResult;
         }
     }
+    // The rejected lines are the rejected rows, the first twenty, each
+    // with a reason: the sample's lines first.
+    const lines = g.get("rejected_lines").?.array.items;
+    const sample = g.get("rejected_sample").?.array.items;
+    const rejected: usize = @intCast(g.get("rows_rejected").?.integer);
+    try std.testing.expectEqual(@min(rejected, 20), lines.len);
+    for (sample, lines[0..sample.len]) |s, l| try std.testing.expectEqual(s.integer, l.object.get("row").?.integer);
+    for (lines) |l| try std.testing.expect(l.object.get("errors").?.array.items.len > 0);
     for (w.get("columns").?.array.items, g.get("columns").?.array.items) |wc, gc| {
         inline for (.{ "name", "mismatches", "nulls" }) |key| {
             if (!jsonEql(wc.object.get(key).?, gc.object.get(key).?)) {

@@ -104,6 +104,20 @@ as the file finishes. A file that could not be read has one too: its
 | `rows_rejected` | `integer` | when read against its schema: rows set aside, as the reject file has them |
 | `rejected_sample` | `array` | when read against its schema: the source lines of the first ten |
 | `rejected_sample[]` | `integer` | a source line, from 1 |
+| `rejected_lines` | `array` | when read against its schema: the first twenty rejected rows, as the file has them, and why |
+| `rejected_lines[].row` | `integer` | the source line the row starts on, from 1 |
+| `rejected_lines[].text` | `string` | the row as written, delimiters and quotes and the line breaks inside its quotes too, without its own line break: its first 300 bytes, cut at a character, in UTF-8 as `samples[].value` is |
+| `rejected_lines[].length` | `integer` | when `text` is cut: the row's whole length in bytes |
+| `rejected_lines[].errors` | `array` | what was wrong, as the reject file's `_errors` says it |
+| `rejected_lines[].errors[].column` | `string` | when the error is a value's: its schema column; an error of the whole row (a ragged one, say) has none |
+| `rejected_lines[].errors[].code` | `string` | a [reason](PROBLEMS.md#reasons) |
+| `limits` | `object` | when read against its schema: how much the lists above keep, so a list that is full says there may be more than it holds |
+| `limits.samples` | `integer` | `columns[].samples`, a column: 10 |
+| `limits.sample_bytes` | `integer` | of a sample's `value`: 200 |
+| `limits.rejected_sample` | `integer` | 10 |
+| `limits.rejected_lines` | `integer` | 20 |
+| `limits.line_bytes` | `integer` | of a rejected line's `text`: 300 |
+| `limits.repeated_header_rows` | `integer` | 10 |
 | `row_errors` | `object` | when read against its schema: rejected rows by what was wrong with the whole row, a [reason](PROBLEMS.md#reasons) code to a count; empty when none |
 | `row_errors{}` | `integer` | rows with that reason |
 | `warnings` | `array` | what is unusual about the file and stopped nothing |

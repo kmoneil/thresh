@@ -175,6 +175,163 @@
     37,
     41
   ],
+  "rejected_lines": [
+    {
+      "row": 5,
+      "text": ";pending;-2205.64;0.4932;true;2021-02-11;2021-02-02 06:41:34;Iñigo Lee",
+      "errors": [
+        {
+          "column": "id",
+          "code": "null_value"
+        }
+      ]
+    },
+    {
+      "row": 9,
+      "text": "99999999999999999999;open;-1150.61;0.8728;true;2019-01-10;2021-11-05 06:25:28;Iñigo Lee",
+      "errors": [
+        {
+          "column": "id",
+          "code": "int_overflow"
+        }
+      ]
+    },
+    {
+      "row": 13,
+      "text": "12;OPEN;14005.42;0.8024;false;2026-04-25;2025-09-02 06:20:55;\"OBrien; Günter\"",
+      "errors": [
+        {
+          "column": "code",
+          "code": "not_in_enum"
+        }
+      ]
+    },
+    {
+      "row": 17,
+      "text": "16;pending;1234567890123.45;0.8316;false;2019-11-04;2021-08-21 01:27:26;Dev Lee",
+      "errors": [
+        {
+          "column": "amount",
+          "code": "decimal_precision"
+        }
+      ]
+    },
+    {
+      "row": 21,
+      "text": "20;closed;1.234;0.7127;true;2025-09-08;2023-05-16 04:28:22;Iñigo Smith",
+      "errors": [
+        {
+          "column": "amount",
+          "code": "decimal_scale"
+        }
+      ]
+    },
+    {
+      "row": 25,
+      "text": "24;open;12,50;0.3258;true;2019-05-11;2025-01-20 14:33:59;Ana Kowalski",
+      "errors": [
+        {
+          "column": "amount",
+          "code": "not_decimal"
+        }
+      ]
+    },
+    {
+      "row": 29,
+      "text": "28;closed;3122.81;abc;false;2020-03-18;2021-06-19 21:25:16;Chloé Ng",
+      "errors": [
+        {
+          "column": "ratio",
+          "code": "not_float"
+        }
+      ]
+    },
+    {
+      "row": 33,
+      "text": "32;open;6618.60;0.2367;maybe;2020-08-01;2020-10-04 16:16:13;\"Kowalski; Émile\"",
+      "errors": [
+        {
+          "column": "flag",
+          "code": "not_bool"
+        }
+      ]
+    },
+    {
+      "row": 37,
+      "text": "36;closed;7031.41;;true;2024-02-30;2024-02-17 13:41:55;Dev Ng",
+      "errors": [
+        {
+          "column": "created",
+          "code": "not_in_format"
+        }
+      ]
+    },
+    {
+      "row": 41,
+      "text": "40;pending;-1385.84;0.0405;true;2020-10-24;3 days ago;Bo Ng",
+      "errors": [
+        {
+          "column": "updated",
+          "code": "not_in_format"
+        }
+      ]
+    },
+    {
+      "row": 45,
+      "text": "44;closed;-1396.18;0.0856;true;2021-12-26;2026-08-07 03:59:44;xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "errors": [
+        {
+          "column": "name",
+          "code": "too_long"
+        }
+      ]
+    },
+    {
+      "row": 49,
+      "text": "48;pending;18531.60;;false;2025-11-08;2019-11-10 20:57:17;caf�",
+      "errors": [
+        {
+          "column": "name",
+          "code": "invalid_utf8"
+        }
+      ]
+    },
+    {
+      "row": 53,
+      "text": "52;open;12625.93;;true;2022-12-24;2025-12-05 19:53:57",
+      "errors": [
+        {
+          "code": "ragged"
+        }
+      ]
+    },
+    {
+      "row": 57,
+      "text": "56;pending;11082.91;0.1233;true;2020-09-03;2019-08-06 12:32:26;Fatima Smith;extra",
+      "errors": [
+        {
+          "code": "ragged"
+        }
+      ]
+    },
+    {
+      "row": 61,
+      "text": "60;pending;-3027.58;0.9753;true;2021-09-06;2019-03-01 07:56:25;\"Bad\" quote",
+      "errors": [
+        {
+          "code": "bad_quote"
+        }
+      ]
+    }
+  ],
+  "limits": {
+    "samples": 10,
+    "sample_bytes": 200,
+    "rejected_sample": 10,
+    "rejected_lines": 20,
+    "line_bytes": 300,
+    "repeated_header_rows": 10
+  },
   "row_errors": {
     "ragged": 2,
     "bad_quote": 1

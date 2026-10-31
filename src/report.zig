@@ -93,6 +93,8 @@ pub const Read = struct {
     rows_rejected: u64,
     /// The source lines of the first rejected rows.
     rejected_sample: []const u64,
+    /// The first rejected rows as the file has them, and why.
+    rejected_lines: []const Line = &.{},
     /// Rows rejected whole, by why.
     row_errors: std.EnumArray(types.Reason, u64),
     /// The source lines of the first repeats of the header, skipped.
@@ -117,6 +119,22 @@ pub const Column = struct {
 };
 
 pub const Fits = struct { month_first: bool = false, day_first: bool = false, year_first: bool = false };
+
+/// A rejected row as the file has it.
+pub const Line = struct {
+    /// The source line its record starts on.
+    row: u64,
+    /// The record without its line break, in UTF-8: its first
+    /// validate.max_line_len bytes.
+    text: []const u8,
+    /// When text is cut: the record's length in bytes.
+    length: ?u64 = null,
+    errors: []const LineError,
+};
+
+/// One thing wrong with a rejected row: the column it is in, or null for
+/// the whole row, and why.
+pub const LineError = struct { column: ?[]const u8 = null, code: types.Reason };
 
 pub const Sample = struct {
     /// The source line its record starts on.
@@ -175,10 +193,22 @@ pub fn fileOf(a: Allocator, o: Outcome, d: Details) Allocator.Error!File {
     const problems = try a.alloc(Problem, v.structural.items.len);
     for (problems, v.structural.items) |*p, x| p.* = try x.dupe(a);
     f.problems = problems;
+    const lines = try a.alloc(Line, v.rejected_lines.items.len);
+    for (lines, v.rejected_lines.items) |*l, x| {
+        const errors = try a.alloc(LineError, x.errors.len);
+        for (errors, x.errors) |*e, xe| e.* = .{ .column = if (xe.column) |c| try a.dupe(u8, c) else null, .code = xe.reason };
+        l.* = .{
+            .row = x.row,
+            .text = try utf8Of(a, x.text, d.encoding),
+            .length = if (x.text.len < x.len) x.len else null,
+            .errors = errors,
+        };
+    }
     f.read = .{
         .columns = columns,
         .rows_rejected = v.rejected,
         .rejected_sample = try a.dupe(u64, v.rejected_sample.items),
+        .rejected_lines = lines,
         .row_errors = v.row_errors,
         .repeated_header_rows = try a.dupe(u64, v.repeated_lines.items),
     };
@@ -260,6 +290,50 @@ pub fn writeFileReport(w: *Io.Writer, f: File, timing: bool) Stringify.Error!voi
         try s.write(r.rows_rejected);
         try s.objectField("rejected_sample");
         try s.write(r.rejected_sample);
+        try s.objectField("rejected_lines");
+        try s.beginArray();
+        for (r.rejected_lines) |l| {
+            try s.beginObject();
+            try s.objectField("row");
+            try s.write(l.row);
+            try s.objectField("text");
+            try s.write(l.text);
+            if (l.length) |n| {
+                try s.objectField("length");
+                try s.write(n);
+            }
+            try s.objectField("errors");
+            try s.beginArray();
+            for (l.errors) |e| {
+                try s.beginObject();
+                if (e.column) |c| {
+                    try s.objectField("column");
+                    try s.write(c);
+                }
+                try s.objectField("code");
+                try s.write(e.code);
+                try s.endObject();
+            }
+            try s.endArray();
+            try s.endObject();
+        }
+        try s.endArray();
+        // What the lists above keep, so one that is full says there may
+        // be more.
+        try s.objectField("limits");
+        try s.beginObject();
+        inline for (.{
+            .{ "samples", validate.max_samples },
+            .{ "sample_bytes", validate.max_sample_len },
+            .{ "rejected_sample", validate.max_samples },
+            .{ "rejected_lines", validate.max_lines },
+            .{ "line_bytes", validate.max_line_len },
+            .{ "repeated_header_rows", validate.max_samples },
+        }) |limit| {
+            try s.objectField(limit[0]);
+            try s.write(limit[1]);
+        }
+        try s.endObject();
         try s.objectField("row_errors");
         try s.beginObject();
         for (std.enums.values(types.Reason)) |reason| {
@@ -322,7 +396,8 @@ fn writeFraction(s: *Stringify, f: f64) Stringify.Error!void {
 /// the report is valid JSON whatever the cell held. bytes is a sample's,
 /// at most validate.max_sample_len.
 fn utf8Of(a: Allocator, bytes: []const u8, encoding: types.Encoding) Allocator.Error![]const u8 {
-    var buf: [validate.max_sample_len * 3]u8 = undefined;
+    // A byte becomes at most a 3-byte character, U+FFFD or a transcoded one.
+    const buf = try a.alloc(u8, bytes.len * 3);
     var n: usize = 0;
     var i: usize = 0;
     while (i < bytes.len) {
@@ -345,7 +420,7 @@ fn utf8Of(a: Allocator, bytes: []const u8, encoding: types.Encoding) Allocator.E
         n += 3;
         i += 1;
     }
-    return a.dupe(u8, buf[0..n]);
+    return a.realloc(buf, n);
 }
 
 /// summary.json: every file's outcome, and the counts over them.

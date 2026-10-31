@@ -185,6 +185,165 @@
     36,
     40
   ],
+  "rejected_lines": [
+    {
+      "row": 4,
+      "text": "4|closed|2779.15|0.6468|false|2019-06-28|2022-04-03 01:04:31|Chloé Ng|extra",
+      "errors": [
+        {
+          "code": "ragged"
+        }
+      ]
+    },
+    {
+      "row": 8,
+      "text": "8|closed|9025.92|1.2.3|false|2025-03-16|2022-04-18 14:02:35|'Ng payment",
+      "errors": [
+        {
+          "column": "ratio",
+          "code": "not_float"
+        }
+      ]
+    },
+    {
+      "row": 12,
+      "text": "12a|closed|-1098.15||false|2025-06-17|2022-06-11 11:02:55|Dev OBrien",
+      "errors": [
+        {
+          "column": "id",
+          "code": "not_int"
+        }
+      ]
+    },
+    {
+      "row": 16,
+      "text": "|closed|15104.40|0.6692|true|2019-05-17|2021-09-16 11:46:31|Fatima Kowalski",
+      "errors": [
+        {
+          "column": "id",
+          "code": "null_value"
+        }
+      ]
+    },
+    {
+      "row": 20,
+      "text": "99999999999999999999|open|4652.91|0.3145|false|2020-01-18|2020-07-13 08:29:36|Bo Lee",
+      "errors": [
+        {
+          "column": "id",
+          "code": "int_overflow"
+        }
+      ]
+    },
+    {
+      "row": 24,
+      "text": "24|OPEN|15035.15|0.2388|false|2024-01-23|2023-12-14 09:03:24|Günter Núñez",
+      "errors": [
+        {
+          "column": "code",
+          "code": "not_in_enum"
+        }
+      ]
+    },
+    {
+      "row": 28,
+      "text": "28|open|1234567890123.45|0.1917|true|2022-01-04|2020-04-11 01:02:56|'Lee invoice",
+      "errors": [
+        {
+          "column": "amount",
+          "code": "decimal_precision"
+        }
+      ]
+    },
+    {
+      "row": 32,
+      "text": "32|closed|1.234|0.7876|true|2026-12-07|2020-12-04 01:09:59|Bo Østergaard",
+      "errors": [
+        {
+          "column": "amount",
+          "code": "decimal_scale"
+        }
+      ]
+    },
+    {
+      "row": 36,
+      "text": "36|open|12,50||false|2019-08-23|2019-07-28 11:54:28|Dev Núñez",
+      "errors": [
+        {
+          "column": "amount",
+          "code": "not_decimal"
+        }
+      ]
+    },
+    {
+      "row": 40,
+      "text": "40|open|-4777.61|abc|false|2025-11-21|2022-06-01 17:04:41|Dev Lee",
+      "errors": [
+        {
+          "column": "ratio",
+          "code": "not_float"
+        }
+      ]
+    },
+    {
+      "row": 44,
+      "text": "44|open|10742.29|0.0873|maybe|2025-11-09|2026-08-08 20:22:19|Chloé Østergaard",
+      "errors": [
+        {
+          "column": "flag",
+          "code": "not_bool"
+        }
+      ]
+    },
+    {
+      "row": 48,
+      "text": "48|closed|2001.47|0.3181|true|2024-02-30|2023-03-01 20:48:57|Fatima OBrien",
+      "errors": [
+        {
+          "column": "created",
+          "code": "not_in_format"
+        }
+      ]
+    },
+    {
+      "row": 52,
+      "text": "52|closed|-4858.49|0.5800|true|2021-11-26|3 days ago|Émile DSouza",
+      "errors": [
+        {
+          "column": "updated",
+          "code": "not_in_format"
+        }
+      ]
+    },
+    {
+      "row": 56,
+      "text": "56|pending|11850.34|0.9406|false|2025-05-21|2020-08-05 03:10:57|xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "errors": [
+        {
+          "column": "name",
+          "code": "too_long"
+        }
+      ]
+    },
+    {
+      "row": 60,
+      "text": "60|open|13491.18|0.3564|false|2020-02-21|2020-02-06 05:42:14|caf�",
+      "errors": [
+        {
+          "column": "name",
+          "code": "invalid_utf8"
+        }
+      ]
+    }
+  ],
+  "limits": {
+    "samples": 10,
+    "sample_bytes": 200,
+    "rejected_sample": 10,
+    "rejected_lines": 20,
+    "line_bytes": 300,
+    "repeated_header_rows": 10
+  },
   "row_errors": {
     "ragged": 1
   },

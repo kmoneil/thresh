@@ -175,6 +175,163 @@
     37,
     41
   ],
+  "rejected_lines": [
+    {
+      "row": 5,
+      "text": "4\tclosed\t19956.83\tabc\ttrue\t2020-02-11\t2021-09-20 08:34:00\tHana Smith",
+      "errors": [
+        {
+          "column": "ratio",
+          "code": "not_float"
+        }
+      ]
+    },
+    {
+      "row": 9,
+      "text": "8\tpending\t8296.93\t0.3730\tmaybe\t2019-03-22\t2020-07-28 03:32:10\tDev Ng",
+      "errors": [
+        {
+          "column": "flag",
+          "code": "not_bool"
+        }
+      ]
+    },
+    {
+      "row": 13,
+      "text": "12\tclosed\t4890.19\t0.2331\ttrue\t2024-02-30\t2023-09-25 04:37:09\t'Ng\t Fatima'",
+      "errors": [
+        {
+          "column": "created",
+          "code": "not_in_format"
+        }
+      ]
+    },
+    {
+      "row": 17,
+      "text": "16\tclosed\t15891.44\t0.1330\tfalse\t2020-11-09\t3 days ago\tHana OBrien",
+      "errors": [
+        {
+          "column": "updated",
+          "code": "not_in_format"
+        }
+      ]
+    },
+    {
+      "row": 21,
+      "text": "20\tpending\t-4664.97\t0.1210\tfalse\t2021-12-26\t2020-01-22 16:08:37\txxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "errors": [
+        {
+          "column": "name",
+          "code": "too_long"
+        }
+      ]
+    },
+    {
+      "row": 25,
+      "text": "24\tclosed\t-638.36\t1.2.3\ttrue\t2019-09-12\t2022-09-09 03:27:42\tFatima Lee",
+      "errors": [
+        {
+          "column": "ratio",
+          "code": "not_float"
+        }
+      ]
+    },
+    {
+      "row": 29,
+      "text": "28\topen\t16217.75\t0.8039\tfalse\t2022-10-01\t2019-05-11 03:52:50",
+      "errors": [
+        {
+          "code": "ragged"
+        }
+      ]
+    },
+    {
+      "row": 33,
+      "text": "32\tclosed\t3857.67\t0.4499\ttrue\t2024-05-04\t2021-03-09 01:20:59\t'Kowalski\t Émile'\textra",
+      "errors": [
+        {
+          "code": "ragged"
+        }
+      ]
+    },
+    {
+      "row": 37,
+      "text": "36\tclosed\t-1534.59\t0.9019\ttrue\t2025-11-11\t2024-09-08 14:29:12\t'Bad' quote",
+      "errors": [
+        {
+          "code": "bad_quote"
+        }
+      ]
+    },
+    {
+      "row": 41,
+      "text": "12a\tpending\t520.73\t0.7581\tfalse\t2021-03-27\t2024-10-26 12:18:56\tGünter Østergaard",
+      "errors": [
+        {
+          "column": "id",
+          "code": "not_int"
+        }
+      ]
+    },
+    {
+      "row": 45,
+      "text": "\tpending\t-2376.32\t0.7168\ttrue\t2019-04-17\t2019-11-08 21:02:27\tDev Østergaard",
+      "errors": [
+        {
+          "column": "id",
+          "code": "null_value"
+        }
+      ]
+    },
+    {
+      "row": 49,
+      "text": "99999999999999999999\topen\t14312.45\t0.9070\tfalse\t2019-12-14\t2025-01-05 06:47:23\tAna Østergaard",
+      "errors": [
+        {
+          "column": "id",
+          "code": "int_overflow"
+        }
+      ]
+    },
+    {
+      "row": 53,
+      "text": "52\tOPEN\t2607.12\t0.5630\ttrue\t2020-08-17\t2022-02-05 21:10:44\t'Kowalski\t Günter'",
+      "errors": [
+        {
+          "column": "code",
+          "code": "not_in_enum"
+        }
+      ]
+    },
+    {
+      "row": 57,
+      "text": "56\tpending\t1234567890123.45\t0.3573\ttrue\t2020-04-18\t2019-04-10 13:18:15\tAna Kowalski",
+      "errors": [
+        {
+          "column": "amount",
+          "code": "decimal_precision"
+        }
+      ]
+    },
+    {
+      "row": 61,
+      "text": "60\tclosed\t1.234\t0.2723\ttrue\t2025-01-13\t2021-12-24 12:25:52\tFatima Smith",
+      "errors": [
+        {
+          "column": "amount",
+          "code": "decimal_scale"
+        }
+      ]
+    }
+  ],
+  "limits": {
+    "samples": 10,
+    "sample_bytes": 200,
+    "rejected_sample": 10,
+    "rejected_lines": 20,
+    "line_bytes": 300,
+    "repeated_header_rows": 10
+  },
   "row_errors": {
     "ragged": 2,
     "bad_quote": 1
