@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const Io = std.Io;
+const Allocator = std.mem.Allocator;
 const Stringify = std.json.Stringify;
 const dialect = @import("dialect.zig");
 const Problem = @import("problem.zig").Problem;
@@ -63,18 +64,132 @@ pub const Outcome = struct {
     }
 };
 
-/// What goes into a file's report besides the outcome.
+/// What fileOf reads besides the outcome.
 pub const Details = struct {
     verdict: ?dialect.Verdict = null,
-    schema: ?*const schema.Schema = null,
     validator: ?*const validate.Validator = null,
+    /// The file's, so sample values become UTF-8.
     encoding: types.Encoding = .utf8,
-    /// Leave out timing_ms and throughput, so a report is the same from
-    /// run to run (the golden-file tests).
-    timing: bool = true,
 };
 
-pub fn writeFileReport(w: *Io.Writer, o: Outcome, d: Details) Stringify.Error!void {
+/// A file's report as data: built from the validator by fileOf, written as
+/// JSON by writeFileReport, and what the library hands its caller. Its
+/// strings are its own and UTF-8, whatever the file's encoding.
+pub const File = struct {
+    outcome: Outcome,
+    /// How the file is written, when it was sniffed.
+    verdict: ?dialect.Verdict = null,
+    /// What reading it against its schema found, when it was.
+    read: ?Read = null,
+    /// What stopped or failed it.
+    problems: []const Problem = &.{},
+    warnings: Warnings = .{},
+};
+
+/// What reading a file against its schema found.
+pub const Read = struct {
+    /// One a schema column, in the schema's order.
+    columns: []const Column,
+    rows_rejected: u64,
+    /// The source lines of the first rejected rows.
+    rejected_sample: []const u64,
+    /// Rows rejected whole, by why.
+    row_errors: std.EnumArray(types.Reason, u64),
+    /// The source lines of the first repeats of the header, skipped.
+    repeated_header_rows: []const u64,
+};
+
+/// A schema column, as the file filled it.
+pub const Column = struct {
+    name: []const u8,
+    type: schema.Type,
+    nulls: u64,
+    mismatches: u64,
+    /// Of the rows read into columns, the fraction whose value fits.
+    conformance: f64,
+    format: ?[]const u8 = null,
+    /// A date or timestamp column: values whose order of day, month and
+    /// year is a guess; and, when there are any, the orders all still fit.
+    ambiguous: ?u64 = null,
+    fits: Fits = .{},
+    /// The first values that do not fit.
+    samples: []const Sample = &.{},
+};
+
+pub const Fits = struct { month_first: bool = false, day_first: bool = false, year_first: bool = false };
+
+pub const Sample = struct {
+    /// The source line its record starts on.
+    row: u64,
+    /// Its first validate.max_sample_len bytes, as UTF-8.
+    value: []const u8,
+    code: types.Reason,
+};
+
+/// What is unusual about a file: the sniffer's warnings and what reading
+/// it added to them, and two of the read's own.
+pub const Warnings = struct {
+    dialect: dialect.Warnings = .{},
+    /// The header has columns the schema does not.
+    extra_columns: bool = false,
+    /// Records that were the header again were skipped.
+    header_repeated: bool = false,
+};
+
+/// The report of the file o is the outcome of, its strings in a.
+pub fn fileOf(a: Allocator, o: Outcome, d: Details) Allocator.Error!File {
+    var f: File = .{ .outcome = o, .verdict = d.verdict };
+    f.outcome.file = try a.dupe(u8, o.file);
+    if (o.problem) |p| f.outcome.problem = try p.dupe(a);
+    if (o.written) |p| f.outcome.written = try a.dupe(u8, p);
+    if (d.verdict) |v| f.warnings.dialect = v.warnings;
+    const v = d.validator orelse {
+        if (f.outcome.problem) |p| f.problems = try a.dupe(Problem, &.{p});
+        return f;
+    };
+    if (v.stray_quotes > 0) f.warnings.dialect.quote_in_unquoted = true;
+    if (v.foreign_newlines > 0) f.warnings.dialect.mixed_newlines = true;
+    f.warnings.extra_columns = v.extra_columns;
+    f.warnings.header_repeated = v.repeated_headers > 0;
+    const columns = try a.alloc(Column, v.schema.columns.len);
+    for (columns, v.schema.columns, v.stats, v.dates) |*col, c, st, dc| {
+        col.* = .{
+            .name = try a.dupe(u8, c.name),
+            .type = c.type,
+            .nulls = st.nulls,
+            .mismatches = st.mismatches,
+            .conformance = validate.conformance(st, v.columnRows()),
+            .format = if (c.format) |x| try a.dupe(u8, x) else null,
+        };
+        if (dc) |date| {
+            col.ambiguous = date.ambiguous;
+            if (date.ambiguous > 0) {
+                const fits = date.fits();
+                inline for (@typeInfo(Fits).@"struct".field_names) |n| @field(col.fits, n) = @field(fits, n);
+            }
+        }
+        const samples = try a.alloc(Sample, st.samples.items.len);
+        for (samples, st.samples.items) |*s, x| s.* = .{ .row = x.row, .value = try utf8Of(a, x.value, d.encoding), .code = x.reason };
+        col.samples = samples;
+    }
+    const problems = try a.alloc(Problem, v.structural.items.len);
+    for (problems, v.structural.items) |*p, x| p.* = try x.dupe(a);
+    f.problems = problems;
+    f.read = .{
+        .columns = columns,
+        .rows_rejected = v.rejected,
+        .rejected_sample = try a.dupe(u64, v.rejected_sample.items),
+        .row_errors = v.row_errors,
+        .repeated_header_rows = try a.dupe(u64, v.repeated_lines.items),
+    };
+    return f;
+}
+
+/// The report as JSON. timing false leaves out timing_ms and
+/// throughput_mb_s, so a report is the same from run to run (the
+/// golden-file tests).
+pub fn writeFileReport(w: *Io.Writer, f: File, timing: bool) Stringify.Error!void {
+    const o = f.outcome;
     var s: Stringify = .{ .writer = w, .options = .{ .whitespace = .indent_2 } };
     try s.beginObject();
     try s.objectField("format_version");
@@ -87,57 +202,52 @@ pub fn writeFileReport(w: *Io.Writer, o: Outcome, d: Details) Stringify.Error!vo
     try s.write(o.rows);
     try s.objectField("result");
     try s.write(@tagName(o.result));
-    if (d.verdict) |v| {
+    if (f.verdict) |v| {
         try s.objectField("dialect");
         try s.write(v);
     }
-    var warnings: dialect.Warnings = if (d.verdict) |v| v.warnings else .{};
-    if (d.validator) |v| {
-        if (v.stray_quotes > 0) warnings.quote_in_unquoted = true;
-        if (v.foreign_newlines > 0) warnings.mixed_newlines = true;
+    if (f.read) |r| {
         try s.objectField("columns");
         try s.beginArray();
-        for (v.schema.columns, v.stats, 0..) |c, st, i| {
+        for (r.columns) |c| {
             try s.beginObject();
             try s.objectField("name");
             try s.write(c.name);
             try s.objectField("type");
             try s.write(@tagName(c.type));
             try s.objectField("nulls");
-            try s.write(st.nulls);
+            try s.write(c.nulls);
             try s.objectField("mismatches");
-            try s.write(st.mismatches);
+            try s.write(c.mismatches);
             try s.objectField("conformance");
-            try writeFraction(&s, validate.conformance(st, v.columnRows()));
-            if (c.format) |f| {
+            try writeFraction(&s, c.conformance);
+            if (c.format) |x| {
                 try s.objectField("format");
-                try s.write(f);
+                try s.write(x);
             }
-            if (v.dates[i]) |dc| {
+            if (c.ambiguous) |n| {
                 try s.objectField("ambiguous");
-                try s.write(dc.ambiguous);
-                if (dc.ambiguous > 0) {
-                    // The orders every value whose order is a guess still fits.
-                    const fits = dc.fits();
+                try s.write(n);
+                if (n > 0) {
                     try s.objectField("fits");
                     try s.beginArray();
-                    inline for (.{ "month_first", "day_first", "year_first" }) |order| {
-                        if (@field(fits, order)) try s.write(order);
+                    inline for (@typeInfo(Fits).@"struct".field_names) |order| {
+                        if (@field(c.fits, order)) try s.write(order);
                     }
                     try s.endArray();
                 }
             }
-            if (st.samples.items.len > 0) {
+            if (c.samples.len > 0) {
                 try s.objectField("samples");
                 try s.beginArray();
-                for (st.samples.items) |sample| {
+                for (c.samples) |x| {
                     try s.beginObject();
                     try s.objectField("row");
-                    try s.write(sample.row);
+                    try s.write(x.row);
                     try s.objectField("value");
-                    try writeText(&s, sample.value, d.encoding);
+                    try s.write(x.value);
                     try s.objectField("code");
-                    try s.write(sample.reason);
+                    try s.write(x.code);
                     try s.endObject();
                 }
                 try s.endArray();
@@ -145,43 +255,41 @@ pub fn writeFileReport(w: *Io.Writer, o: Outcome, d: Details) Stringify.Error!vo
             try s.endObject();
         }
         try s.endArray();
-        try writeProblems(&s, v.structural.items);
+        try writeProblems(&s, f.problems);
         try s.objectField("rows_rejected");
-        try s.write(v.rejected);
+        try s.write(r.rows_rejected);
         try s.objectField("rejected_sample");
-        try s.write(v.rejected_sample.items);
+        try s.write(r.rejected_sample);
         try s.objectField("row_errors");
         try s.beginObject();
-        for (std.enums.values(types.Reason)) |r| {
-            const n = v.row_errors.get(r);
+        for (std.enums.values(types.Reason)) |reason| {
+            const n = r.row_errors.get(reason);
             if (n == 0) continue;
-            try s.objectField(@tagName(r));
+            try s.objectField(@tagName(reason));
             try s.write(n);
         }
         try s.endObject();
     } else {
-        try writeProblems(&s, if (o.problem) |*p| p[0..1] else &.{});
+        try writeProblems(&s, f.problems);
     }
     try s.objectField("warnings");
     try s.beginArray();
     inline for (dialect.Warnings.names) |name| {
-        if (@field(warnings, name)) try s.write(name);
+        if (@field(f.warnings.dialect, name)) try s.write(name);
     }
-    if (d.validator) |v| {
-        if (v.extra_columns) try s.write("extra_columns");
-        if (v.repeated_headers > 0) try s.write("header_repeated");
-    }
+    if (f.warnings.extra_columns) try s.write("extra_columns");
+    if (f.warnings.header_repeated) try s.write("header_repeated");
     try s.endArray();
-    if (d.validator) |v| if (v.repeated_headers > 0) {
+    if (f.read) |r| if (f.warnings.header_repeated) {
         try s.objectField("repeated_header_rows");
-        try s.write(v.repeated_lines.items);
+        try s.write(r.repeated_header_rows);
     };
-    if (d.timing) {
+    if (timing) {
         try s.objectField("timing_ms");
         try s.beginObject();
-        inline for (.{ .{ "sniff", "sniff_ns" }, .{ "parse", "parse_ns" }, .{ "write", "write_ns" } }) |f| {
-            try s.objectField(f[0]);
-            try s.write(@field(o.timing, f[1]) / std.time.ns_per_ms);
+        inline for (.{ .{ "sniff", "sniff_ns" }, .{ "parse", "parse_ns" }, .{ "write", "write_ns" } }) |t| {
+            try s.objectField(t[0]);
+            try s.write(@field(o.timing, t[1]) / std.time.ns_per_ms);
         }
         try s.endObject();
         try s.objectField("throughput_mb_s");
@@ -209,10 +317,11 @@ fn writeFraction(s: *Stringify, f: f64) Stringify.Error!void {
     try s.print("{s}", .{text[0..end]});
 }
 
-/// A value as a JSON string: Latin-1 or Windows-1252 transcoded, and under
+/// A value as UTF-8, in a: Latin-1 or Windows-1252 transcoded, and under
 /// UTF-8 any byte that is not part of a character replaced with U+FFFD, so
-/// the report is valid JSON whatever the cell held.
-fn writeText(s: *Stringify, bytes: []const u8, encoding: types.Encoding) Stringify.Error!void {
+/// the report is valid JSON whatever the cell held. bytes is a sample's,
+/// at most validate.max_sample_len.
+fn utf8Of(a: Allocator, bytes: []const u8, encoding: types.Encoding) Allocator.Error![]const u8 {
     var buf: [validate.max_sample_len * 3]u8 = undefined;
     var n: usize = 0;
     var i: usize = 0;
@@ -236,7 +345,7 @@ fn writeText(s: *Stringify, bytes: []const u8, encoding: types.Encoding) Stringi
         n += 3;
         i += 1;
     }
-    try s.write(buf[0..n]);
+    return a.dupe(u8, buf[0..n]);
 }
 
 /// summary.json: every file's outcome, and the counts over them.
@@ -345,14 +454,12 @@ test writeFraction {
     }
 }
 
-test writeText {
-    var buf: [64]u8 = undefined;
-    var w: Io.Writer = .fixed(&buf);
-    var s: Stringify = .{ .writer = &w };
-    try writeText(&s, "caf\xe9 ok", .utf8);
-    try std.testing.expectEqualStrings("\"caf\u{fffd} ok\"", w.buffered());
-    w = .fixed(&buf);
-    s = .{ .writer = &w };
-    try writeText(&s, "caf\xe9", .latin1);
-    try std.testing.expectEqualStrings("\"café\"", w.buffered());
+test utf8Of {
+    const a = std.testing.allocator;
+    const replaced = try utf8Of(a, "caf\xe9 ok", .utf8);
+    defer a.free(replaced);
+    try std.testing.expectEqualStrings("caf\u{fffd} ok", replaced);
+    const latin = try utf8Of(a, "caf\xe9", .latin1);
+    defer a.free(latin);
+    try std.testing.expectEqualStrings("café", latin);
 }

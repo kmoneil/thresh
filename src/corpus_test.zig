@@ -7,6 +7,7 @@ const build_options = @import("build_options");
 const dialect = @import("dialect.zig");
 const Dialect = dialect.Dialect;
 const cli = @import("cli.zig");
+const render = @import("render.zig");
 const schema = @import("schema.zig");
 const worker = @import("worker.zig");
 const report = @import("report.zig");
@@ -318,22 +319,15 @@ fn validateOne(io: Io, gpa: Allocator, arena: Allocator, corpus: *const Corpus, 
     var diag: schema.Diagnostic = .{};
     var owned = try schema.load(io, gpa, schema_path, &diag);
     defer owned.deinit();
-    const cfg: cli.Config = .{
-        .command = .validate,
-        .schema = schema_path,
+    const plan: render.Plan = .{
+        .options = .{ .encoding = encodingOf(fx.expected.value) },
         .report_dir = reports,
-        .encoding = encodingOf(fx.expected.value),
-    };
-    const plan: worker.Plan = .{
-        .cfg = &cfg,
         .schema = &owned.schema,
-        .nulls = try worker.nullsOf(arena, &owned.schema, null),
-        .threshold = 1.0,
         .timing = false,
     };
     const path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir, name });
     return .{
-        .outcome = try worker.validateFile(.{ .io = io, .gpa = gpa }, plan, path, arena),
+        .outcome = try render.validateFile(.{ .io = io, .gpa = gpa }, plan, path, arena),
         .want = fx.expected.value.dialect(),
     };
 }
@@ -412,18 +406,16 @@ test "infer then validate: every clean corpus file passes against its own inferr
         defer fx.deinit(gpa);
         const encoding = encodingOf(fx.expected.value);
         const path = try std.fmt.allocPrint(a, "{s}/{s}", .{ corpus_dir, name });
-        var cfg: cli.Config = .{ .command = .infer, .encoding = encoding };
         const nulls: []const []const u8 = &.{""};
-        const r = try worker.inferFile(.{ .io = io, .gpa = gpa }, &cfg, nulls, path, a);
+        const r = try worker.inferFile(.{ .io = io, .gpa = gpa }, .{ .encoding = encoding }, nulls, path, a);
         try testing.expectEqual(report.Result.pass, r.outcome.result);
         for (r.columns) |c| kinds.getPtr(c.kind).* += 1;
         const s: schema.Schema = .{
             .columns = try infer.columnsOf(a, r.columns),
             .match = if (r.header) .name else .position,
         };
-        cfg.command = .validate;
-        const plan: worker.Plan = .{ .cfg = &cfg, .schema = &s, .nulls = nulls, .threshold = 1.0, .timing = false };
-        const o = try worker.validateFile(.{ .io = io, .gpa = gpa }, plan, path, a);
+        const plan: render.Plan = .{ .options = .{ .encoding = encoding }, .schema = &s, .timing = false };
+        const o = try render.validateFile(.{ .io = io, .gpa = gpa }, plan, path, a);
         if (o.result != .pass or o.rows_rejected != 0) {
             std.debug.print("{s}: {t} against its inferred schema, {d} of {d} rows rejected, {?f}\n", .{ name, o.result, o.rows_rejected, o.rows, o.problem });
             var buf: [8192]u8 = undefined;
@@ -459,19 +451,16 @@ test "convert --to csv: every corpus file comes out RFC 4180, re-sniffs as it, a
         const e = fx.expected.value;
         const encoding = encodingOf(e);
         const path = try std.fmt.allocPrint(a, "{s}/{s}", .{ corpus_dir, name });
-        var cfg: cli.Config = .{ .command = .convert, .encoding = encoding, .to = .csv, .out = out_dir };
         const nulls: []const []const u8 = &.{""};
-        const inferred = try worker.inferFile(.{ .io = io, .gpa = gpa }, &cfg, nulls, path, a);
+        const inferred = try worker.inferFile(.{ .io = io, .gpa = gpa }, .{ .encoding = encoding }, nulls, path, a);
         const s: schema.Schema = .{ .columns = try infer.columnsOf(a, inferred.columns), .match = if (inferred.header) .name else .position };
-        const plan: worker.Plan = .{
-            .cfg = &cfg,
+        const plan: render.Plan = .{
+            .options = .{ .encoding = encoding },
             .schema = &s,
-            .nulls = nulls,
-            .threshold = 1.0,
             .timing = false,
             .output = .{ .to = .csv, .dir = out_dir },
         };
-        const o = try worker.validateFile(.{ .io = io, .gpa = gpa }, plan, path, a);
+        const o = try render.validateFile(.{ .io = io, .gpa = gpa }, plan, path, a);
         try testing.expectEqual(report.Result.pass, o.result);
         const written = try Io.Dir.cwd().readFileAlloc(io, o.written.?, a, .unlimited);
 

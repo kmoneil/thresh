@@ -1,6 +1,7 @@
 //! thresh's stages as one module, for programs outside src/ that drive
-//! them directly: the benchmarks.
+//! them directly: the benchmarks; and lib, thresh as a library.
 
+pub const lib = @import("lib.zig");
 pub const Dialect = @import("dialect.zig").Dialect;
 pub const scan = @import("scan.zig");
 pub const records = @import("records.zig");

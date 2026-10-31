@@ -225,9 +225,9 @@ test "docs/REPORT.md: the reports' fields, as thresh writes them" {
         .timing = .{ .sniff_ns = 1_000_000, .parse_ns = 2_000_000, .write_ns = 3_000_000 },
     };
     _ = try expectDocumented(a, "report", report.format_version, &.{
-        try written(a, report.writeFileReport, .{ read, report.Details{ .verdict = verdict('"'), .schema = &sample_schema, .validator = &v } }),
-        try written(a, report.writeFileReport, .{ error_outcome, report.Details{ .verdict = verdict(null) } }),
-        try written(a, report.writeFileReport, .{ error_outcome, report.Details{} }),
+        try written(a, report.writeFileReport, .{ try report.fileOf(a, read, .{ .verdict = verdict('"'), .validator = &v }), true }),
+        try written(a, report.writeFileReport, .{ try report.fileOf(a, error_outcome, .{ .verdict = verdict(null) }), true }),
+        try written(a, report.writeFileReport, .{ try report.fileOf(a, error_outcome, .{}), true }),
     });
     _ = try expectDocumented(a, "summary", report.format_version, &.{
         try written(a, report.writeSummary, .{ &[_]report.Outcome{ ok_outcome, error_outcome }, @as(u8, 2) }),

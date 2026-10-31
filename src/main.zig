@@ -11,13 +11,11 @@ const std = @import("std");
 const build_options = @import("build_options");
 const cli = @import("cli.zig");
 const dialect = @import("dialect.zig");
-const input = @import("input.zig");
-const schema = @import("schema.zig");
 const report = @import("report.zig");
 const problem = @import("problem.zig");
 const Problem = problem.Problem;
-const worker = @import("worker.zig");
-const infer = @import("infer.zig");
+const lib = @import("lib.zig");
+const render = @import("render.zig");
 const pool = @import("pool.zig");
 const interrupt = @import("interrupt.zig");
 
@@ -111,11 +109,34 @@ fn execute(env: Env, args: []const []const u8, out: *Io.Writer, err: *Io.Writer)
     };
 }
 
+/// How each file is read, from the flags; Ctrl-C (interrupt) cancels.
+fn optionsOf(a: Allocator, cfg: *const cli.Config) Allocator.Error!lib.Options {
+    var nulls: std.ArrayList([]const u8) = .empty;
+    if (cfg.nulls) |list| {
+        var it = std.mem.splitScalar(u8, list, ',');
+        while (it.next()) |n| try nulls.append(a, n);
+    }
+    return .{
+        .pins = cfg.pins,
+        .sample_bytes = cfg.sample_bytes,
+        .encoding = cfg.encoding,
+        .mmap = !cfg.no_mmap,
+        .keep_empty = cfg.keep_empty,
+        .day_first = cfg.day_first,
+        .strict = cfg.strict,
+        .ragged = cfg.ragged,
+        .sample_rows = cfg.sample_rows,
+        .nulls = nulls.items,
+        .threshold = cfg.threshold,
+        .cancel = &interrupt.flag,
+    };
+}
+
 /// The schema --schema or --columns names; null, with the reason printed,
 /// when it cannot be read.
-fn loadSchema(env: Env, cfg: *const cli.Config, err: *Io.Writer) !?schema.Owned {
-    var diag: schema.Diagnostic = .{};
-    if (cfg.columns) |spec| return schema.parseInline(env.gpa, spec, &diag) catch |e| switch (e) {
+fn loadSchema(env: Env, cfg: *const cli.Config, err: *Io.Writer) !?lib.OwnedSchema {
+    var diag: lib.SchemaDiagnostic = .{};
+    if (cfg.columns) |spec| return lib.parseColumns(env.gpa, spec, &diag) catch |e| switch (e) {
         error.InvalidSchema => {
             try err.print("thresh: {s}\n", .{diag.message});
             return null;
@@ -123,7 +144,7 @@ fn loadSchema(env: Env, cfg: *const cli.Config, err: *Io.Writer) !?schema.Owned 
         error.OutOfMemory => return e,
     };
     const path = cfg.schema.?;
-    return schema.load(env.io, env.gpa, path, &diag) catch |e| switch (e) {
+    return lib.loadSchema(env.io, env.gpa, path, &diag) catch |e| switch (e) {
         error.InvalidSchema => {
             try err.print("thresh: {s}: {s}\n", .{ path, diag.message });
             return null;
@@ -137,169 +158,89 @@ fn loadSchema(env: Env, cfg: *const cli.Config, err: *Io.Writer) !?schema.Owned 
 }
 
 /// infer: each file's columns (in parallel, pass 1), merged by name into
-/// one schema (the lowest type any file reached), written to --out or
-/// stdout. A line per file on stderr, and one per column a later file
-/// widened, in the order the files were given.
+/// one schema (lib.merge), written to --out or stdout. On stderr, a line
+/// per file and the notes that follow it, in the order the files were
+/// given, then the run's.
 fn inferFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
     const a = env.arena;
-    const default_nulls: schema.Schema = .{ .columns = &.{} };
     const Ctx = struct {
-        cfg: *const cli.Config,
-        nulls: []const []const u8,
-        results: []worker.Inferred,
+        options: lib.Options,
+        files: []const []const u8,
+        results: []lib.Columns,
 
         fn run(ctx: *anyopaque, w: *pool.Worker, i: usize) anyerror!report.Outcome {
             const c: *@This() = @ptrCast(@alignCast(ctx));
             // The columns outlive the file: the worker's keep arena.
-            c.results[i] = try worker.inferFile(w.env, c.cfg, c.nulls, c.cfg.files[i], w.keep);
+            c.results[i] = try lib.inferFile(w.env, w.keep, c.files[i], c.options);
             return c.results[i].outcome;
         }
     };
     var ctx: Ctx = .{
-        .cfg = cfg,
-        .nulls = try worker.nullsOf(a, &default_nulls, cfg.nulls),
-        .results = try a.alloc(worker.Inferred, cfg.files.len),
+        .options = try optionsOf(a, cfg),
+        .files = cfg.files,
+        .results = try a.alloc(lib.Columns, cfg.files.len),
     };
     for (ctx.results, cfg.files) |*r, f| r.* = .{ .outcome = .{ .file = f, .result = .@"error", .problem = .not_reached } };
     const outcomes = try runPool(env, cfg, .{ .ctx = &ctx, .files = cfg.files, .run = Ctx.run }, out, err, true);
     if (interrupt.requested()) return interrupted(err);
+    // What the run made of each file, a failure included.
+    for (ctx.results, outcomes) |*r, o| r.outcome = o;
 
-    var merged: std.ArrayList(infer.ColumnState) = .empty;
-    // Each merged column's index, by name, and how many files have it.
-    var merged_at: schema.NameMap(usize) = .empty;
-    var present: std.ArrayList(u32) = .empty;
-    var all_headers = true;
-    // The files merged, those without a header and the first of them,
-    // and the widths of those.
-    var merged_files: u32 = 0;
-    var headless: u32 = 0;
-    var first_headless: []const u8 = "";
-    var widths: [2]usize = .{ std.math.maxInt(usize), 0 };
+    const m = try lib.merge(a, ctx.results, ctx.options);
     var code: Exit = .ok;
-    for (ctx.results, outcomes, cfg.files) |r, o, path| {
-        if (o.result == .@"error") {
+    for (ctx.results, 0..) |r, i| {
+        const path = r.outcome.file;
+        if (r.outcome.result == .@"error") {
             code = code.worst(.unreadable);
-            if (!cfg.quiet) try err.print("error {s}  {?f}\n", .{ path, o.problem });
+            if (!cfg.quiet) try err.print("error {s}  {?f}\n", .{ path, r.outcome.problem });
             continue;
         }
-        if (!r.header) all_headers = false;
-        merged_files += 1;
-        if (!r.header) {
-            if (headless == 0) first_headless = path;
-            headless += 1;
-            widths = .{ @min(widths[0], r.columns.len), @max(widths[1], r.columns.len) };
-        }
-        if (!cfg.quiet) try err.print("infer {s}  {d} rows  {d} columns\n", .{ path, o.rows, r.columns.len });
-        if (r.repeated_headers > 0 and !cfg.quiet)
-            try err.print("thresh: {s}: {f}\n", .{ path, Problem{ .header_repeated = .{ .line = r.repeated_line, .count = r.repeated_headers } } });
-        if (r.wide_rows > 0 and !cfg.quiet)
-            try err.print("thresh: {s}: {f}\n", .{ path, Problem{ .rows_wider = .{ .rows = r.wide_rows, .line = r.wide_line } } });
-        if (r.utf16_replaced > 0 and !cfg.quiet)
-            try err.print("thresh: {s}: {f}\n", .{ path, Problem{ .utf16_replaced = .{ .units = r.utf16_replaced } } });
-        const columns = try a.dupe(infer.ColumnState, r.columns);
-        for (columns) |*c| try restOf(err, cfg, path, c);
-        for (columns) |c| {
-            const at = try merged_at.getOrPut(a, c.name);
-            if (!at.found_existing) {
-                at.value_ptr.* = merged.items.len;
-                try merged.append(a, c);
-                try present.append(a, 1);
-                continue;
-            }
-            present.items[at.value_ptr.*] += 1;
-            const m = &merged.items[at.value_ptr.*];
-            const before = m.kind;
-            infer.merge(m, c, path);
-            if (m.kind != before and before != .null and !cfg.quiet)
-                try err.print("thresh: {f}\n", .{Problem{ .column_widened = .{ .column = m.name, .from = before, .to = m.kind, .file = path } }});
-        }
+        if (cfg.quiet) continue;
+        try err.print("infer {s}  {d} rows  {d} columns\n", .{ path, r.outcome.rows, r.columns.len });
+        for (m.notes) |n| if (n.after) |at| if (at == i) try printNote(err, n);
     }
-    if (merged.items.len == 0) {
-        try err.print("thresh: {f}\n", .{@as(Problem, .nothing_to_infer)});
+    if (m.stop) |p| {
+        try err.print("thresh: {f}\n", .{p});
         return code.worst(.unreadable);
     }
-    const s: schema.Schema = .{
-        .format_version = schema.format_version,
-        .columns = try infer.columnsOf(a, merged.items),
-        .nulls = ctx.nulls,
-        .match = if (all_headers) .name else .position,
-        .sampled = if (cfg.sample_rows != null) true else null,
-        // The threshold the types were inferred to: what validate needs
-        // to pass this file again.
-        .threshold = cfg.threshold,
-    };
-    if (!cfg.quiet) try warnThin(err, merged.items, s.columns);
-    if (try disagreement(a, merged.items, present.items, merged_files, headless, first_headless, widths)) |p| {
+    if (!cfg.quiet) for (m.notes) |n| if (n.after == null) try printNote(err, n);
+    if (m.disagreement) |p| {
         try err.print("thresh: {f}\n", .{p});
         code = code.worst(.failed);
     }
+    const s = m.schema.?;
     if (cfg.out) |path| {
         var buf: [1 << 16]u8 = undefined;
         const file = try Io.Dir.cwd().createFile(env.io, path, .{});
         defer file.close(env.io);
         var fw = file.writer(env.io, &buf);
-        try schema.writeJson(s, &fw.interface);
+        try lib.writeSchema(s, &fw.interface);
         try fw.interface.flush();
-    } else try schema.writeJson(s, out);
+    } else try lib.writeSchema(s, out);
     return code;
 }
 
-/// How the files of one infer run disagree, if they do: a schema merged
-/// from them then fails some of them, or matches by position where a
-/// header named the columns. present: how many files have each column.
-fn disagreement(a: Allocator, columns: []const infer.ColumnState, present: []const u32, files: u32, headless: u32, first_headless: []const u8, widths: [2]usize) Allocator.Error!?Problem {
-    if (headless > 0 and headless < files)
-        return .{ .files_mixed_headers = .{ .headless = headless, .files = files, .first = first_headless } };
-    if (headless > 0) {
-        if (widths[0] == widths[1]) return null;
-        return .{ .files_widths = .{ .min = widths[0], .max = widths[1] } };
-    }
-    var missing: usize = 0;
-    var first: std.ArrayList(problem.Presence) = .empty;
-    for (columns, present) |c, n| {
-        if (n == files) continue;
-        missing += 1;
-        if (missing <= 3) try first.append(a, .{ .column = c.name, .files = n });
-    }
-    if (missing == 0) return null;
-    return .{ .files_columns = .{ .missing = missing, .columns = columns.len, .files = files, .first = first.items } };
+/// A note of infer's: its file first, unless the problem names it.
+fn printNote(err: *Io.Writer, n: lib.Note) !void {
+    if (n.file) |f| return err.print("thresh: {s}: {f}\n", .{ f, n.problem });
+    try err.print("thresh: {f}\n", .{n.problem});
 }
 
-/// What a column's rest says: under --threshold, that it took the rest's
-/// type, those values its rejected ones; without, when few values moved
-/// it, which type the rest fit and the --threshold that would take it.
-fn restOf(err: *Io.Writer, cfg: *const cli.Config, path: []const u8, c: *infer.ColumnState) !void {
-    const rest = infer.restType(c.*) orelse return;
-    const rows = c.values + c.nulls;
-    const misfits = c.misfits;
-    const row = c.misfit_row;
-    if (cfg.threshold) |t| if (infer.tolerate(c, t)) {
-        if (!cfg.quiet) try err.print("thresh: {s}: {f}\n", .{ path, Problem{ .column_tolerated = .{ .column = c.name, .type = rest, .misfits = misfits, .values = rows, .row = row } } });
-        return;
-    };
-    if (cfg.quiet or !infer.fewMisfits(c.*)) return;
-    // The threshold that takes the rest's type, to four places.
-    const fit = @floor((1.0 - @as(f64, @floatFromInt(misfits)) / @as(f64, @floatFromInt(rows))) * 10_000) / 10_000;
-    try err.print("thresh: {s}: {f}\n", .{ path, Problem{ .column_misfits = .{ .column = c.name, .type = infer.typeOf(c.*), .misfits = misfits, .values = rows, .row = row, .rest = rest, .threshold = fit } } });
-}
-
-/// Names the typed columns read from too few values to trust, the first
-/// five, so the schema is looked at before the next file is held to it.
-fn warnThin(err: *Io.Writer, states: []const infer.ColumnState, cols: []const schema.Column) !void {
-    var first: [5][]const u8 = undefined;
-    var n: usize = 0;
-    for (states, cols) |st, c| {
-        if (!infer.thin(st, c)) continue;
-        if (n < first.len) first[n] = c.name;
-        n += 1;
-    }
-    if (n == 0) return;
-    try err.print("thresh: {f}\n", .{Problem{ .columns_thin = .{ .columns = first[0..@min(n, first.len)], .count = n, .few_values = infer.few_values } }});
-}
-
-fn outputOf(cfg: *const cli.Config) ?worker.OutputPlan {
+fn outputOf(cfg: *const cli.Config) ?render.OutputPlan {
     return switch (cfg.command) {
-        .convert, .run => .{ .to = cfg.to.?, .dir = cfg.out.? },
+        .convert, .run => .{
+            .to = switch (cfg.to.?) {
+                .csv => .csv,
+                .arrow => .arrow,
+                // cli.parse refuses it.
+                .parquet => unreachable,
+            },
+            .dir = cfg.out.?,
+            .arrow_file = cfg.arrow_file,
+            .delimiter = cfg.out_delimiter,
+            .newline = cfg.out_newline,
+            .normalize_dates = cfg.normalize_dates,
+        },
         else => null,
     };
 }
@@ -308,41 +249,33 @@ fn outputOf(cfg: *const cli.Config) ?worker.OutputPlan {
 /// (pass 1), then the file read again and written through validation
 /// (pass 2), the page cache making the second read cheap.
 fn convertInferred(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
-    const no_schema: schema.Schema = .{ .columns = &.{} };
     const Ctx = struct {
         cfg: *const cli.Config,
-        nulls: []const []const u8,
+        options: lib.Options,
         names: []const []const u8,
 
         fn run(ctx: *anyopaque, w: *pool.Worker, i: usize) anyerror!report.Outcome {
             const c: *@This() = @ptrCast(@alignCast(ctx));
             const a = w.scratch.allocator();
             const path = c.cfg.files[i];
-            const inferred = try worker.inferFile(w.env, c.cfg, c.nulls, path, a);
+            const inferred = try lib.inferFile(w.env, a, path, c.options);
             if (inferred.outcome.result == .@"error") return inferred.outcome;
-            const columns = try a.dupe(infer.ColumnState, inferred.columns);
-            if (c.cfg.threshold) |t| for (columns) |*col| {
-                _ = infer.tolerate(col, t);
-            };
-            const s = try a.create(schema.Schema);
-            s.* = .{
-                .columns = try infer.columnsOf(a, columns),
-                .nulls = c.nulls,
-                .match = if (inferred.header) .name else .position,
-            };
-            const plan: worker.Plan = .{
-                .cfg = c.cfg,
+            // The schema infer would write for this file alone.
+            const s = try a.create(lib.Schema);
+            s.* = (try lib.merge(a, &.{inferred}, c.options)).schema.?;
+            const plan: render.Plan = .{
+                .options = c.options,
                 .schema = s,
-                .nulls = c.nulls,
-                .threshold = c.cfg.threshold orelse 1.0,
                 .output = outputOf(c.cfg),
+                .report_dir = c.cfg.report_dir,
+                .reject_dir = c.cfg.reject_dir,
             };
-            return worker.validateNamed(w.env, plan, path, c.names[i], a);
+            return render.validateNamed(w.env, plan, path, c.names[i], a);
         }
     };
     var ctx: Ctx = .{
         .cfg = cfg,
-        .nulls = try worker.nullsOf(env.arena, &no_schema, cfg.nulls),
+        .options = try optionsOf(env.arena, cfg),
         .names = try pool.uniqueNames(env.arena, cfg.files),
     };
     const outcomes = try runPool(env, cfg, .{ .ctx = &ctx, .files = cfg.files, .run = Ctx.run }, out, err, false);
@@ -357,22 +290,24 @@ fn validateFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Wri
     defer owned.deinit();
     const s = &owned.schema;
     const Ctx = struct {
-        plan: worker.Plan,
+        plan: render.Plan,
+        files: []const []const u8,
         names: []const []const u8,
 
         fn run(ctx: *anyopaque, w: *pool.Worker, i: usize) anyerror!report.Outcome {
             const c: *@This() = @ptrCast(@alignCast(ctx));
-            return worker.validateNamed(w.env, c.plan, c.plan.cfg.files[i], c.names[i], w.scratch.allocator());
+            return render.validateNamed(w.env, c.plan, c.files[i], c.names[i], w.scratch.allocator());
         }
     };
     var ctx: Ctx = .{
         .plan = .{
-            .cfg = cfg,
+            .options = try optionsOf(env.arena, cfg),
             .schema = s,
-            .nulls = try worker.nullsOf(env.arena, s, cfg.nulls),
-            .threshold = cfg.threshold orelse s.threshold orelse 1.0,
             .output = outputOf(cfg),
+            .report_dir = cfg.report_dir,
+            .reject_dir = cfg.reject_dir,
         },
+        .files = cfg.files,
         .names = try pool.uniqueNames(env.arena, cfg.files),
     };
     const outcomes = try runPool(env, cfg, .{ .ctx = &ctx, .files = cfg.files, .run = Ctx.run }, out, err, false);
@@ -413,8 +348,8 @@ const max_jobs_per_cpu = 4;
 
 /// The workers a run gets: --jobs, or a CPU apiece, no more than files or
 /// max_jobs_per_cpu a CPU. capped: --jobs asked for more than that allows.
-fn jobsFor(requested: ?usize, cpus: usize, files: usize) struct { n: usize, capped: bool } {
-    const want = @min(requested orelse cpus, files);
+fn jobsFor(requested: ?usize, cpus: usize, inputs: usize) struct { n: usize, capped: bool } {
+    const want = @min(requested orelse cpus, inputs);
     const most = max_jobs_per_cpu * cpus;
     return .{ .n = @max(1, @min(want, most)), .capped = want > most };
 }
@@ -437,7 +372,7 @@ fn finishRun(env: Env, cfg: *const cli.Config, outcomes: []const report.Outcome,
     var code: Exit = .ok;
     for (outcomes) |o| code = code.worst(@fromBackingInt(o.result.exitCode()));
     if (cfg.report_dir) |dir| {
-        var sink: worker.Sink = try .create(env.io, env.gpa, dir, "summary", ".json");
+        var sink: render.Sink = try .create(env.io, env.gpa, dir, "summary", ".json");
         defer sink.close(env.io, env.gpa);
         try report.writeSummary(&sink.writer.interface, outcomes, @backingInt(code));
         try sink.writer.interface.flush();
@@ -458,16 +393,15 @@ fn interrupted(err: *Io.Writer) !Exit {
 /// Each file's dialect, a line apiece: text, or JSON under --json.
 fn sniff(env: Env, cfg: cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
     var code: Exit = .ok;
+    const options = try optionsOf(env.arena, &cfg);
     for (cfg.files) |path| {
-        var o: report.Outcome = .{ .file = path, .result = .@"error" };
-        var sniffed = (try worker.openSniffed(.{ .io = env.io, .gpa = env.gpa }, &cfg, path, null, &o)) orelse {
-            try err.print("thresh: {s}: {f}\n", .{ path, o.problem.? });
+        const sniffed = try lib.sniff(.{ .io = env.io, .gpa = env.gpa }, path, options);
+        const v = sniffed.verdict orelse {
+            try err.print("thresh: {s}: {f}\n", .{ path, sniffed.outcome.problem.? });
             code = code.worst(.unreadable);
             continue;
         };
-        sniffed.in.close(env.io, env.gpa);
-        const v = sniffed.verdict;
-        const stop = worker.verdictProblem(v, &cfg);
+        const stop = sniffed.outcome.problem;
         if (cfg.json) {
             try report.writeSniffLine(out, path, v, if (stop) |*p| p[0..1] else &.{});
         } else {
@@ -511,8 +445,10 @@ test {
     _ = problem;
     _ = @import("problems_doc_test.zig");
     _ = @import("format_test.zig");
-    _ = worker;
-    _ = infer;
+    _ = @import("worker.zig");
+    _ = render;
+    _ = @import("infer.zig");
+    _ = lib;
     _ = pool;
     _ = interrupt;
     _ = @import("types/date.zig");
