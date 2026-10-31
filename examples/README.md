@@ -36,7 +36,7 @@ $ grep -E '"(name|type|format)"' harvest.schema.json
       "type": "string",
   "match": "name"
 $ thresh validate data/harvest.csv --schema harvest.schema.json
-pass  data/harvest.csv  40 rows  0 rejected  2 MB/s
+pass  data/harvest.csv  40 rows  0 rejected  1 MB/s
 $ thresh convert data/harvest.csv --schema harvest.schema.json --to arrow --out out --json
 {"format_version":1,"file":"data/harvest.csv","result":"pass","rows":40,"rows_rejected":0,"problems":[],"written":"out/harvest.arrows"}
 ```
@@ -464,7 +464,13 @@ $ cat reports/harvest_dirty.csv.report.json
     "rejected_sample": 10,
     "rejected_lines": 20,
     "line_bytes": 300,
-    "repeated_header_rows": 10
+    "repeated_header_rows": 10,
+    "distinct": 1000,
+    "top": 5,
+    "top_value_bytes": 64,
+    "shapes": 3,
+    "shape_bytes": 32,
+    "sample_rows": 65536
   },
   "row_errors": {
     "ragged": 1
@@ -472,11 +478,33 @@ $ cat reports/harvest_dirty.csv.report.json
   "warnings": [],
   "timing_ms": {
     "sniff": 0,
-    "parse": 1,
+    "parse": 2,
     "write": 0
   },
   "throughput_mb_s": 1
 }
+```
+
+## The whole of a file, in one document
+
+`describe` puts everything above in one JSON document a file: the
+dialect, the schema (inferred, unless `--schema` gives one), each
+column's type and statistics, the problems with their fixes, the first
+bad lines, and the caps on every list, so it fits a prompt whatever the
+file's size. With `--shapes-only` it holds none of the file's values,
+only their shapes, so it can go to an AI or into an issue. Code reads it
+as any JSON:
+
+```console
+$ thresh describe data/harvest_dirty.csv --shapes-only --json | python3 -c 'import json, sys; d = json.load(sys.stdin); print(d["result"], d["rows"], "rows;", d["rejected_lines"][0]["text"]); [print(" ", c["name"], c["type"], c["stats"]["shapes"][0]["shape"]) for c in d["columns"]]'
+fail 30 rows; 9,a,9-9-9,a9,9.9,a a,a,a 9
+  lug_id int64 9
+  picked_on string 9-9-9
+  orchard_row string a9
+  lug_kg string 9.9
+  cultivar string a
+  bruised string a
+  remark string a
 ```
 
 ## Commas nobody quoted

@@ -121,7 +121,21 @@ fn walk(a: Allocator, rows: *const Rows, seen: *std.StringArrayHashMapUnmanaged(
 /// The documents against the doc's table for name; each says it is
 /// version.
 fn expectDocumented(a: Allocator, name: []const u8, version: u32, texts: []const []const u8) !std.StringArrayHashMapUnmanaged(Kinds) {
-    const rows = try documented(a, name);
+    return expectRows(a, name, try documented(a, name), version, texts);
+}
+
+/// A description's rows: the report's, but its timing, and its own.
+fn descriptionRows(a: Allocator) !Rows {
+    var rows = try documented(a, "report");
+    for ([_][]const u8{ "timing_ms", "timing_ms.sniff", "timing_ms.parse", "timing_ms.write", "throughput_mb_s" }) |p| {
+        if (!rows.orderedRemove(p)) return error.TestUnexpectedResult;
+    }
+    const own = try documented(a, "describe");
+    for (own.keys(), own.values()) |k, v| try rows.put(a, k, v);
+    return rows;
+}
+
+fn expectRows(a: Allocator, name: []const u8, rows: Rows, version: u32, texts: []const []const u8) !std.StringArrayHashMapUnmanaged(Kinds) {
     var seen: std.StringArrayHashMapUnmanaged(Kinds) = .empty;
     for (texts) |text| {
         const v = try std.json.parseFromSliceLeaky(std.json.Value, a, text, .{});
@@ -253,19 +267,33 @@ test "docs/REPORT.md: the reports' fields, as thresh writes them" {
         .result = .fail,
         .timing = .{ .sniff_ns = 1_000_000, .parse_ns = 2_000_000, .write_ns = 3_000_000 },
     };
-    _ = try expectDocumented(a, "report", report.format_version, &.{
-        try written(a, report.writeFileReport, .{ try report.fileOf(a, read, .{ .verdict = verdict('"'), .validator = &v }), true }),
-        try written(a, report.writeFileReport, .{ try report.fileOf(a, error_outcome, .{ .verdict = verdict(null) }), true }),
-        try written(a, report.writeFileReport, .{ try report.fileOf(a, error_outcome, .{}), true }),
+    const files = [_]report.File{
+        try report.fileOf(a, read, .{ .verdict = verdict('"'), .validator = &v }),
+        try report.fileOf(a, error_outcome, .{ .verdict = verdict(null) }),
+        try report.fileOf(a, error_outcome, .{}),
         // A column's statistics, every field of them.
-        try written(a, report.writeFileReport, .{ report.File{ .outcome = ok_outcome, .read = .{
+        .{ .outcome = ok_outcome, .read = .{
             .columns = &.{.{ .name = "lug_kg", .type = .decimal, .nulls = 0, .mismatches = 0, .conformance = 1, .stats = full_stats }},
             .rows_rejected = 0,
             .rejected_sample = &.{},
             .row_errors = .initFill(0),
             .repeated_header_rows = &.{},
-        } }, true }),
-    });
+        } },
+    };
+    var reports: [files.len][]const u8 = undefined;
+    for (&reports, files) |*r, f| r.* = try written(a, report.writeFileReport, .{ f, true });
+    _ = try expectDocumented(a, "report", report.format_version, &reports);
+    // A description of each, inferred with a note, given, or of a file
+    // that could not be read.
+    var descriptions: [files.len][]const u8 = undefined;
+    for (&descriptions, files, 0..) |*d, f, i| d.* = try written(a, lib.writeDescription, .{ lib.Description{
+        .file = f,
+        .schema = if (i == 2) null else sample_schema,
+        .inferred = i != 1,
+        .notes = if (i == 0) &.{.{ .rows_wider = .{ .rows = 1, .line = 5 } }} else &.{},
+        .encoding = "utf8",
+    }, i % 2 == 0 });
+    _ = try expectRows(a, "describe", try descriptionRows(a), report.format_version, &descriptions);
     _ = try expectDocumented(a, "summary", report.format_version, &.{
         try written(a, report.writeSummary, .{ &[_]report.Outcome{ ok_outcome, error_outcome }, @as(u8, 2) }),
     });
@@ -281,9 +309,9 @@ test "docs/REPORT.md: the reports' fields, as thresh writes them" {
     });
     // Two files, one unreadable; a note on a file and one on the run; the
     // files disagree. And a run with nothing to infer from.
-    const files = [_]lib.Columns{ .{ .outcome = ok_outcome }, .{ .outcome = error_outcome } };
+    const inferred = [_]lib.Columns{ .{ .outcome = ok_outcome }, .{ .outcome = error_outcome } };
     _ = try expectDocumented(a, "infer", report.format_version, &.{
-        try written(a, lib.writeInferResult, .{ &files, lib.Merged{
+        try written(a, lib.writeInferResult, .{ &inferred, lib.Merged{
             .schema = sample_schema,
             .notes = &.{
                 .{ .after = 0, .problem = .{ .header_repeated = .{ .line = 4, .count = 1 } } },
@@ -291,7 +319,7 @@ test "docs/REPORT.md: the reports' fields, as thresh writes them" {
             },
             .disagreement = .{ .files_widths = .{ .min = 3, .max = 4 } },
         } }),
-        try written(a, lib.writeInferResult, .{ files[1..], lib.Merged{ .stop = .nothing_to_infer } }),
+        try written(a, lib.writeInferResult, .{ inferred[1..], lib.Merged{ .stop = .nothing_to_infer } }),
     });
     try expectValues(a, "infer", "files[].result", enum { pass, @"error" });
 

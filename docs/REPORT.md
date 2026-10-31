@@ -1,6 +1,6 @@
 # Reports: the JSON thresh writes
 
-thresh writes six kinds of JSON document for programs to read:
+thresh writes seven kinds of JSON document for programs to read:
 
 | Document | Written by | Where |
 | --- | --- | --- |
@@ -9,6 +9,7 @@ thresh writes six kinds of JSON document for programs to read:
 | [A file's line](#a-files-line---json) | validate, convert, run with `--json` | stdout, one line per input as it finishes |
 | [A sniff line](#a-sniff-line-sniff---json) | sniff with `--json`; the C library's `thresh_sniff` | stdout, one line per input |
 | [An infer result](#an-infer-result-the-c-library) | the C library's `thresh_infer` | returned, one per call |
+| [A description](#a-description-describe) | describe; the C library's `thresh_describe` | stdout, one per input (a line apiece with `--json`) |
 | [The schema](#the-schema) | infer | stdout, or `--out FILE`; validate, convert and run read it with `--schema` |
 
 Every code in them (a problem, a warning, why a value was rejected) is
@@ -159,6 +160,12 @@ as the file finishes. A file that could not be read has one too: its
 | `limits.rejected_lines` | `integer` | 20 |
 | `limits.line_bytes` | `integer` | of a rejected line's `text`: 300 |
 | `limits.repeated_header_rows` | `integer` | 10 |
+| `limits.distinct` | `integer` | `columns[].stats.distinct`, counted exactly up to: 1000 |
+| `limits.top` | `integer` | `columns[].stats.top`, a column: 5 |
+| `limits.top_value_bytes` | `integer` | the longest value counted among the most common: 64 |
+| `limits.shapes` | `integer` | `columns[].stats.shapes`, a column: 3 |
+| `limits.shape_bytes` | `integer` | of a shape: 32 |
+| `limits.sample_rows` | `integer` | about how many rows the sampled statistics are counted over, in a file with more: 65536 |
 | `row_errors` | `object` | when read against its schema: rejected rows by what was wrong with the whole row, a [reason](PROBLEMS.md#reasons) code to a count; empty when none |
 | `row_errors{}` | `integer` | rows with that reason |
 | `warnings` | `array` | what is unusual about the file and stopped nothing |
@@ -267,6 +274,30 @@ CLI prints on stderr.
 | `notes[]` | `problem` | a [problem object](PROBLEMS.md#problems) |
 | `problems` | `array` | `nothing_to_infer` when no file could be read, or how the files disagree, so the schema fails some of them (`files_columns`, `files_widths`, `files_mixed_headers`; the CLI's exit 1); empty when neither |
 | `problems[]` | `problem` | a [problem object](PROBLEMS.md#problems) |
+
+## A description (`describe`)
+
+Everything thresh can say of a file in one document, for a person, for
+code, or for an AI that should know the file before using it: what
+`thresh describe` writes for each input, and the C library's
+`thresh_describe` returns. Without `--schema` (or `--columns`) it infers
+one from the file first, and reads the file twice. It is bounded whatever
+the file's size, each list's cap in `limits`; with `--shapes-only` it
+holds none of the file's values ([Shapes only](#shapes-only)), and under
+it the most common values are shapes, so two of them may read the same.
+
+Its fields are the [file report](#the-file-report)'s, with `columns[].stats`
+always there, but for `timing_ms` and `throughput_mb_s`: a description of
+a file is the same from run to run. And these:
+
+<!-- fields: describe -->
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `encoding` | `string` | what the file was read as: `utf8`, `latin1` or `cp1252`, as `--encoding` says, or `utf16le` or `utf16be` when a byte order mark said so |
+| `inferred` | `boolean` | the schema was inferred from the file, not given |
+| `schema` | `schema` | when the file could be read: the schema it was read against, as [The schema](#the-schema) describes it, with an inferred one's `samples` and `stats` left out (`columns` has them) |
+| `notes` | `array` | what inference found, when it inferred: as an infer result's `files[].notes` and `notes` |
+| `notes[]` | `problem` | a [problem object](PROBLEMS.md#problems) |
 
 ## The schema
 

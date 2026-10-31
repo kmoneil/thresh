@@ -21,6 +21,7 @@ const infer_mod = @import("infer.zig");
 const problem_mod = @import("problem.zig");
 const report = @import("report.zig");
 const schema_mod = @import("schema.zig");
+const stats_mod = @import("stats.zig");
 const shapes = @import("shapes.zig");
 const worker = @import("worker.zig");
 
@@ -182,6 +183,96 @@ pub fn merge(arena: Allocator, files: []const Columns, o: Options) !Merged {
         .notes = notes.items,
         .disagreement = try disagreement(a, merged.items, present.items, merged_files, headless, first_headless, widths),
     };
+}
+
+/// What describe says of a file: its report, the schema it was read
+/// against, and when that was inferred from it, what inference had to say.
+pub const Description = struct {
+    file: File,
+    /// The schema given, or the one inferred; null when the file could
+    /// not be read to infer one.
+    schema: ?Schema,
+    inferred: bool,
+    notes: []const Problem = &.{},
+    /// As read: the options' encoding, or utf16le or utf16be when a byte
+    /// order mark said so.
+    encoding: []const u8,
+};
+
+/// Everything thresh can say of the file at path, in a document bounded
+/// whatever its size (docs/REPORT.md, "A description"): read against s,
+/// or with none, against the schema inferred from it first (two passes),
+/// with each column's statistics. A file that cannot be read is its
+/// report's error, not an error returned.
+pub fn describe(env: Env, arena: Allocator, path: []const u8, s: ?*const Schema, o: Options) !Description {
+    var opts = o;
+    opts.stats = true;
+    if (s) |given| return describeAgainst(env, arena, path, given, opts, .{ .schema = try shapes.schemaOf(arena, given.*, opts.shapes), .inferred = false });
+    const columns = try inferFile(env, arena, path, opts);
+    const merged = try merge(arena, &.{columns}, opts);
+    const said = try shaped(arena, &.{columns}, merged, opts.shapes);
+    const notes = try arena.alloc(Problem, said.merged.notes.len);
+    for (notes, said.merged.notes) |*n, x| n.* = x.problem;
+    const sc = merged.schema orelse return .{
+        .file = try report.fileOf(arena, columns.outcome, .{ .encoding = opts.encoding, .shapes = opts.shapes }),
+        .schema = null,
+        .inferred = true,
+        .notes = notes,
+        .encoding = @tagName(opts.encoding),
+    };
+    // Read with the schema as inferred; said as shapes, when asked, and
+    // without the statistics infer gives it: the report's columns have them.
+    return describeAgainst(env, arena, path, &sc, opts, .{ .schema = try withoutStats(arena, said.merged.schema.?), .inferred = true, .notes = notes });
+}
+
+/// s with no column's statistics or samples, for a document that has its
+/// own.
+fn withoutStats(arena: Allocator, s: Schema) Allocator.Error!Schema {
+    const columns = try arena.dupe(schema_mod.Column, s.columns);
+    for (columns) |*c| {
+        c.stats = null;
+        c.samples = null;
+    }
+    var out = s;
+    out.columns = columns;
+    return out;
+}
+
+/// The file at path validated against s, its report put into d.
+fn describeAgainst(env: Env, arena: Allocator, path: []const u8, s: *const Schema, o: Options, d: struct { schema: ?Schema, inferred: bool, notes: []const Problem = &.{} }) !Description {
+    var out: Description = .{ .file = undefined, .schema = d.schema, .inferred = d.inferred, .notes = d.notes, .encoding = @tagName(o.encoding) };
+    var opened = try read(env, arena, path, s, o, null);
+    switch (opened) {
+        .stopped => |st| out.file = try report.fileOf(arena, st.outcome, .{ .verdict = st.verdict, .encoding = o.encoding, .shapes = o.shapes }),
+        .reader => |*r| {
+            defer r.deinit();
+            while (try r.next()) {}
+            out.file = try r.fileReport(arena, try r.finish(arena));
+            if (r.in.utf16) |u| out.encoding = if (u.order == .little) "utf16le" else "utf16be";
+        },
+    }
+    return out;
+}
+
+/// A description as JSON: indented as a report is, or compact on one line.
+pub fn writeDescription(w: *Io.Writer, d: Description, compact: bool) std.json.Stringify.Error!void {
+    var s: std.json.Stringify = .{ .writer = w, .options = .{ .whitespace = if (compact) .minified else .indent_2 } };
+    try s.beginObject();
+    try report.writeReportFields(&s, d.file);
+    try s.objectField("encoding");
+    try s.write(d.encoding);
+    try s.objectField("inferred");
+    try s.write(d.inferred);
+    if (d.schema) |sc| {
+        try s.objectField("schema");
+        s.options.emit_null_optional_fields = false;
+        defer s.options.emit_null_optional_fields = true;
+        try s.write(sc);
+    }
+    try s.objectField("notes");
+    try s.write(d.notes);
+    try s.endObject();
+    try w.writeByte('\n');
 }
 
 /// What infer made of its files, for a caller that prints or writes it.
@@ -692,6 +783,61 @@ test "statistics: a large file sampled evenly, merged across files" {
     try testing.expectEqualStrings("18.00", kg.max.?);
     try testing.expectEqualStrings("18.0", kg.top[0].value);
     try testing.expectEqual(@as(u64, 2), kg.top[0].count);
+}
+
+test "describe: a schema inferred, or given; a file not read; UTF-16; shapes" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const env: Env = .{ .io = testing.io, .gpa = testing.allocator };
+    var text: Io.Writer.Allocating = .init(testing.allocator);
+    defer text.deinit();
+    try text.writer.writeAll("lug_id,cultivar,lug_kg\n");
+    for (0..20) |i| try text.writer.print("{d},{s},{d}.50\n", .{ i, if (i % 3 == 0) "Starfall" else "Quillon", 10 + i });
+    try text.writer.writeAll("21,Quillon,12.50,a wide row\n");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "lugs.csv", .data = text.written() });
+    const path = try pathIn(a, tmp, "lugs.csv");
+
+    const d = try describe(env, a, path, null, .{});
+    try testing.expect(d.inferred);
+    try testing.expectEqualStrings("utf8", d.encoding);
+    try testing.expectEqual(schema_mod.Type.decimal, d.schema.?.columns[2].type);
+    // The schema without what the columns have: stats and samples.
+    try testing.expectEqual(@as(?stats_mod.Summary, null), d.schema.?.columns[0].stats);
+    try testing.expectEqualStrings("Quillon", d.file.read.?.columns[1].stats.?.top[0].value);
+    try testing.expectEqual(Problem.Code.rows_wider, std.meta.activeTag(d.notes[0]));
+    try testing.expectEqual(report.Result.fail, d.file.outcome.result);
+
+    var diag: schema_mod.Diagnostic = .{};
+    var owned = try schema_mod.parseInline(testing.allocator, "lug_id:int64,cultivar:string,lug_kg:string", &diag);
+    defer owned.deinit();
+    const given = try describe(env, a, path, &owned.schema, .{});
+    try testing.expect(!given.inferred);
+    try testing.expectEqual(schema_mod.Type.string, given.schema.?.columns[2].type);
+    try testing.expectEqual(@as(usize, 0), given.notes.len);
+
+    const none = try describe(env, a, try pathIn(a, tmp, "none.csv"), null, .{});
+    try testing.expectEqual(report.Result.@"error", none.file.outcome.result);
+    try testing.expectEqual(@as(?Schema, null), none.schema);
+
+    // A UTF-16 file, told by its byte order mark.
+    var wide: [64]u8 = undefined;
+    var n: usize = 2;
+    wide[0..2].* = .{ 0xff, 0xfe };
+    for ("a,b\n1,2\n3,4\n5,6\n") |c| {
+        wide[n..][0..2].* = .{ c, 0 };
+        n += 2;
+    }
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "wide.csv", .data = wide[0..n] });
+    try testing.expectEqualStrings("utf16le", (try describe(env, a, try pathIn(a, tmp, "wide.csv"), null, .{})).encoding);
+
+    // With names as shapes, neither a value nor a name is in it.
+    var out: Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try writeDescription(&out.writer, try describe(env, a, path, null, .{ .shapes = .names }), false);
+    for ([_][]const u8{ "Quillon", "Starfall", "cultivar", "wide row" }) |marker| try testing.expect(std.mem.find(u8, out.written(), marker) == null);
 }
 
 test "readArrow: a stream stops where the read does, and says why" {

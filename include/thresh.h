@@ -199,6 +199,12 @@ thresh_status thresh_columns(thresh *t, const char *columns, char **schema_json)
  * "The file report"). */
 thresh_status thresh_validate(thresh *t, const char *path, const char *schema_json, const thresh_options *o, char **json);
 
+/* Everything thresh can say of the file in one document (docs/REPORT.md,
+ * "A description"): read against the schema, or with schema_json NULL,
+ * against one inferred from the file first. Bounded whatever the file's
+ * size; with THRESH_SHAPES_ONLY, none of its values. */
+thresh_status thresh_describe(thresh *t, const char *path, const char *schema_json, const thresh_options *o, char **json);
+
 /* The file opened to read against the schema, its rows (and with
  * THRESH_WANT_REJECTS its rejected rows) handed out as Arrow C streams.
  * When the file stops before it is read, *reader is NULL and *json its

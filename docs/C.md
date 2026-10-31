@@ -63,6 +63,7 @@ int main(void) {
 | `thresh_infer` | an [infer result](REPORT.md#an-infer-result-the-c-library): the schema its files fit, each file's outcome and notes |
 | `thresh_columns` | the inline form (`"lug_id:int64,lug_kg:decimal(5,2)"`) as [schema](REPORT.md#the-schema) JSON |
 | `thresh_validate` | the file's [report](REPORT.md#the-file-report) against a schema |
+| `thresh_describe` | a [description](REPORT.md#a-description-describe): everything thresh can say of the file in one bounded document, against a schema or one inferred from the file |
 | `thresh_read` | a reader: the accepted rows, and the rejected rows when asked, as Arrow C streams, then the report |
 
 A schema is given as its JSON, as `infer` writes it; the inline form

@@ -536,7 +536,13 @@
     "rejected_sample": 10,
     "rejected_lines": 20,
     "line_bytes": 300,
-    "repeated_header_rows": 10
+    "repeated_header_rows": 10,
+    "distinct": 1000,
+    "top": 5,
+    "top_value_bytes": 64,
+    "shapes": 3,
+    "shape_bytes": 32,
+    "sample_rows": 65536
   },
   "row_errors": {
     "ragged": 2,

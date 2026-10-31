@@ -347,6 +347,25 @@ fn validate(m: *Message, path_c: ?[*:0]const u8, schema_json: ?[*:0]const u8, o:
     out.* = try jsonOf(report.writeFileReport, .{ f, true });
 }
 
+export fn thresh_describe(t: ?*Thresh, path: ?[*:0]const u8, schema_json: ?[*:0]const u8, o: ?*const Options, json: ?*?[*:0]u8) c_int {
+    const h = t orelse return @backingInt(Status.argument);
+    return call(&h.message, describe, .{ path, schema_json, o, json });
+}
+
+fn describe(m: *Message, path_c: ?[*:0]const u8, schema_json: ?[*:0]const u8, o: ?*const Options, json: ?*?[*:0]u8) !void {
+    const out = try outOf(m, "json", [*:0]u8, json);
+    const path = try spanOf(m, "path", path_c);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const opts = try optionsOf(m, a, o);
+    // No schema: describe infers one.
+    var owned: ?lib.OwnedSchema = if (schema_json != null) try schemaOf(m, schema_json) else null;
+    defer if (owned) |*s| s.deinit();
+    const d = try lib.describe(env(), a, path, if (owned) |*s| &s.schema else null, opts);
+    out.* = try jsonOf(lib.writeDescription, .{ d, false });
+}
+
 export fn thresh_read(t: ?*Thresh, path: ?[*:0]const u8, schema_json: ?[*:0]const u8, o: ?*const Options, want: u32, reader: ?*?*Reader, json: ?*?[*:0]u8) c_int {
     const h = t orelse return @backingInt(Status.argument);
     return call(&h.message, read, .{ path, schema_json, o, want, reader, json });
@@ -648,6 +667,23 @@ test "shapes: the reports say nothing of the file's values, or with names its na
         try testing.expectEqual(flags == 0, values);
         try testing.expectEqual(flags != Flag.shape_names, std.mem.find(u8, text, "lug_kg") != null);
     }
+}
+
+test "thresh_describe: inferred, or against a schema" {
+    const t = thresh_new().?;
+    defer thresh_free(t);
+    var json: ?[*:0]u8 = null;
+    try testing.expectEqual(@as(c_int, 0), thresh_describe(t, lugs, null, null, &json));
+    try testing.expect(std.mem.find(u8, std.mem.span(json.?), "\"inferred\": true") != null);
+    try testing.expect(std.mem.find(u8, std.mem.span(json.?), "\"stats\": {") != null);
+    thresh_string_free(json);
+    var schema: ?[*:0]u8 = null;
+    try testing.expectEqual(@as(c_int, 0), thresh_columns(t, lugs_columns, &schema));
+    defer thresh_string_free(schema);
+    try testing.expectEqual(@as(c_int, 0), thresh_describe(t, lugs, schema, null, &json));
+    try testing.expect(std.mem.find(u8, std.mem.span(json.?), "\"inferred\": false") != null);
+    try testing.expect(std.mem.find(u8, std.mem.span(json.?), "\"rows_rejected\": 2") != null);
+    thresh_string_free(json);
 }
 
 test "the cancel flag stops a call" {

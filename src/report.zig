@@ -252,9 +252,18 @@ fn shapeColumn(a: Allocator, c: *Column, s: shapes.Shapes) Allocator.Error!void 
 /// throughput_mb_s, so a report is the same from run to run (the
 /// golden-file tests).
 pub fn writeFileReport(w: *Io.Writer, f: File, timing: bool) Stringify.Error!void {
-    const o = f.outcome;
     var s: Stringify = .{ .writer = w, .options = .{ .whitespace = .indent_2 } };
     try s.beginObject();
+    try writeReportFields(&s, f);
+    if (timing) try writeTiming(&s, f.outcome);
+    try s.endObject();
+    try w.writeByte('\n');
+}
+
+/// Every field of f's report but its timing, into an object s has begun:
+/// the report's, and the description's, which holds them all.
+pub fn writeReportFields(s: *Stringify, f: File) Stringify.Error!void {
+    const o = f.outcome;
     try s.objectField("format_version");
     try s.write(format_version);
     try s.objectField("file");
@@ -272,119 +281,142 @@ pub fn writeFileReport(w: *Io.Writer, f: File, timing: bool) Stringify.Error!voi
     if (f.read) |r| {
         try s.objectField("columns");
         try s.beginArray();
-        for (r.columns) |c| {
-            try s.beginObject();
-            try s.objectField("name");
-            try s.write(c.name);
-            try s.objectField("type");
-            try s.write(@tagName(c.type));
-            try s.objectField("nulls");
-            try s.write(c.nulls);
-            try s.objectField("mismatches");
-            try s.write(c.mismatches);
-            try s.objectField("conformance");
-            try writeFraction(&s, c.conformance);
-            if (c.format) |x| {
-                try s.objectField("format");
-                try s.write(x);
-            }
-            if (c.ambiguous) |n| {
-                try s.objectField("ambiguous");
-                try s.write(n);
-                if (n > 0) {
-                    try s.objectField("fits");
-                    try s.beginArray();
-                    inline for (@typeInfo(Fits).@"struct".field_names) |order| {
-                        if (@field(c.fits, order)) try s.write(order);
-                    }
-                    try s.endArray();
-                }
-            }
-            if (c.samples.len > 0) {
-                try s.objectField("samples");
-                try s.beginArray();
-                for (c.samples) |x| {
-                    try s.beginObject();
-                    try s.objectField("row");
-                    try s.write(x.row);
-                    try s.objectField("value");
-                    try s.write(x.value);
-                    try s.objectField("code");
-                    try s.write(x.code);
-                    try s.endObject();
-                }
-                try s.endArray();
-            }
-            if (c.stats) |st| {
-                try s.objectField("stats");
-                s.options.emit_null_optional_fields = false;
-                defer s.options.emit_null_optional_fields = true;
-                try s.write(st);
-            }
-            try s.endObject();
-        }
+        for (r.columns) |c| try writeColumn(s, c);
         try s.endArray();
-        try writeProblems(&s, f.problems);
-        try s.objectField("rows_rejected");
-        try s.write(r.rows_rejected);
-        try s.objectField("rejected_sample");
-        try s.write(r.rejected_sample);
-        try s.objectField("rejected_lines");
+        try writeProblems(s, f.problems);
+        try writeRejects(s, r);
+    } else {
+        try writeProblems(s, f.problems);
+    }
+    try writeWarnings(s, f);
+}
+
+fn writeColumn(s: *Stringify, c: Column) Stringify.Error!void {
+    try s.beginObject();
+    try s.objectField("name");
+    try s.write(c.name);
+    try s.objectField("type");
+    try s.write(@tagName(c.type));
+    try s.objectField("nulls");
+    try s.write(c.nulls);
+    try s.objectField("mismatches");
+    try s.write(c.mismatches);
+    try s.objectField("conformance");
+    try writeFraction(s, c.conformance);
+    if (c.format) |x| {
+        try s.objectField("format");
+        try s.write(x);
+    }
+    if (c.ambiguous) |n| try writeAmbiguous(s, n, c.fits);
+    if (c.samples.len > 0) {
+        try s.objectField("samples");
         try s.beginArray();
-        for (r.rejected_lines) |l| {
+        for (c.samples) |x| {
             try s.beginObject();
             try s.objectField("row");
-            try s.write(l.row);
-            try s.objectField("text");
-            try s.write(l.text);
-            if (l.length) |n| {
-                try s.objectField("length");
-                try s.write(n);
-            }
-            try s.objectField("errors");
-            try s.beginArray();
-            for (l.errors) |e| {
-                try s.beginObject();
-                if (e.column) |c| {
-                    try s.objectField("column");
-                    try s.write(c);
-                }
-                try s.objectField("code");
-                try s.write(e.code);
-                try s.endObject();
-            }
-            try s.endArray();
+            try s.write(x.row);
+            try s.objectField("value");
+            try s.write(x.value);
+            try s.objectField("code");
+            try s.write(x.code);
             try s.endObject();
         }
         try s.endArray();
-        // What the lists above keep, so one that is full says there may
-        // be more.
-        try s.objectField("limits");
-        try s.beginObject();
-        inline for (.{
-            .{ "samples", validate.max_samples },
-            .{ "sample_bytes", validate.max_sample_len },
-            .{ "rejected_sample", validate.max_samples },
-            .{ "rejected_lines", validate.max_lines },
-            .{ "line_bytes", validate.max_line_len },
-            .{ "repeated_header_rows", validate.max_samples },
-        }) |limit| {
-            try s.objectField(limit[0]);
-            try s.write(limit[1]);
-        }
-        try s.endObject();
-        try s.objectField("row_errors");
-        try s.beginObject();
-        for (std.enums.values(types.Reason)) |reason| {
-            const n = r.row_errors.get(reason);
-            if (n == 0) continue;
-            try s.objectField(@tagName(reason));
-            try s.write(n);
-        }
-        try s.endObject();
-    } else {
-        try writeProblems(&s, f.problems);
     }
+    if (c.stats) |st| {
+        try s.objectField("stats");
+        s.options.emit_null_optional_fields = false;
+        defer s.options.emit_null_optional_fields = true;
+        try s.write(st);
+    }
+    try s.endObject();
+}
+
+/// A date column's guessed values, and the orders they all still fit.
+fn writeAmbiguous(s: *Stringify, n: u64, fits: Fits) Stringify.Error!void {
+    try s.objectField("ambiguous");
+    try s.write(n);
+    if (n == 0) return;
+    try s.objectField("fits");
+    try s.beginArray();
+    inline for (@typeInfo(Fits).@"struct".field_names) |order| {
+        if (@field(fits, order)) try s.write(order);
+    }
+    try s.endArray();
+}
+
+/// The rows set aside: how many, the first ones' lines and text, what
+/// the lists keep, and the rows rejected whole by why.
+fn writeRejects(s: *Stringify, r: Read) Stringify.Error!void {
+    try s.objectField("rows_rejected");
+    try s.write(r.rows_rejected);
+    try s.objectField("rejected_sample");
+    try s.write(r.rejected_sample);
+    try s.objectField("rejected_lines");
+    try s.beginArray();
+    for (r.rejected_lines) |l| try writeRejectedLine(s, l);
+    try s.endArray();
+    // What the lists above keep, so one that is full says there may be
+    // more.
+    try s.objectField("limits");
+    try s.beginObject();
+    inline for (.{
+        .{ "samples", validate.max_samples },
+        .{ "sample_bytes", validate.max_sample_len },
+        .{ "rejected_sample", validate.max_samples },
+        .{ "rejected_lines", validate.max_lines },
+        .{ "line_bytes", validate.max_line_len },
+        .{ "repeated_header_rows", validate.max_samples },
+        .{ "distinct", stats.max_distinct },
+        .{ "top", stats.top_shown },
+        .{ "top_value_bytes", stats.value_bytes },
+        .{ "shapes", stats.shapes_shown },
+        .{ "shape_bytes", stats.shape_bytes },
+        .{ "sample_rows", stats.sample_target },
+    }) |limit| {
+        try s.objectField(limit[0]);
+        try s.write(limit[1]);
+    }
+    try s.endObject();
+    try s.objectField("row_errors");
+    try s.beginObject();
+    for (std.enums.values(types.Reason)) |reason| {
+        const n = r.row_errors.get(reason);
+        if (n == 0) continue;
+        try s.objectField(@tagName(reason));
+        try s.write(n);
+    }
+    try s.endObject();
+}
+
+fn writeRejectedLine(s: *Stringify, l: Line) Stringify.Error!void {
+    try s.beginObject();
+    try s.objectField("row");
+    try s.write(l.row);
+    try s.objectField("text");
+    try s.write(l.text);
+    if (l.length) |n| {
+        try s.objectField("length");
+        try s.write(n);
+    }
+    try s.objectField("errors");
+    try s.beginArray();
+    for (l.errors) |e| {
+        try s.beginObject();
+        if (e.column) |c| {
+            try s.objectField("column");
+            try s.write(c);
+        }
+        try s.objectField("code");
+        try s.write(e.code);
+        try s.endObject();
+    }
+    try s.endArray();
+    try s.endObject();
+}
+
+/// What is unusual about the file, and where its header repeats.
+fn writeWarnings(s: *Stringify, f: File) Stringify.Error!void {
     try s.objectField("warnings");
     try s.beginArray();
     inline for (dialect.Warnings.names) |name| {
@@ -393,23 +425,22 @@ pub fn writeFileReport(w: *Io.Writer, f: File, timing: bool) Stringify.Error!voi
     if (f.warnings.extra_columns) try s.write("extra_columns");
     if (f.warnings.header_repeated) try s.write("header_repeated");
     try s.endArray();
-    if (f.read) |r| if (f.warnings.header_repeated) {
-        try s.objectField("repeated_header_rows");
-        try s.write(r.repeated_header_rows);
-    };
-    if (timing) {
-        try s.objectField("timing_ms");
-        try s.beginObject();
-        inline for (.{ .{ "sniff", "sniff_ns" }, .{ "parse", "parse_ns" }, .{ "write", "write_ns" } }) |t| {
-            try s.objectField(t[0]);
-            try s.write(@field(o.timing, t[1]) / std.time.ns_per_ms);
-        }
-        try s.endObject();
-        try s.objectField("throughput_mb_s");
-        try s.write(@as(u64, @intFromFloat(@round(o.throughput()))));
+    const r = f.read orelse return;
+    if (!f.warnings.header_repeated) return;
+    try s.objectField("repeated_header_rows");
+    try s.write(r.repeated_header_rows);
+}
+
+fn writeTiming(s: *Stringify, o: Outcome) Stringify.Error!void {
+    try s.objectField("timing_ms");
+    try s.beginObject();
+    inline for (.{ .{ "sniff", "sniff_ns" }, .{ "parse", "parse_ns" }, .{ "write", "write_ns" } }) |t| {
+        try s.objectField(t[0]);
+        try s.write(@field(o.timing, t[1]) / std.time.ns_per_ms);
     }
     try s.endObject();
-    try w.writeByte('\n');
+    try s.objectField("throughput_mb_s");
+    try s.write(@as(u64, @intFromFloat(@round(o.throughput()))));
 }
 
 /// "problems": each as its code, sentence, parameters and fix.
