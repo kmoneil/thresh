@@ -51,7 +51,10 @@ pub const Parser = struct {
 
     /// The next record, its fields in fields (emptied first), or null at
     /// the end of the input.
-    pub fn next(p: *Parser, gpa: Allocator, fields: *std.ArrayList(Field)) Allocator.Error!?Record {
+    /// Aligned to a cache line so its loop sits where it did whatever
+    /// changes around it: on x86 a tight loop's speed moves by half with
+    /// where its branches fall against 32-byte boundaries (docs/PERF.md).
+    pub fn next(p: *Parser, gpa: Allocator, fields: *std.ArrayList(Field)) align(64) Allocator.Error!?Record {
         fields.clearRetainingCapacity();
         const in = p.input;
         while (true) {
