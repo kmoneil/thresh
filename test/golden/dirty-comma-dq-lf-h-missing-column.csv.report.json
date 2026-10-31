@@ -94,6 +94,15 @@
   ],
   "rows_rejected": 0,
   "rejected_sample": [],
+  "rejected_lines": [],
+  "limits": {
+    "samples": 10,
+    "sample_bytes": 200,
+    "rejected_sample": 10,
+    "rejected_lines": 20,
+    "line_bytes": 300,
+    "repeated_header_rows": 10
+  },
   "row_errors": {},
   "warnings": []
 }

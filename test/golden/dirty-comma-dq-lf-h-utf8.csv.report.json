@@ -173,6 +173,163 @@
     37,
     41
   ],
+  "rejected_lines": [
+    {
+      "row": 5,
+      "text": "4,pending,1234567890123.45,0.3271,false,2023-08-19,2022-10-16 21:37:00,Günter OBrien",
+      "errors": [
+        {
+          "column": "amount",
+          "code": "decimal_precision"
+        }
+      ]
+    },
+    {
+      "row": 9,
+      "text": "8,pending,1.234,0.1773,false,2026-11-07,2021-02-06 06:28:31,Ana Smith",
+      "errors": [
+        {
+          "column": "amount",
+          "code": "decimal_scale"
+        }
+      ]
+    },
+    {
+      "row": 13,
+      "text": "12,closed,\"12,50\",0.7754,true,2019-08-11,2020-09-23 19:40:51,\"OBrien, Hana\"",
+      "errors": [
+        {
+          "column": "amount",
+          "code": "not_decimal"
+        }
+      ]
+    },
+    {
+      "row": 17,
+      "text": "16,closed,-4248.74,abc,true,2020-04-22,2025-09-22 09:16:41,Fatima DSouza",
+      "errors": [
+        {
+          "column": "ratio",
+          "code": "not_float"
+        }
+      ]
+    },
+    {
+      "row": 21,
+      "text": "20,closed,-2010.02,0.6786,maybe,2026-01-21,2020-01-15 00:17:10,Hana Østergaard",
+      "errors": [
+        {
+          "column": "flag",
+          "code": "not_bool"
+        }
+      ]
+    },
+    {
+      "row": 25,
+      "text": "24,closed,-571.49,0.2066,false,2024-02-30,2022-12-13 00:32:38,Iñigo Lee",
+      "errors": [
+        {
+          "column": "created",
+          "code": "not_in_format"
+        }
+      ]
+    },
+    {
+      "row": 29,
+      "text": "28,closed,-1720.99,0.1865,false,2025-06-07,3 days ago,Dev Smith",
+      "errors": [
+        {
+          "column": "updated",
+          "code": "not_in_format"
+        }
+      ]
+    },
+    {
+      "row": 33,
+      "text": "32,pending,10817.64,0.5885,true,2022-04-11,2020-07-28 01:08:41,xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "errors": [
+        {
+          "column": "name",
+          "code": "too_long"
+        }
+      ]
+    },
+    {
+      "row": 37,
+      "text": "36,pending,-1847.05,0.6342,true,2025-05-19,2019-03-13 11:59:05,caf�",
+      "errors": [
+        {
+          "column": "name",
+          "code": "invalid_utf8"
+        }
+      ]
+    },
+    {
+      "row": 41,
+      "text": "40,open,17448.38,0.3593,false,2021-08-12,2022-02-02 19:27:11",
+      "errors": [
+        {
+          "code": "ragged"
+        }
+      ]
+    },
+    {
+      "row": 45,
+      "text": "44,open,2424.46,0.8384,true,2021-09-16,2025-06-06 11:03:17,Bo DSouza,extra",
+      "errors": [
+        {
+          "code": "ragged"
+        }
+      ]
+    },
+    {
+      "row": 49,
+      "text": "48,open,4301.99,,true,2022-12-04,2026-01-07 09:55:03,\"Bad\" quote",
+      "errors": [
+        {
+          "code": "bad_quote"
+        }
+      ]
+    },
+    {
+      "row": 53,
+      "text": "12a,closed,-1460.68,0.2295,true,2022-10-08,2022-04-27 01:43:50,\"Ng, Bo\"",
+      "errors": [
+        {
+          "column": "id",
+          "code": "not_int"
+        }
+      ]
+    },
+    {
+      "row": 57,
+      "text": ",pending,5188.38,0.8576,false,2019-04-02,2023-06-18 12:14:10,Jo Smith",
+      "errors": [
+        {
+          "column": "id",
+          "code": "null_value"
+        }
+      ]
+    },
+    {
+      "row": 61,
+      "text": "99999999999999999999,pending,12502.98,0.8236,false,2024-09-08,2023-07-10 09:14:21,Günter Núñez",
+      "errors": [
+        {
+          "column": "id",
+          "code": "int_overflow"
+        }
+      ]
+    }
+  ],
+  "limits": {
+    "samples": 10,
+    "sample_bytes": 200,
+    "rejected_sample": 10,
+    "rejected_lines": 20,
+    "line_bytes": 300,
+    "repeated_header_rows": 10
+  },
   "row_errors": {
     "ragged": 2,
     "bad_quote": 1

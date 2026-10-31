@@ -189,6 +189,55 @@ $ cat reports/harvest_dirty.csv.report.json
     13,
     22
   ],
+  "rejected_lines": [
+    {
+      "row": 5,
+      "text": "4,2026-09-05,R05,\"18,5\",Marrowdew,false,",
+      "errors": [
+        {
+          "column": "lug_kg",
+          "code": "not_decimal"
+        }
+      ]
+    },
+    {
+      "row": 9,
+      "text": "8,2026-09-31,R09,19.2,Brookwood,false,",
+      "errors": [
+        {
+          "column": "picked_on",
+          "code": "not_in_format"
+        }
+      ]
+    },
+    {
+      "row": 13,
+      "text": "12,2026-09-13,R01,18.7,Marrowdew,maybe,",
+      "errors": [
+        {
+          "column": "bruised",
+          "code": "not_bool"
+        }
+      ]
+    },
+    {
+      "row": 22,
+      "text": "21,extra,2026-09-22,R10,14.5,Ember Pip,false,ladder 2",
+      "errors": [
+        {
+          "code": "ragged"
+        }
+      ]
+    }
+  ],
+  "limits": {
+    "samples": 10,
+    "sample_bytes": 200,
+    "rejected_sample": 10,
+    "rejected_lines": 20,
+    "line_bytes": 300,
+    "repeated_header_rows": 10
+  },
   "row_errors": {
     "ragged": 1
   },

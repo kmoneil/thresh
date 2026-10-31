@@ -167,14 +167,18 @@ fn expectValues(a: Allocator, name: []const u8, path: []const u8, comptime E: ty
 }
 
 /// A file with a value that does not fit, ambiguous dates, a column the
-/// schema does not have, a repeated header and a ragged row.
+/// schema does not have, a repeated header, a ragged row, and a bad row
+/// longer than the report keeps of it.
 const sample_input =
     "lug_id,picked_on,picked,remark\n" ++
     "1,2024-01-02,03/04/2024,a\n" ++
     "x,2024-01-03,05/06/2024,b\n" ++
     "lug_id,picked_on,picked,remark\n" ++
     "4,2024-01-04,07/08/2024,c,d\n" ++
-    "5,2024-01-05,09/10/2024,e\n";
+    "5,2024-01-05,09/10/2024,e\n" ++
+    "y,2024-01-06,11/12/2024," ++ long_remark ++ "\n";
+
+const long_remark: [320]u8 = @splat('z');
 
 const sample_schema: schema.Schema = .{ .columns = &.{
     .{ .name = "lug_id", .type = .int64 },
@@ -272,6 +276,16 @@ test "docs/REPORT.md: the reports' fields, as thresh writes them" {
         try expectValues(a, name, "dialect.confidence", dialect.Confidence);
     }
     try expectValues(a, "report", "result", report.Result);
+    // Each limit's row says the number thresh writes.
+    const doc_rows = try documented(a, "report");
+    const limits = (try std.json.parseFromSliceLeaky(std.json.Value, a, try written(a, report.writeFileReport, .{ try report.fileOf(a, read, .{ .validator = &v }), false }), .{})).object.get("limits").?.object;
+    for (limits.keys(), limits.values()) |k, n| {
+        const meaning = doc_rows.get(try std.fmt.allocPrint(a, "limits.{s}", .{k})).?.meaning;
+        if (!std.mem.endsWith(u8, meaning, try std.fmt.allocPrint(a, "{d}", .{n.integer}))) {
+            std.debug.print("docs/REPORT.md: `limits.{s}` says \"{s}\"; thresh writes {d}\n", .{ k, meaning, n.integer });
+            return error.TestUnexpectedResult;
+        }
+    }
     try expectValues(a, "summary", "results[].result", report.Result);
     try expectValues(a, "line", "result", report.Result);
     try expectValues(a, "report", "columns[].type", schema.Type);
