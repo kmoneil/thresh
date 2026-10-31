@@ -7,7 +7,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
 
-var flag: std.atomic.Value(bool) = .init(false);
+/// The flag itself, for an Options.cancel that follows it.
+pub var flag: std.atomic.Value(bool) = .init(false);
 
 pub fn requested() bool {
     return flag.load(.acquire);

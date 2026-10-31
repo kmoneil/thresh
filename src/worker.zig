@@ -1,11 +1,11 @@
-//! One file's pipeline: open, sniff, scan a batch at a time, validate,
-//! and write its report and reject file. The only file that imports every
-//! stage, so each stage can be tested and benchmarked alone.
+//! One file's pipeline, under lib.zig: open, sniff, scan a batch at a
+//! time, and validate (Reader) or infer (inferFile). The only file of the
+//! library that imports every stage, so each stage can be tested and
+//! benchmarked alone. What the CLI writes of it is render.zig's.
 
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const cli = @import("cli.zig");
 const dialect = @import("dialect.zig");
 const input = @import("input.zig");
 const records = @import("records.zig");
@@ -15,10 +15,7 @@ const validate = @import("validate.zig");
 const report = @import("report.zig");
 const Problem = @import("problem.zig").Problem;
 const infer = @import("infer.zig");
-const builders = @import("builders.zig");
-const csv = @import("write/csv.zig");
-const arrow = @import("write/arrow.zig");
-const interrupt = @import("interrupt.zig");
+const Encoding = @import("types.zig").Encoding;
 
 pub const Env = struct {
     io: Io,
@@ -27,134 +24,41 @@ pub const Env = struct {
     positions: ?[]u32 = null,
 };
 
-/// The run-wide settings a file's validation takes from the command line
-/// and the schema.
-pub const Plan = struct {
-    cfg: *const cli.Config,
-    schema: *const Schema,
-    /// The schema's nulls and --null's.
-    nulls: []const []const u8,
-    threshold: f64,
-    /// Leave timing out of reports (tests).
-    timing: bool = true,
-    /// convert and run: where the accepted rows go, and as what.
-    output: ?OutputPlan = null,
-};
+/// How a file is read, whoever asks: a library caller, or the CLI from its
+/// flags. Nothing here is the process's: cancel is the caller's own flag.
+pub const Options = struct {
+    /// Dialect dimensions pinned; the sniffer settles the rest.
+    pins: dialect.Pins = .{},
+    /// The sniffer's first window; it grows to dialect.max_sample_bytes.
+    sample_bytes: usize = 64 << 10,
+    encoding: Encoding = .utf8,
+    /// Map the file; false reads it through a buffer.
+    mmap: bool = true,
+    /// An empty line is a one-field record, not skipped.
+    keep_empty: bool = false,
+    /// Every date column reads ambiguous dates day first.
+    day_first: bool = false,
+    /// Extra columns, ragged rows and ambiguous dates fail the file.
+    strict: bool = false,
+    ragged: validate.Ragged = .reject,
+    /// infer: only the first rows are read.
+    sample_rows: ?u64 = null,
+    /// Strings read as null in every column, besides the schema's (infer:
+    /// besides "").
+    nulls: []const []const u8 = &.{},
+    /// The fraction of a column's values that must fit, and of rows read
+    /// whole, for a file to pass; infer keeps a type that many fit. Null:
+    /// the schema's, or 1.0; infer, every value.
+    threshold: ?f64 = null,
+    /// Set from another thread to stop: the call returns error.Interrupted
+    /// at its next batch. Null: never.
+    cancel: ?*const std.atomic.Value(bool) = null,
 
-pub const OutputPlan = struct {
-    to: cli.Format,
-    dir: []const u8,
-};
-
-/// What an output file keeps of a name: all before its last dot.
-pub fn stem(name: []const u8) []const u8 {
-    return name[0 .. std.mem.findScalarLast(u8, name, '.') orelse name.len];
-}
-
-/// A file's output: written to a dot-named temporary beside where it goes
-/// and renamed there when the file is done, so a crash or a Ctrl-C leaves
-/// no partial file under the real name.
-const Output = struct {
-    final_path: []const u8,
-    tmp_path: []const u8,
-    sink: Sink,
-    batch: builders.Batch,
-    format: union(enum) { csv: csv.Writer, arrow: arrow.Writer },
-
-    /// name is the file's from pool.uniqueNames, whose stem is the run's alone.
-    fn create(env: Env, arena: Allocator, plan: OutputPlan, cfg: *const cli.Config, s: *const Schema, name: []const u8) !Output {
-        const name_stem = stem(name);
-        const ext: []const u8 = switch (plan.to) {
-            .csv => ".csv",
-            .arrow => if (cfg.arrow_file) ".arrow" else ".arrows",
-            .parquet => unreachable,
-        };
-        const dir = std.mem.trimEnd(u8, plan.dir, "/");
-        try Io.Dir.cwd().createDirPath(env.io, dir);
-        const final_path = try std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ dir, name_stem, ext });
-        // Random, so two runs writing the same name do not share one.
-        var nonce: [8]u8 = undefined;
-        env.io.random(&nonce);
-        const tmp_path = try std.fmt.allocPrint(arena, "{s}/.{s}{s}.{x}.tmp", .{ dir, name_stem, ext, &nonce });
-        var sink: Sink = try .open(env.io, env.gpa, tmp_path);
-        errdefer sink.close(env.io, env.gpa);
-        var batch: builders.Batch = try .init(env.gpa, s, cfg.encoding);
-        errdefer batch.deinit();
-        return .{
-            .final_path = final_path,
-            .tmp_path = tmp_path,
-            .sink = sink,
-            .batch = batch,
-            .format = switch (plan.to) {
-                .csv => .{ .csv = .{
-                    .options = .{ .delimiter = cfg.out_delimiter, .newline = cfg.out_newline },
-                    .normalize_dates = cfg.normalize_dates,
-                } },
-                .arrow => .{ .arrow = .init(env.gpa, s, .{ .file = cfg.arrow_file }) },
-                .parquet => unreachable,
-            },
-        };
-    }
-
-    /// Writes the column names (CSV) or the schema message (Arrow).
-    fn header(o: *Output, s: *const Schema, arena: Allocator) !void {
-        const names = try arena.alloc([]const u8, s.columns.len);
-        for (names, s.columns) |*n, c| n.* = c.name;
-        const out = &o.sink.writer.interface;
-        switch (o.format) {
-            .csv => |*w| try w.header(out, names),
-            .arrow => |*w| try w.header(out),
-        }
-    }
-
-    /// Writes what the batch holds, then empties it.
-    fn write(o: *Output) !void {
-        const out = &o.sink.writer.interface;
-        switch (o.format) {
-            .csv => |*w| try w.batch(out, &o.batch),
-            // An empty batch is no record batch.
-            .arrow => |*w| if (o.batch.rows > 0) try w.batch(out, &o.batch),
-        }
-        o.batch.reset();
-    }
-
-    /// Flushes and closes the file, and renames it into place, or with
-    /// keep false deletes it. Releases everything, and leaves no
-    /// temporary, whether or not it succeeds, so it is called once.
-    fn finish(o: *Output, env: Env, keep: bool) !void {
-        defer o.batch.deinit();
-        defer switch (o.format) {
-            .arrow => |*w| w.deinit(),
-            .csv => {},
-        };
-        // Deleted after it is closed (the defer below runs first).
-        errdefer Io.Dir.cwd().deleteFile(env.io, o.tmp_path) catch {};
-        defer o.sink.close(env.io, env.gpa);
-        if (keep) switch (o.format) {
-            .arrow => |*w| try w.end(&o.sink.writer.interface),
-            .csv => {},
-        };
-        if (keep) try o.sink.writer.interface.flush();
-        o.sink.close(env.io, env.gpa);
-        if (keep) {
-            try Io.Dir.cwd().rename(o.tmp_path, Io.Dir.cwd(), o.final_path, env.io);
-        } else {
-            // Best effort: one left behind is dot-named, not the output.
-            Io.Dir.cwd().deleteFile(env.io, o.tmp_path) catch {};
-        }
+    pub fn canceled(o: Options) bool {
+        const c = o.cancel orelse return false;
+        return c.load(.acquire);
     }
 };
-
-/// The global nulls: the schema's, then --null's comma-separated ones.
-pub fn nullsOf(arena: Allocator, s: *const Schema, extra: ?[]const u8) Allocator.Error![]const []const u8 {
-    var list: std.ArrayList([]const u8) = .empty;
-    try list.appendSlice(arena, s.nulls);
-    if (extra) |e| {
-        var it = std.mem.splitScalar(u8, e, ',');
-        while (it.next()) |n| try list.append(arena, n);
-    }
-    return list.toOwnedSlice(arena);
-}
 
 fn now(io: Io) Io.Timestamp {
     return Io.Timestamp.now(io, .awake);
@@ -164,213 +68,171 @@ fn since(io: Io, t: Io.Timestamp) u64 {
     return @intCast(@max(0, t.durationTo(now(io)).nanoseconds));
 }
 
-/// Validates the file at path, writes its report (with --report) and its
-/// rejected rows (with --reject), and returns what came of it. An error is
-/// one about the run (memory, an unwritable report), not about the file.
-pub fn validateFile(env: Env, plan: Plan, path: []const u8, arena: Allocator) !report.Outcome {
-    return validateNamed(env, plan, path, std.fs.path.basename(path), arena);
-}
+/// A file read against its schema a batch of records at a time: what
+/// validate drains and read hands out. open sniffs it; each next reads a
+/// batch into the validator, and the rows it accepts into v.batch when the
+/// caller has set one; finish settles what came of it. The caller may set
+/// v.reject and v.batch, which it owns, before the first next.
+pub const Reader = struct {
+    io: Io,
+    gpa: Allocator,
+    opts: Options,
+    in: input.Input,
+    verdict: dialect.Verdict,
+    v: validate.Validator,
+    s: records.Scanner,
+    batch: records.Batch = .{},
+    header_pending: bool,
+    /// The last batch asked for more input: read before the next one, not
+    /// after the last, since its rows may point into the bytes on hand.
+    refill_pending: bool = false,
+    ended: bool = false,
+    started: Io.Timestamp,
+    /// What has come of it so far; finish settles it. The caller adds to
+    /// its write time.
+    out: report.Outcome,
 
-/// validateFile, with name the base of its report, reject and output
-/// files' names (unique within a run when inputs share a base name).
-pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, arena: Allocator) !report.Outcome {
-    const io = env.io;
-    const gpa = env.gpa;
-    const cfg = plan.cfg;
-    var out: report.Outcome = .{ .file = path, .result = .@"error" };
-    var details: report.Details = .{ .schema = plan.schema, .encoding = cfg.encoding, .timing = plan.timing };
-
-    const names = try arena.alloc([]const u8, plan.schema.columns.len);
-    for (names, plan.schema.columns) |*n, c| n.* = c.name;
-    var sniffed = (try openSniffed(env, cfg, path, names, &out)) orelse {
-        try writeReport(env, plan, out, name, details);
-        return out;
+    pub const Opened = union(enum) {
+        reader: Reader,
+        /// The file stops before it is read: the outcome says why, and the
+        /// verdict is there when it was sniffed.
+        stopped: struct { outcome: report.Outcome, verdict: ?dialect.Verdict = null },
     };
-    defer sniffed.in.close(io, gpa);
-    const in = &sniffed.in;
-    const verdict = sniffed.verdict;
-    details.verdict = verdict;
-    if (verdictProblem(verdict, cfg)) |p| {
-        out.problem = p;
-        try writeReport(env, plan, out, name, details);
-        return out;
+
+    /// Opens path and sniffs it, ready to read against s. arena holds the
+    /// schema's names for the sniffer.
+    pub fn open(env: Env, arena: Allocator, path: []const u8, s: *const Schema, nulls: []const []const u8, threshold: f64, opts: Options) !Opened {
+        var out: report.Outcome = .{ .file = path, .result = .@"error" };
+        const names = try arena.alloc([]const u8, s.columns.len);
+        for (names, s.columns) |*n, c| n.* = c.name;
+        var sniffed = (try openSniffed(env, opts, path, names, &out)) orelse return .{ .stopped = .{ .outcome = out } };
+        errdefer sniffed.in.close(env.io, env.gpa);
+        const verdict = sniffed.verdict;
+        if (verdictProblem(verdict, opts)) |p| {
+            sniffed.in.close(env.io, env.gpa);
+            out.problem = p;
+            return .{ .stopped = .{ .outcome = out, .verdict = verdict } };
+        }
+        const started = now(env.io);
+        var v: validate.Validator = try .init(env.gpa, s, verdict.dialect, .{
+            .nulls = nulls,
+            .encoding = opts.encoding,
+            .threshold = threshold,
+            .strict = opts.strict,
+            .day_first = opts.day_first,
+            .ragged = opts.ragged,
+        });
+        errdefer v.deinit();
+        var scanner: records.Scanner = try .init(env.gpa, verdict.dialect, .{
+            .reference = .{ .start = verdict.start, .keep_empty = opts.keep_empty },
+            .positions_buffer = env.positions,
+        });
+        errdefer scanner.deinit();
+        const in = &sniffed.in;
+        scanner.feed(in.data(), in.base, in.eof);
+        const header_pending = verdict.dialect.header;
+        if (!header_pending) try v.columns(null, verdict.fields, in.data(), in.base);
+        return .{ .reader = .{
+            .io = env.io,
+            .gpa = env.gpa,
+            .opts = opts,
+            .in = sniffed.in,
+            .verdict = verdict,
+            .v = v,
+            .s = scanner,
+            .header_pending = header_pending,
+            .started = started,
+            .out = out,
+        } };
     }
 
-    const t1 = now(io);
-    var v: validate.Validator = try .init(gpa, plan.schema, verdict.dialect, .{
-        .nulls = plan.nulls,
-        .encoding = cfg.encoding,
-        .threshold = plan.threshold,
-        .strict = cfg.strict,
-        .day_first = cfg.day_first,
-        .ragged = cfg.ragged,
-    });
-    defer v.deinit();
-
-    var reject: ?Sink = if (cfg.reject_dir) |dir| try .create(io, gpa, dir, name, ".rejects.csv") else null;
-    defer if (reject) |*r| r.close(io, gpa);
-    // Interrupted or failed: no partial reject file left behind either,
-    // as far as deleting it can; the error being returned is the news.
-    errdefer if (reject) |*r| {
-        r.close(io, gpa);
-        removeSink(io, cfg.reject_dir.?, name, ".rejects.csv") catch {};
-    };
-    if (reject) |*r| v.reject = &r.writer.interface;
-
-    var output: ?Output = if (plan.output) |op| try .create(env, arena, op, cfg, plan.schema, name) else null;
-    var output_done = false;
-    // Unfinished means an error is on its way out: finish only deletes,
-    // and its own failure would hide that error.
-    defer if (output) |*o| if (!output_done) o.finish(env, false) catch {};
-    if (output) |*o| {
-        v.batch = &o.batch;
-        try o.header(plan.schema, arena);
+    pub fn deinit(r: *Reader) void {
+        r.batch.deinit(r.gpa);
+        r.s.deinit();
+        r.v.deinit();
+        r.in.close(r.io, r.gpa);
     }
 
-    var s: records.Scanner = try .init(gpa, verdict.dialect, .{
-        .reference = .{ .start = verdict.start, .keep_empty = cfg.keep_empty },
-        .positions_buffer = env.positions,
-    });
-    defer s.deinit();
-    s.feed(in.data(), in.base, in.eof);
-    var batch: records.Batch = .{};
-    defer batch.deinit(gpa);
-    var header_pending = verdict.dialect.header;
-    if (!header_pending) try v.columns(null, verdict.fields, in.data(), in.base);
-    while (true) {
-        batch.clear();
-        const state = try batch.fill(gpa, &s, .{});
-        for (0..batch.len()) |i| {
-            const fields = batch.recordFields(i);
-            if (header_pending) {
-                header_pending = false;
-                try v.columns(fields, verdict.fields, in.data(), in.base);
+    /// Reads the next batch of records; false when the file is done. A
+    /// batch read leaves its accepted rows in v.batch, for the caller to
+    /// take before the next call.
+    pub fn next(r: *Reader) !bool {
+        if (r.ended) return false;
+        if (r.refill_pending) {
+            r.refill_pending = false;
+            try r.in.refill(r.io, r.gpa, r.s.keepFrom());
+            r.s.feed(r.in.data(), r.in.base, r.in.eof);
+        }
+        r.batch.clear();
+        const state = try r.batch.fill(r.gpa, &r.s, .{});
+        const data = r.in.data();
+        for (0..r.batch.len()) |i| {
+            const fields = r.batch.recordFields(i);
+            if (r.header_pending) {
+                r.header_pending = false;
+                try r.v.columns(fields, r.verdict.fields, data, r.in.base);
                 continue;
             }
-            try v.record(batch.records.items[i], fields, in.data(), in.base);
+            try r.v.record(r.batch.records.items[i], fields, data, r.in.base);
         }
-        if (interrupt.requested()) return error.Interrupted;
-        if (output) |*o| {
-            const tw = now(io);
-            try o.write();
-            out.timing.write_ns += since(io, tw);
-        }
+        if (r.opts.canceled()) return error.Interrupted;
         switch (state) {
             .full => {},
-            .end => break,
-            .need_more => {
-                try in.refill(io, gpa, s.keepFrom());
-                s.feed(in.data(), in.base, in.eof);
-            },
+            .end => r.ended = true,
+            .need_more => r.refill_pending = true,
         }
+        return true;
     }
-    // An empty file with a header pending: no columns to match.
-    if (header_pending) try v.columns(null, 0, in.data(), in.base);
-    out.timing.parse_ns = since(io, t1) -| out.timing.write_ns;
 
-    out.rows = v.rows;
-    out.rows_rejected = v.rejected;
-    // Quotes that are data folded lines into rows: what was read is not
-    // the file's rows, so none of it is kept.
-    const folded = if (cfg.pins.quote == null) v.quotes.folding(v.stray_quotes) else null;
-    if (folded) |f| try v.structural.insert(v.gpa, 0, .{ .quote_is_data = f });
-    out.result = if (folded != null) .@"error" else if (v.passed()) .pass else .fail;
-    if (output) |*o| {
-        // A failing file's good rows are still written, unless --strict.
-        const keep = out.result == .pass or (out.result == .fail and !cfg.strict);
-        // Done whether or not finish succeeds: it releases the output either way.
-        output_done = true;
-        const tw = now(io);
-        try o.finish(env, keep);
-        out.timing.write_ns += since(io, tw);
-        if (keep) out.written = o.final_path;
-    }
-    if (v.structural.items.len > 0) {
-        out.problem = try v.structural.items[0].dupe(arena);
-    } else if (v.repeated_headers > 0) {
-        out.problem = .{ .header_repeated = .{ .line = v.repeated_lines.items[0], .count = v.repeated_headers } };
-    }
-    if (in.utf16) |u| if (u.replaced > 0) {
-        details.verdict.?.warnings.utf16_invalid = true;
-    };
-    details.validator = &v;
-    if (reject) |*r| {
-        try r.writer.interface.flush();
-        if (v.rejected == 0) {
-            r.close(io, gpa);
-            reject = null;
-            try removeSink(io, cfg.reject_dir.?, name, ".rejects.csv");
+    /// What came of the file, read to its end: its rows, its result and
+    /// its first problem (in arena). The verdict gains utf16_invalid when
+    /// UTF-16 units were replaced.
+    pub fn finish(r: *Reader, arena: Allocator) !report.Outcome {
+        // An empty file with a header pending: no columns to match.
+        if (r.header_pending) try r.v.columns(null, 0, r.in.data(), r.in.base);
+        const v = &r.v;
+        var out = r.out;
+        out.timing.parse_ns = since(r.io, r.started) -| out.timing.write_ns;
+        out.rows = v.rows;
+        out.rows_rejected = v.rejected;
+        // Quotes that are data folded lines into rows: what was read is not
+        // the file's rows, so none of it is kept.
+        const folded = if (r.opts.pins.quote == null) v.quotes.folding(v.stray_quotes) else null;
+        if (folded) |f| try v.structural.insert(v.gpa, 0, .{ .quote_is_data = f });
+        out.result = if (folded != null) .@"error" else if (v.passed()) .pass else .fail;
+        if (v.structural.items.len > 0) {
+            out.problem = try v.structural.items[0].dupe(arena);
+        } else if (v.repeated_headers > 0) {
+            out.problem = .{ .header_repeated = .{ .line = v.repeated_lines.items[0], .count = v.repeated_headers } };
         }
+        if (r.in.utf16) |u| if (u.replaced > 0) {
+            r.verdict.warnings.utf16_invalid = true;
+        };
+        r.out = out;
+        return out;
     }
-    try writeReport(env, plan, out, name, details);
-    return out;
-}
+
+    /// The file's report, for out, finish's outcome, its strings in arena.
+    pub fn fileReport(r: *const Reader, arena: Allocator, out: report.Outcome) !report.File {
+        return report.fileOf(arena, out, .{ .verdict = r.verdict, .validator = &r.v, .encoding = r.opts.encoding });
+    }
+};
 
 /// Why a file stops at its sniff, before it is read, if it does: its
 /// dialect is not settled, or the sample's quotes look like data.
-pub fn verdictProblem(v: dialect.Verdict, cfg: *const cli.Config) ?Problem {
-    if (v.confidence == .low and !cfg.pins.complete()) return .{ .dialect_unsettled = .{ .score = v.score } };
+pub fn verdictProblem(v: dialect.Verdict, o: Options) ?Problem {
+    if (v.confidence == .low and !o.pins.complete()) return .{ .dialect_unsettled = .{ .score = v.score } };
     if (v.folded) |f| return .{ .quote_is_data = f };
     return null;
 }
 
 /// A UTF-16 file is transcoded to UTF-8 as it is read, so an --encoding
 /// for its bytes would read the UTF-8 as something else.
-fn utf16Conflict(in: *const input.Input, cfg: *const cli.Config) ?Problem {
-    if (in.utf16 == null or cfg.encoding == .utf8) return null;
+fn utf16Conflict(in: *const input.Input, o: Options) ?Problem {
+    if (in.utf16 == null or o.encoding == .utf8) return null;
     return .utf16_with_encoding;
 }
 
-fn writeReport(env: Env, plan: Plan, out: report.Outcome, name: []const u8, details: report.Details) !void {
-    const dir = plan.cfg.report_dir orelse return;
-    var sink: Sink = try .create(env.io, env.gpa, dir, name, ".report.json");
-    defer sink.close(env.io, env.gpa);
-    try report.writeFileReport(&sink.writer.interface, out, details);
-    try sink.writer.interface.flush();
-}
-
-/// An output file in dir named for the input: its base name and ext. The
-/// buffer is on the heap, so a Sink copies safely; one inside the struct
-/// would leave the writer pointing at create's frame (zigvet#125).
-pub const Sink = struct {
-    file: Io.File,
-    writer: Io.File.Writer,
-    buf: []u8,
-    closed: bool = false,
-
-    pub fn create(io: Io, gpa: Allocator, dir: []const u8, source: []const u8, ext: []const u8) !Sink {
-        var name_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const name = try sinkPath(&name_buf, dir, source, ext);
-        try Io.Dir.cwd().createDirPath(io, dir);
-        return open(io, gpa, name);
-    }
-
-    /// The file at path, created, behind a 1 MiB buffer.
-    pub fn open(io: Io, gpa: Allocator, path: []const u8) !Sink {
-        const buf = try gpa.alloc(u8, 1 << 20);
-        errdefer gpa.free(buf);
-        const file = try Io.Dir.cwd().createFile(io, path, .{});
-        return .{ .file = file, .writer = file.writer(io, buf), .buf = buf };
-    }
-
-    pub fn close(s: *Sink, io: Io, gpa: Allocator) void {
-        if (s.closed) return;
-        s.closed = true;
-        s.file.close(io);
-        gpa.free(s.buf);
-    }
-};
-
-fn sinkPath(buf: []u8, dir: []const u8, source: []const u8, ext: []const u8) ![]const u8 {
-    return std.fmt.bufPrint(buf, "{s}/{s}{s}", .{ std.mem.trimEnd(u8, dir, "/"), std.fs.path.basename(source), ext });
-}
-
-fn removeSink(io: Io, dir: []const u8, source: []const u8, ext: []const u8) !void {
-    var name_buf: [std.fs.max_path_bytes]u8 = undefined;
-    try Io.Dir.cwd().deleteFile(io, try sinkPath(&name_buf, dir, source, ext));
-}
-
-/// One file's pass 1: its outcome and its columns as inference left them.
 /// A file open, and its dialect.
 pub const Sniffed = struct {
     in: input.Input,
@@ -384,27 +246,27 @@ pub const Sniffed = struct {
 /// rows) goes in out.problem and gives null.
 /// out.bytes and out.timing.sniff_ns are set as far as it gets. Low
 /// confidence is the caller's to judge. The caller closes the Input.
-pub fn openSniffed(env: Env, cfg: *const cli.Config, path: []const u8, schema_names: ?[]const []const u8, out: *report.Outcome) !?Sniffed {
+pub fn openSniffed(env: Env, o: Options, path: []const u8, schema_names: ?[]const []const u8, out: *report.Outcome) !?Sniffed {
     const t0 = now(env.io);
     defer out.timing.sniff_ns = since(env.io, t0);
-    var in = input.Input.open(env.io, env.gpa, path, .{ .no_mmap = cfg.no_mmap }) catch |e| {
+    var in = input.Input.open(env.io, env.gpa, path, .{ .no_mmap = !o.mmap }) catch |e| {
         out.problem = Problem.of(e);
         return null;
     };
     var kept = false;
     defer if (!kept) in.close(env.io, env.gpa);
     out.bytes = in.size;
-    if (utf16Conflict(&in, cfg)) |p| {
+    if (utf16Conflict(&in, o)) |p| {
         out.problem = p;
         return null;
     }
-    const max_sample = @max(cfg.sample_bytes, dialect.max_sample_bytes);
+    const max_sample = @max(o.sample_bytes, dialect.max_sample_bytes);
     while (!in.eof and in.data().len < max_sample) try in.refill(env.io, env.gpa, in.base);
     var verdict = dialect.sniff(env.gpa, in.data(), in.eof, .{
-        .pins = cfg.pins,
-        .sample_bytes = cfg.sample_bytes,
+        .pins = o.pins,
+        .sample_bytes = o.sample_bytes,
         .max_sample = max_sample,
-        .utf8 = cfg.encoding == .utf8,
+        .utf8 = o.encoding == .utf8,
         .schema = schema_names,
     }) catch |e| switch (e) {
         error.OutOfMemory => return e,
@@ -440,15 +302,15 @@ pub const Inferred = struct {
 
 /// Infers the file at path's columns, reading all of it, or the first
 /// --sample rows. arena holds the result.
-pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, path: []const u8, arena: Allocator) !Inferred {
+pub fn inferFile(env: Env, opts: Options, nulls: []const []const u8, path: []const u8, arena: Allocator) !Inferred {
     const io = env.io;
     const gpa = env.gpa;
     var out: report.Outcome = .{ .file = path, .result = .@"error" };
-    var sniffed = (try openSniffed(env, cfg, path, null, &out)) orelse return .{ .outcome = out };
+    var sniffed = (try openSniffed(env, opts, path, null, &out)) orelse return .{ .outcome = out };
     defer sniffed.in.close(io, gpa);
     const in = &sniffed.in;
     const verdict = sniffed.verdict;
-    if (verdictProblem(verdict, cfg)) |p| {
+    if (verdictProblem(verdict, opts)) |p| {
         out.problem = p;
         return .{ .outcome = out };
     }
@@ -456,11 +318,11 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
     const t1 = now(io);
     var f: infer.Inferrer = .init(arena, .{
         .nulls = nulls,
-        .encoding = cfg.encoding,
-        .day_first = cfg.day_first,
+        .encoding = opts.encoding,
+        .day_first = opts.day_first,
     });
     var s: records.Scanner = try .init(gpa, verdict.dialect, .{
-        .reference = .{ .start = verdict.start, .keep_empty = cfg.keep_empty },
+        .reference = .{ .start = verdict.start, .keep_empty = opts.keep_empty },
         .positions_buffer = env.positions,
     });
     defer s.deinit();
@@ -478,7 +340,7 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
     var repeated_line: u64 = 0;
     var quotes: records.QuoteCheck = .{};
     var stray: u64 = 0;
-    const limit = cfg.sample_rows orelse std.math.maxInt(u64);
+    const limit = opts.sample_rows orelse std.math.maxInt(u64);
     read: while (f.rows < limit) {
         batch.clear();
         const state = try batch.fill(gpa, &s, .{});
@@ -506,7 +368,7 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
             f.line = rec.line;
             try f.record(values.items);
         }
-        if (interrupt.requested()) return error.Interrupted;
+        if (opts.canceled()) return error.Interrupted;
         switch (state) {
             .full => {},
             .end => break,
@@ -519,7 +381,7 @@ pub fn inferFile(env: Env, cfg: *const cli.Config, nulls: []const []const u8, pa
     out.timing.parse_ns = since(io, t1);
     out.rows = f.rows;
     // Rows folded together by quotes that are data: no schema from them.
-    if (cfg.pins.quote == null) if (quotes.folding(stray)) |folded| {
+    if (opts.pins.quote == null) if (quotes.folding(stray)) |folded| {
         out.problem = .{ .quote_is_data = folded };
         return .{ .outcome = out };
     };
@@ -547,68 +409,4 @@ fn sameNames(values: []const []const u8, names: []const []const u8) bool {
     if (values.len != names.len) return false;
     for (values, names) |v, n| if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, v, " \t"), n)) return false;
     return true;
-}
-
-const testing = std.testing;
-
-/// Whether dir/sub_path holds a temporary output (a name ending .tmp).
-fn hasTemporary(io: Io, dir: Io.Dir, sub_path: []const u8) !bool {
-    var d = try dir.openDir(io, sub_path, .{ .iterate = true });
-    defer d.close(io);
-    var it = d.iterate();
-    while (try it.next(io)) |e| if (std.mem.endsWith(u8, e.name, ".tmp")) return true;
-    return false;
-}
-
-const test_schema: Schema = .{ .columns = &.{ .{ .name = "id", .type = .int64 }, .{ .name = "name", .type = .string } } };
-
-test "an output that cannot be renamed into place leaves no temporary" {
-    const io = testing.io;
-    const gpa = testing.allocator;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var arena: std.heap.ArenaAllocator = .init(gpa);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
-    try tmp.dir.writeFile(io, .{ .sub_path = "orders.csv", .data = "id,name\n1,apple\n" });
-    // Where the output goes is a directory, and not an empty one.
-    try tmp.dir.createDirPath(io, "out/orders.csv/x");
-    const out_dir = try std.fmt.allocPrint(a, "{s}/out", .{root});
-    var cfg: cli.Config = .{ .command = .convert, .to = .csv, .out = out_dir };
-    const plan: Plan = .{
-        .cfg = &cfg,
-        .schema = &test_schema,
-        .nulls = &.{""},
-        .threshold = 1.0,
-        .timing = false,
-        .output = .{ .to = .csv, .dir = out_dir },
-    };
-    const path = try std.fmt.allocPrint(a, "{s}/orders.csv", .{root});
-    try testing.expectError(error.IsDir, validateFile(.{ .io = io, .gpa = gpa }, plan, path, a));
-    try testing.expect(!try hasTemporary(io, tmp.dir, "out"));
-}
-
-test "an output whose last write fails is closed and leaves no temporary" {
-    const io = testing.io;
-    const gpa = testing.allocator;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var arena: std.heap.ArenaAllocator = .init(gpa);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const out_dir = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/out", .{tmp.sub_path});
-    var cfg: cli.Config = .{ .command = .convert, .to = .csv, .out = out_dir };
-    const env: Env = .{ .io = io, .gpa = gpa };
-    var o: Output = try .create(env, a, .{ .to = .csv, .dir = out_dir }, &cfg, &test_schema, "orders.csv");
-    try o.header(&test_schema, a);
-    // The file under the buffered header turns read-only, as a full disk
-    // would fail it: the flush in finish is refused. testing.allocator
-    // reports the Sink's buffer if finish does not free it.
-    o.sink.file.close(io);
-    o.sink.file = try Io.Dir.cwd().openFile(io, o.tmp_path, .{});
-    o.sink.writer.file = o.sink.file;
-    try testing.expectError(error.WriteFailed, o.finish(env, true));
-    try testing.expect(o.sink.closed);
-    try testing.expect(!try hasTemporary(io, tmp.dir, "out"));
 }

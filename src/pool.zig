@@ -13,6 +13,7 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const worker = @import("worker.zig");
+const render = @import("render.zig");
 const report = @import("report.zig");
 const Problem = @import("problem.zig").Problem;
 const interrupt = @import("interrupt.zig");
@@ -191,7 +192,7 @@ pub fn uniqueNames(arena: Allocator, files: []const []const u8) Allocator.Error!
     for (0..3) |pass| for (names, rank) |*n, r| {
         if (r != pass) continue;
         const name = n.*;
-        const s = worker.stem(name);
+        const s = render.stem(name);
         var k: u32 = 2;
         while ((try taken.getOrPut(arena, try lowerStem(arena, n.*))).found_existing) : (k += 1) {
             n.* = try std.fmt.allocPrint(arena, "{s}-{d}{s}", .{ s, k, name[s.len..] });
@@ -208,7 +209,7 @@ fn tally(arena: Allocator, counts: *Counts, key: []const u8) Allocator.Error!voi
 }
 
 fn lowerStem(arena: Allocator, name: []const u8) Allocator.Error![]const u8 {
-    return std.ascii.allocLowerString(arena, worker.stem(name));
+    return std.ascii.allocLowerString(arena, render.stem(name));
 }
 
 test uniqueNames {
