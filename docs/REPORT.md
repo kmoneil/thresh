@@ -15,6 +15,28 @@ Every code in them (a problem, a warning, why a value was rejected) is
 listed in [PROBLEMS.md](PROBLEMS.md). The text thresh prints on stderr is
 for people and is not part of the format.
 
+## Shapes only
+
+With `--shapes-only` (the C library's `THRESH_SHAPES_ONLY`), every value
+of the file's that a document would hold is written as its shape: digits
+as `9`, letters as `a`, any other non-ASCII character as `U`, a run of one
+of those as one, every other byte as it is (`AB_CD_12` is `a_a_9`, a row
+`4,Brookwood,16.25` is `9,a,9.9`). So a report can go to an AI or into an
+issue without the data. What is shaped:
+
+- the report's `columns[].samples[].value`, `rejected_lines[].text`, and
+  `columns[].stats`'s `min`, `max` and `top[].value`;
+- the schema infer writes (and an infer result's): `columns[].samples[]`
+  and the same statistics.
+
+With `--shape-names` (`THRESH_SHAPE_NAMES`), the column names too:
+`columns[].name`, `rejected_lines[].errors[].column`, and the column a
+problem names, in every document and on stderr. The file's structure
+stays: its paths, counts, codes, dialect, formats and shapes. What thresh
+writes of the rows themselves is the data asked for and stays as it is
+(`--to`, the library's Arrow streams); a reject file is nothing but rows,
+so `--reject` with either is refused.
+
 ## Versions
 
 Each document starts with `format_version`, an integer. The four reports

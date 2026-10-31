@@ -125,7 +125,9 @@ writes each failing row with its source line (`_row`), its errors
 (`_errors`) and a wide row's fields past the header (`_extra`).
 [docs/REPORT.md](docs/REPORT.md) describes every field and
 what may change between versions; [docs/PROBLEMS.md](docs/PROBLEMS.md)
-lists every code.
+lists every code. `--shapes-only` writes every value in them as its shape
+(`AB_CD_12` is `a_a_9`), and `--shape-names` the column names too, so a
+report can be shared without the data.
 
 **Exit status.** 0 every file passed; 1 a file failed validation but
 every file was processed (infer: the files disagree on their columns); 2

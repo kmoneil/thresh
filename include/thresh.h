@@ -119,6 +119,8 @@ typedef enum thresh_status {
 #define THRESH_STRICT 4u        /* extra columns, ragged rows, ambiguous dates fail the file */
 #define THRESH_NO_MMAP 8u       /* read through a buffer, not a mapping */
 #define THRESH_THRESHOLD 16u    /* use thresh_options.threshold */
+#define THRESH_SHAPES_ONLY 32u  /* reports and JSON give values as shapes (digits 9, letters a) */
+#define THRESH_SHAPE_NAMES 64u  /* that, and the column names too */
 
 /* How files are read. Every field zero is every default: the sniffer
  * settles the dialect, and a call reads as the CLI does with no flags.

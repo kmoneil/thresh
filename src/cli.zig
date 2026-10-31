@@ -55,6 +55,10 @@ pub const usage =
     \\      --jobs N           files processed at once (default: CPU count; at most 4 a CPU)
     \\      --no-mmap          read files through a buffer instead of mapping them
     \\      --json             one JSON object per file on stdout
+    \\      --shapes-only      reports, lines and the schema infer writes give
+    \\                         every value as its shape (digits 9, letters a),
+    \\                         to share without the data; not with --reject
+    \\      --shape-names      --shapes-only, and the column names too
     \\      --quiet            no summary on stderr
     \\      --progress         show progress
     \\  -h, --help             show this help
@@ -109,6 +113,10 @@ pub const Config = struct {
     jobs: ?usize = null,
     no_mmap: bool = false,
     json: bool = false,
+    /// What the run says of a file gives its values as shapes, and with
+    /// shape_names its column names too.
+    shapes_only: bool = false,
+    shape_names: bool = false,
     quiet: bool = false,
     progress: bool = false,
 };
@@ -159,6 +167,8 @@ const Flag = enum {
     jobs,
     no_mmap,
     json,
+    shapes_only,
+    shape_names,
     quiet,
     progress,
     help,
@@ -167,7 +177,7 @@ const Flag = enum {
     fn takesValue(f: Flag) bool {
         return switch (f) {
             .day_first, .strict, .keep_empty, .pad, .truncate, .normalize_dates => false,
-            .arrow_file, .no_mmap, .json, .quiet, .progress, .help, .version => false,
+            .arrow_file, .no_mmap, .json, .shapes_only, .shape_names, .quiet, .progress, .help, .version => false,
             else => true,
         };
     }
@@ -288,6 +298,8 @@ fn setSwitch(cfg: *Config, flag: Flag) void {
         .arrow_file => cfg.arrow_file = true,
         .no_mmap => cfg.no_mmap = true,
         .json => cfg.json = true,
+        .shapes_only => cfg.shapes_only = true,
+        .shape_names => cfg.shape_names = true,
         .quiet => cfg.quiet = true,
         .progress => cfg.progress = true,
         else => unreachable,
@@ -384,6 +396,9 @@ fn check(cfg: *const Config, seen: std.EnumSet(Flag), files: usize, diag: *Diagn
     if (files == 0) return diag.fail("{t}: no input files", .{cfg.command});
     if (seen.contains(.pad) and seen.contains(.truncate)) return diag.fail("--pad and --truncate together", .{});
     if (cfg.schema != null and cfg.columns != null) return diag.fail("--schema and --columns together", .{});
+    // A reject file is the rows themselves, which shapes leave out.
+    if (cfg.reject_dir != null and (cfg.shapes_only or cfg.shape_names))
+        return diag.fail("--reject writes the rows themselves; --shapes-only leaves them out", .{});
     try checkPins(cfg.pins, diag);
     if (cfg.to == .parquet) return diag.fail("--to parquet: not in v1; write arrow and convert it", .{});
     return checkCommand(cfg, diag);
@@ -576,6 +591,7 @@ test "usage errors" {
     try expectUsage(&.{ "sniff", "a", "--delimiter", "'", "--quote", "'" }, "--delimiter and --quote are the same byte");
     try expectUsage(&.{ "sniff", "a", "--quote", "none", "--escape", "backslash" }, "--quote none and --escape backslash together");
     try expectUsage(&.{ "sniff", "a", "--pad", "--truncate" }, "--pad and --truncate together");
+    try expectUsage(&.{ "validate", "a", "--columns", "id:int64", "--reject", "r", "--shape-names" }, "--reject writes the rows themselves; --shapes-only leaves them out");
     try expectUsage(&.{ "sniff", "a", "--threshold", "1.5" }, "--threshold 1.5: a fraction from 0 to 1");
     try expectUsage(&.{ "infer", "a", "--out-newline", "crlf" }, "--out-newline is not an option of infer");
     try expectUsage(&.{ "convert", "a", "--out-newline", "cr" }, "--out-newline cr: lf or crlf");

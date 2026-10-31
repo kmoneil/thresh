@@ -222,24 +222,23 @@ pub fn shape(buf: *[shape_bytes]u8, v: []const u8) []const u8 {
     var last: u8 = 0;
     var i: usize = 0;
     while (i < v.len and n < buf.len) {
-        const b = v[i];
-        var s = b;
-        var step: usize = 1;
-        if (std.ascii.isDigit(b)) {
-            s = '9';
-        } else if (std.ascii.isAlphabetic(b)) {
-            s = 'a';
-        } else if (b >= 0x80) {
-            s = 'U';
-            step = @max(1, std.unicode.utf8ByteSequenceLength(b) catch 1);
-        }
-        i += step;
-        if (s == last and (s == '9' or s == 'a' or s == 'U')) continue;
-        buf[n] = s;
+        const c = shapeOf(v[i]);
+        i += c.step;
+        if (c.s == last and (c.s == '9' or c.s == 'a' or c.s == 'U')) continue;
+        buf[n] = c.s;
         n += 1;
-        last = s;
+        last = c.s;
     }
     return buf[0..n];
+}
+
+/// What the byte b stands for in a shape, and how many bytes on its
+/// character is: a non-ASCII character's lead byte stands for all of it.
+pub fn shapeOf(b: u8) struct { s: u8, step: usize } {
+    if (std.ascii.isDigit(b)) return .{ .s = '9', .step = 1 };
+    if (std.ascii.isAlphabetic(b)) return .{ .s = 'a', .step = 1 };
+    if (b < 0x80) return .{ .s = b, .step = 1 };
+    return .{ .s = 'U', .step = @max(1, std.unicode.utf8ByteSequenceLength(b) catch 1) };
 }
 
 fn blank(v: []const u8) bool {

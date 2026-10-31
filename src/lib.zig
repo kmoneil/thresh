@@ -21,6 +21,7 @@ const infer_mod = @import("infer.zig");
 const problem_mod = @import("problem.zig");
 const report = @import("report.zig");
 const schema_mod = @import("schema.zig");
+const shapes = @import("shapes.zig");
 const worker = @import("worker.zig");
 
 /// What a call runs with: io, gpa, and optionally a scanner index buffer
@@ -183,6 +184,30 @@ pub fn merge(arena: Allocator, files: []const Columns, o: Options) !Merged {
     };
 }
 
+/// What infer made of its files, for a caller that prints or writes it.
+pub const Shaped = struct { files: []const Columns, merged: Merged };
+
+/// files and m with what shapes.zig masks written as shapes, as s says:
+/// the schema's samples and statistics, and with names every column name.
+/// For what is said of the files, never for reading them: convert reads
+/// with the schema merge gave.
+pub fn shaped(arena: Allocator, files: []const Columns, m: Merged, s: shapes.Shapes) Allocator.Error!Shaped {
+    if (s == .none) return .{ .files = files, .merged = m };
+    const out_files = try arena.alloc(Columns, files.len);
+    for (out_files, files) |*o, f| {
+        o.* = f;
+        o.outcome = try shapes.outcome(arena, f.outcome, s);
+    }
+    var out = m;
+    if (m.schema) |sc| out.schema = try shapes.schemaOf(arena, sc, s);
+    const notes = try arena.alloc(Note, m.notes.len);
+    for (notes, m.notes) |*n, x| n.* = .{ .after = x.after, .file = x.file, .problem = try shapes.problem(arena, x.problem, s) };
+    out.notes = notes;
+    if (m.stop) |p| out.stop = try shapes.problem(arena, p, s);
+    if (m.disagreement) |p| out.disagreement = try shapes.problem(arena, p, s);
+    return .{ .files = out_files, .merged = out };
+}
+
 /// inferFiles, then merge: infer from start to finish.
 pub fn infer(env: Env, arena: Allocator, paths: []const []const u8, o: Options) !Merged {
     return merge(arena, try inferFiles(env, arena, paths, o), o);
@@ -290,7 +315,7 @@ pub fn writeInferResult(w: *Io.Writer, files: []const Columns, m: Merged) std.js
 pub fn validate(env: Env, arena: Allocator, path: []const u8, s: *const Schema, o: Options, rejects: ?*Io.Writer) !File {
     var opened = try read(env, arena, path, s, o, null);
     switch (opened) {
-        .stopped => |st| return report.fileOf(arena, st.outcome, .{ .verdict = st.verdict, .encoding = o.encoding }),
+        .stopped => |st| return report.fileOf(arena, st.outcome, .{ .verdict = st.verdict, .encoding = o.encoding, .shapes = o.shapes }),
         .reader => |*r| {
             defer r.deinit();
             r.v.reject = rejects;

@@ -13,6 +13,7 @@ const Problem = @import("problem.zig").Problem;
 const schema = @import("schema.zig");
 const types = @import("types.zig");
 const stats = @import("stats.zig");
+const shapes = @import("shapes.zig");
 const validate = @import("validate.zig");
 
 /// The version of every JSON document this file writes (the report,
@@ -71,6 +72,8 @@ pub const Details = struct {
     validator: ?*const validate.Validator = null,
     /// The file's, so sample values become UTF-8.
     encoding: types.Encoding = .utf8,
+    /// What of the file's contents is written as shapes.
+    shapes: shapes.Shapes = .none,
 };
 
 /// A file's report as data: built from the validator by fileOf, written as
@@ -161,7 +164,7 @@ pub const Warnings = struct {
 pub fn fileOf(a: Allocator, o: Outcome, d: Details) Allocator.Error!File {
     var f: File = .{ .outcome = o, .verdict = d.verdict };
     f.outcome.file = try a.dupe(u8, o.file);
-    if (o.problem) |p| f.outcome.problem = try p.dupe(a);
+    if (o.problem) |p| f.outcome.problem = try shapes.problem(a, try p.dupe(a), d.shapes);
     if (o.written) |p| f.outcome.written = try a.dupe(u8, p);
     if (d.verdict) |v| f.warnings.dialect = v.warnings;
     const v = d.validator orelse {
@@ -172,8 +175,27 @@ pub fn fileOf(a: Allocator, o: Outcome, d: Details) Allocator.Error!File {
     if (v.foreign_newlines > 0) f.warnings.dialect.mixed_newlines = true;
     f.warnings.extra_columns = v.extra_columns;
     f.warnings.header_repeated = v.repeated_headers > 0;
+    const columns = try columnsOf(a, v, d);
+    const problems = try a.alloc(Problem, v.structural.items.len);
+    for (problems, v.structural.items) |*p, x| p.* = try shapes.problem(a, try x.dupe(a), d.shapes);
+    f.problems = problems;
+    const lines = try linesOf(a, v, d);
+    f.read = .{
+        .columns = columns,
+        .rows_rejected = v.rejected,
+        .rejected_sample = try a.dupe(u64, v.rejected_sample.items),
+        .rejected_lines = lines,
+        .row_errors = v.row_errors,
+        .repeated_header_rows = try a.dupe(u64, v.repeated_lines.items),
+    };
+    return f;
+}
+
+/// The schema's columns as the validator filled them, as the report has
+/// them.
+fn columnsOf(a: Allocator, v: *const validate.Validator, d: Details) Allocator.Error![]Column {
     const columns = try a.alloc(Column, v.schema.columns.len);
-    for (columns, v.schema.columns, v.stats, v.dates, 0..) |*col, c, st, dc, col_index| {
+    for (columns, v.schema.columns, v.stats, v.dates, 0..) |*col, c, st, dc, i| {
         col.* = .{
             .name = try a.dupe(u8, c.name),
             .type = c.type,
@@ -182,7 +204,7 @@ pub fn fileOf(a: Allocator, o: Outcome, d: Details) Allocator.Error!File {
             .conformance = validate.conformance(st, v.columnRows()),
             .format = if (c.format) |x| try a.dupe(u8, x) else null,
         };
-        if (v.profiles.len > 0) col.stats = try v.profiles[col_index].summary(a, c.statsFormat());
+        if (v.profiles.len > 0) col.stats = try v.profiles[i].summary(a, c.statsFormat());
         if (dc) |date| {
             col.ambiguous = date.ambiguous;
             if (date.ambiguous > 0) {
@@ -193,30 +215,37 @@ pub fn fileOf(a: Allocator, o: Outcome, d: Details) Allocator.Error!File {
         const samples = try a.alloc(Sample, st.samples.items.len);
         for (samples, st.samples.items) |*s, x| s.* = .{ .row = x.row, .value = try types.utf8Of(a, x.value, d.encoding), .code = x.reason };
         col.samples = samples;
+        if (d.shapes != .none) try shapeColumn(a, col, d.shapes);
     }
-    const problems = try a.alloc(Problem, v.structural.items.len);
-    for (problems, v.structural.items) |*p, x| p.* = try x.dupe(a);
-    f.problems = problems;
+    return columns;
+}
+
+/// The first rejected rows as the report has them: their text as shapes
+/// when shapes are asked for, their errors' columns when names are.
+fn linesOf(a: Allocator, v: *const validate.Validator, d: Details) Allocator.Error![]Line {
     const lines = try a.alloc(Line, v.rejected_lines.items.len);
     for (lines, v.rejected_lines.items) |*l, x| {
         const errors = try a.alloc(LineError, x.errors.len);
-        for (errors, x.errors) |*e, xe| e.* = .{ .column = if (xe.column) |c| try a.dupe(u8, c) else null, .code = xe.reason };
+        for (errors, x.errors) |*e, xe| e.* = .{ .column = if (xe.column) |c| try shapes.name(a, try a.dupe(u8, c), d.shapes) else null, .code = xe.reason };
+        const text = try types.utf8Of(a, x.text, d.encoding);
         l.* = .{
             .row = x.row,
-            .text = try types.utf8Of(a, x.text, d.encoding),
+            .text = if (d.shapes != .none) try shapes.text(a, text) else text,
             .length = if (x.text.len < x.len) x.len else null,
             .errors = errors,
         };
     }
-    f.read = .{
-        .columns = columns,
-        .rows_rejected = v.rejected,
-        .rejected_sample = try a.dupe(u64, v.rejected_sample.items),
-        .rejected_lines = lines,
-        .row_errors = v.row_errors,
-        .repeated_header_rows = try a.dupe(u64, v.repeated_lines.items),
-    };
-    return f;
+    return lines;
+}
+
+/// A column of the report with its values as shapes (its samples, its
+/// statistics' values), and with s names, its name too.
+fn shapeColumn(a: Allocator, c: *Column, s: shapes.Shapes) Allocator.Error!void {
+    c.name = try shapes.name(a, c.name, s);
+    const samples = try a.alloc(Sample, c.samples.len);
+    for (samples, c.samples) |*x, y| x.* = .{ .row = y.row, .value = try shapes.text(a, y.value), .code = y.code };
+    c.samples = samples;
+    if (c.stats) |st| c.stats = try shapes.summary(a, st);
 }
 
 /// The report as JSON. timing false leaves out timing_ms and

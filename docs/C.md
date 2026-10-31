@@ -102,8 +102,12 @@ options is the defaults too. Each field is the CLI flag of the same name
 (`thresh --help`): the dialect's pins (`delimiter`, `quote`, `escape`,
 `newline`, `header`, `comment`), `encoding`, `sample_bytes`, `nulls`,
 `ragged`, `flags` (`THRESH_STRICT`, `THRESH_DAY_FIRST`,
-`THRESH_KEEP_EMPTY`, `THRESH_NO_MMAP`, and `THRESH_THRESHOLD` to use
-`threshold`), and for `thresh_infer` `sample_rows` and `jobs`.
+`THRESH_KEEP_EMPTY`, `THRESH_NO_MMAP`, `THRESH_THRESHOLD` to use
+`threshold`, and `THRESH_SHAPES_ONLY` and `THRESH_SHAPE_NAMES`, which
+write the file's values, and its column names, as shapes in every JSON a
+call returns: [REPORT.md](REPORT.md#shapes-only); the Arrow streams'
+rows are the data, as they are), and for `thresh_infer` `sample_rows` and
+`jobs`.
 
 `size` versions the struct. Fields are only ever added at its end, so a
 program built against an older header passes a shorter struct, whose
