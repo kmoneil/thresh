@@ -67,6 +67,7 @@ pub fn build(b: *std.Build) void {
         r.addFileInput(b.path("test/cli/short.csv"));
         r.addFileInput(b.path("test/cli/trailing.csv"));
         r.addFileInput(b.path("test/cli/long.csv"));
+        r.addFileInput(b.path("test/cli/inches.txt"));
         if (check.stdout) |s| r.expectStdOutEqual(s);
         if (check.stderr) |s| r.expectStdErrEqual(s);
         r.expectExitCode(check.code);
@@ -414,6 +415,39 @@ const cli_checks = [_]struct {
     .{
         .args = &.{ "sniff", "test/cli/short.csv", "--header", "no" },
         .stdout = "test/cli/short.csv: delimiter=| quote=\" escape=doubled newline=lf header=no confidence=medium\n",
+    },
+    .{
+        // '"' as an inch mark in a file that never quotes, past the sniff
+        // window: three lines folded into one record are not rows.
+        .args = &.{ "validate", "test/cli/inches.txt", "--columns", "lug_id:int64,bin:string,cultivar:string", "--sample-bytes", "512", "--json" },
+        .stdout = "{\"format_version\":1,\"file\":\"test/cli/inches.txt\",\"result\":\"error\",\"rows\":68,\"rows_rejected\":0,\"problems\":[{\"code\":\"quote_is_data\"," ++
+            "\"message\":\"the quotes look like data: 1 record holds 3 lines inside quotes, the first on line 62, and each of those lines is a whole row without them; pin --quote none to read quotes as data\"," ++
+            "\"records\":1,\"lines\":3,\"line\":62,\"suggest\":{\"quote\":\"none\"}}]}\n",
+        .code = 2,
+    },
+    .{
+        .args = &.{ "validate", "test/cli/inches.txt", "--columns", "lug_id:int64,bin:string,cultivar:string", "--sample-bytes", "512", "--quote", "none", "--json" },
+        .stdout = "{\"format_version\":1,\"file\":\"test/cli/inches.txt\",\"result\":\"pass\",\"rows\":70,\"rows_rejected\":0,\"problems\":[]}\n",
+    },
+    .{
+        // A quote pinned is the user's word that the file quotes.
+        .args = &.{ "validate", "test/cli/inches.txt", "--columns", "lug_id:int64,bin:string,cultivar:string", "--sample-bytes", "512", "--quote", "\"", "--json" },
+        .stdout = "{\"format_version\":1,\"file\":\"test/cli/inches.txt\",\"result\":\"pass\",\"rows\":68,\"rows_rejected\":0,\"problems\":[]}\n",
+    },
+    .{
+        // Nor are they written out: no "written".
+        .args = &.{ "run", "test/cli/inches.txt", "--columns", "lug_id:int64,bin:string,cultivar:string", "--sample-bytes", "512", "--to", "csv", "--out", ".zig-cache/cli-out/inches", "--json" },
+        .stdout = "{\"format_version\":1,\"file\":\"test/cli/inches.txt\",\"result\":\"error\",\"rows\":68,\"rows_rejected\":0,\"problems\":[{\"code\":\"quote_is_data\"," ++
+            "\"message\":\"the quotes look like data: 1 record holds 3 lines inside quotes, the first on line 62, and each of those lines is a whole row without them; pin --quote none to read quotes as data\"," ++
+            "\"records\":1,\"lines\":3,\"line\":62,\"suggest\":{\"quote\":\"none\"}}]}\n",
+        .code = 2,
+    },
+    .{
+        // Nor does infer type columns from them.
+        .args = &.{ "infer", "test/cli/inches.txt", "--sample-bytes", "512" },
+        .stderr = "error test/cli/inches.txt  the quotes look like data: 1 record holds 3 lines inside quotes, the first on line 62, and each of those lines is a whole row without them; pin --quote none to read quotes as data\n" ++
+            "thresh: no file to infer a schema from\n",
+        .code = 2,
     },
     .{
         .args = &.{ "convert", "test/cli/orders.csv", "--to", "csv", "--out", ".zig-cache/cli-out/convert", "--json" },

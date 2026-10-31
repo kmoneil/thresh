@@ -160,17 +160,17 @@ fn expectValues(a: Allocator, name: []const u8, path: []const u8, comptime E: ty
 /// A file with a value that does not fit, ambiguous dates, a column the
 /// schema does not have, a repeated header and a ragged row.
 const sample_input =
-    "id,made,seen,note\n" ++
+    "lug_id,picked_on,picked,remark\n" ++
     "1,2024-01-02,03/04/2024,a\n" ++
     "x,2024-01-03,05/06/2024,b\n" ++
-    "id,made,seen,note\n" ++
+    "lug_id,picked_on,picked,remark\n" ++
     "4,2024-01-04,07/08/2024,c,d\n" ++
     "5,2024-01-05,09/10/2024,e\n";
 
 const sample_schema: schema.Schema = .{ .columns = &.{
-    .{ .name = "id", .type = .int64 },
-    .{ .name = "made", .type = .date, .format = "%Y-%m-%d" },
-    .{ .name = "seen", .type = .date },
+    .{ .name = "lug_id", .type = .int64 },
+    .{ .name = "picked_on", .type = .date, .format = "%Y-%m-%d" },
+    .{ .name = "picked", .type = .date },
 } };
 
 fn verdict(quote: ?u8) dialect.Verdict {
@@ -214,7 +214,7 @@ test "docs/REPORT.md: the reports' fields, as thresh writes them" {
             try v.columns(fields.items, fields.items.len, sample_input, 0);
         } else try v.record(rec, fields.items, sample_input, 0);
     }
-    try v.structural.append(testing.allocator, .{ .column_missing = .{ .column = "qty" } });
+    try v.structural.append(testing.allocator, .{ .column_missing = .{ .column = "brix" } });
     const read: report.Outcome = .{
         .file = "a.csv",
         .bytes = sample_input.len,
@@ -260,12 +260,12 @@ test "docs/REPORT.md: the schema's fields, as infer writes and --schema reads th
     const full: schema.Schema = .{
         .format_version = schema.format_version,
         .columns = &.{
-            .{ .name = "id", .type = .int64, .nullable = false, .inferred = true, .conformance = 0.5, .samples = &.{"1"}, .widened_by = "b.csv" },
-            .{ .name = "amount", .type = .decimal, .precision = 18, .scale = 2 },
-            .{ .name = "made", .type = .date, .format = "%d/%m/%Y", .day_first = true, .nulls = &.{"-"} },
-            .{ .name = "status", .type = .@"enum", .values = &.{ "open", "closed" }, .case_insensitive = true },
-            .{ .name = "note", .type = .string, .max_len = 200, .utf8 = .replace },
-            .{ .name = "ok", .type = .bool, .true_values = &.{"Y"}, .false_values = &.{"N"} },
+            .{ .name = "lug_id", .type = .int64, .nullable = false, .inferred = true, .conformance = 0.5, .samples = &.{"1"}, .widened_by = "b.csv" },
+            .{ .name = "lug_kg", .type = .decimal, .precision = 18, .scale = 2 },
+            .{ .name = "picked_on", .type = .date, .format = "%d/%m/%Y", .day_first = true, .nulls = &.{"-"} },
+            .{ .name = "cultivar", .type = .@"enum", .values = &.{ "Starfall", "Quillon" }, .case_insensitive = true },
+            .{ .name = "remark", .type = .string, .max_len = 200, .utf8 = .replace },
+            .{ .name = "bruised", .type = .bool, .true_values = &.{"Y"}, .false_values = &.{"N"} },
         },
         .nulls = &.{ "", "NULL" },
         .match = .name,

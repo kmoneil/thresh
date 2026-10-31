@@ -1,0 +1,71 @@
+lug_id|bin|cultivar
+1|48 in|Brookwood
+2|48 in|Ember Pip
+3|48 in|Quillon
+4|48 in|Marrowdew
+5|48 in|Starfall
+6|48 in|Brookwood
+7|48 in|Ember Pip
+8|48 in|Quillon
+9|48 in|Marrowdew
+10|48 in|Starfall
+11|48 in|Brookwood
+12|48 in|Ember Pip
+13|48 in|Quillon
+14|48 in|Marrowdew
+15|48 in|Starfall
+16|48 in|Brookwood
+17|48 in|Ember Pip
+18|48 in|Quillon
+19|48 in|Marrowdew
+20|48 in|Starfall
+21|48 in|Brookwood
+22|48 in|Ember Pip
+23|48 in|Quillon
+24|48 in|Marrowdew
+25|48 in|Starfall
+26|48 in|Brookwood
+27|48 in|Ember Pip
+28|48 in|Quillon
+29|48 in|Marrowdew
+30|48 in|Starfall
+31|48 in|Brookwood
+32|48 in|Ember Pip
+33|48 in|Quillon
+34|48 in|Marrowdew
+35|48 in|Starfall
+36|48 in|Brookwood
+37|48 in|Ember Pip
+38|48 in|Quillon
+39|48 in|Marrowdew
+40|48 in|Starfall
+41|48 in|Brookwood
+42|48 in|Ember Pip
+43|48 in|Quillon
+44|48 in|Marrowdew
+45|48 in|Starfall
+46|48 in|Brookwood
+47|48 in|Ember Pip
+48|48 in|Quillon
+49|48 in|Marrowdew
+50|48 in|Starfall
+51|48 in|Brookwood
+52|48 in|Ember Pip
+53|48 in|Quillon
+54|48 in|Marrowdew
+55|48 in|Starfall
+56|48 in|Brookwood
+57|48 in|Ember Pip
+58|48 in|Quillon
+59|48 in|Marrowdew
+60|48 in|Starfall
+61|"36|Brookwood
+62|48 in|Ember Pip
+63|36"|Quillon
+64|36" deep|Marrowdew
+65|48 in|Starfall
+66|48 in|Brookwood
+67|48 in|Ember Pip
+68|48 in|Quillon
+69|48 in|Marrowdew
+70|48 in|Starfall

@@ -1,0 +1,31 @@
+lug_id|orchard_row|bin|cultivar
+1|R02|48 in|Brookwood
+2|R03|48 in|Brookwood
+3|R04|48 in|Starfall
+4|R05|48 in|Brookwood
+5|R06|36"|Brookwood
+6|R07|48 in|Marrowdew
+7|R08|48 in|Starfall
+8|R09|48 in|Marrowdew
+9|R10|48 in|Brookwood
+10|R11|36"|Ember Pip
+11|R12|48 in|Marrowdew
+12|R01|"36|Quillon
+13|R02|48 in|Ember Pip
+14|R03|48 in|Quillon
+15|R04|36"|Brookwood
+16|R05|48 in|Quillon
+17|R06|48 in|Marrowdew
+18|R07|48 in|Brookwood
+19|R08|48 in|Marrowdew
+20|R09|36"|Brookwood
+21|R10|48 in|Quillon
+22|R11|48 in|Marrowdew
+23|R12|48 in|Quillon
+24|R01|48 in|Marrowdew
+25|R02|36"|Ember Pip
+26|R03|48 in|Marrowdew
+27|R04|48 in|Starfall
+28|R05|48 in|Ember Pip
+29|R06|48 in|Marrowdew
+30|R07|36"|Ember Pip
