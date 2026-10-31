@@ -96,7 +96,9 @@ invocation in 0.4 s.
 
 ## The regression gate
 
-A pull request may not make any stage of any profile more than 10% slower.
+A pull request may not make any stage of any profile more than 10% slower,
+but for the reference parser's, which is shown and not gated: it is the
+tests' oracle, measured for scale, and nothing a user runs.
 `tools/bench_gate.sh BASE` builds the benchmark at BASE (in a git worktree)
 and at the working tree, runs them in turns, BASE then HEAD, three rounds
 on 256 MiB a profile, and `tools/bench_compare.py` compares each stage's
@@ -108,6 +110,19 @@ fixed machine: a baseline stored from one run and compared with another
 would measure the difference between runners, which is often more than 10%.
 Taking turns and the best of three keeps a noisy neighbour from failing a
 change that did nothing.
+
+What it does not take out is where the code lands. On x86 a tight loop's
+speed can move by half with the addresses of its branches against 32-byte
+boundaries (Intel's JCC erratum fix makes this worse), so a change
+elsewhere that shifts a hot function by 16 bytes can move a stage it never
+touched. Pull request #6 did: `reference.Parser.next`, the same 1599
+bytes in both builds, moved from offset 16 to offset 32 in its cache line,
+and the text profile's reference stage ran at half speed on the CI runner,
+the same in a second run, while the stages that changed ran up to 13%
+faster. `next` is aligned to 64 bytes since. A stage that slows with no
+change to its code is worth that check first: `nm -S` on the two
+benchmark binaries, built for the runner's target, says whether its
+functions only moved.
 
 ## Reproducing
 
