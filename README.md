@@ -1,5 +1,9 @@
 # thresh
 
+[![CI](https://github.com/kmoneil/thresh/actions/workflows/ci.yml/badge.svg)](https://github.com/kmoneil/thresh/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Zig 0.17](https://img.shields.io/badge/zig-0.17.0-f7a41d.svg)](https://ziglang.org/download/)
+
 **Know what is in a delimited file before you load it.**
 
 Other tools read files you already understand. thresh tells you whether
@@ -9,7 +13,33 @@ and why, and which rows to set aside, before anything reaches a database
 or a dataframe. Then it writes the good rows as clean CSV or Arrow.
 
 One static binary, written in Zig. Any delimiter, any quoting, UTF-8,
-Windows-1252, Latin-1 or UTF-16.
+Windows-1252, Latin-1 or UTF-16. A C library too, with a Python package
+on its way.
+
+```
+ a.csv ─▶ sniff ─▶ infer ─▶ validate ─┬─▶ good rows ─▶ CSV or Arrow
+          dialect  schema             ├─▶ rejects   ─▶ each with its line and why
+                                      └─▶ report    ─▶ JSON, every problem a code
+```
+
+| | |
+| --- | --- |
+| **Sniff** | the delimiter, quote, escape, line ending and header of a file, and how sure it is. Where it cannot be sure, it stops and says what to pin, rather than guess. |
+| **Infer** | each column's type across many files: integers, decimals with their precision and scale, dates in the format they are written, enums, booleans. |
+| **Validate** | every row against a schema. A bad row is set aside with its line and the reason; the good rows go on. |
+| **Convert** | the good rows to clean CSV, or to Arrow that pyarrow, polars and DuckDB read straight in. |
+| **Report** | JSON in a [versioned format](docs/REPORT.md), every problem a stable [code](docs/PROBLEMS.md), with the fix where there is one. |
+| **Embed** | a [C library](docs/C.md) that hands rows and rejects to Arrow consumers in the same process, without a copy. |
+
+## Quick start
+
+```sh
+zig build --release                       # Zig 0.17.0; then put zig-out/bin on PATH
+thresh sniff orders/*.csv                 # how is each written, and how sure is it?
+thresh infer orders/*.csv --out orders.schema.json
+thresh validate orders/*.csv --schema orders.schema.json --reject rejects --report reports
+thresh run orders/*.csv --schema orders.schema.json --to arrow --out clean/
+```
 
 ## What it tells you
 
@@ -53,6 +83,20 @@ infer data/monday.csv  20 rows  4 columns
 infer data/tuesday.csv  20 rows  5 columns
 thresh: the files disagree: 1 of the schema's 5 columns is not in every file: 'brix' (1 of 2); validate fails a file without one
 [exit 1]
+```
+
+Nor will it fold your rows together. An export that never quotes, with
+an inch mark typed before a number (`"36`): a CSV reader takes the mark
+for an opening quote and runs on over the next lines as one field, so a
+loader gets one strange row where there were several, or stops further
+down at a row it cannot fit. thresh sees that each folded line is a
+whole row without the quote:
+
+```console
+$ thresh sniff data/bins.txt
+data/bins.txt: delimiter=| quote=" escape=doubled newline=lf header=yes confidence=high warnings=quote_in_unquoted
+thresh: data/bins.txt: the quotes look like data: 1 record holds 4 lines inside quotes, the first on line 13, and each of those lines is a whole row without them; pin --quote none to read quotes as data
+[exit 2]
 ```
 
 Each says what is wrong and, where it can, what to do about it. Every
@@ -112,12 +156,27 @@ zig build fuzz            # replay the fuzz seeds; tools/fuzz.sh [LIMIT] fuzzes
 zig build arrow-check     # Arrow output and C streams read back by pyarrow and DuckDB
 ```
 
-**As a C library.** The same build installs libthresh, static and
-shared, and its header, `zig-out/include/thresh.h`: sniff, infer and
-validate return the JSON documents of [docs/REPORT.md](docs/REPORT.md),
-and read hands rows and rejected rows to pyarrow, polars or DuckDB as
-Arrow C streams, without a copy. [docs/C.md](docs/C.md) has the calls,
-ownership and threads.
+## From code
+
+The same build installs **libthresh**, static and shared, and its
+header, `zig-out/include/thresh.h`. Sniff, infer and validate return the
+JSON documents of [docs/REPORT.md](docs/REPORT.md); read hands the rows
+and the rejected rows to pyarrow, polars or DuckDB as Arrow C streams,
+moved rather than copied.
+
+```c
+thresh *t = thresh_new();
+char *schema, *report;
+thresh_columns(t, "lug_id:int64,lug_kg:decimal(5,2)", &schema);
+thresh_validate(t, "lugs.csv", schema, NULL, &report);   /* the file report, as JSON */
+```
+
+A file's own trouble is in its report, never an error code, so a caller
+acts on codes rather than parsing sentences. [docs/C.md](docs/C.md) has
+the calls, ownership and threads. Next is
+[threshio](https://pypi.org/project/threshio/), a Python package over the
+library: check a file before the rest of your code runs, then
+`pyarrow.table(threshio.read(path, schema))`.
 
 ## Speed
 
@@ -141,6 +200,10 @@ numbers, stage by stage, and the regression gate.
   fails if it moves.
 - The command itself, its output, files and exit status (`cli_checks` in
   `build.zig`), and this page and the examples, run as written.
+- pyarrow and DuckDB read the Arrow output back, and pyarrow the C
+  library's streams, value for value against the CSV output
+  (`zig build arrow-check`); a C program drives the library through its
+  header alone, linked static and shared.
 - Tests in Debug and ReleaseSafe in CI, and a benchmark gate on every pull
   request.
 
