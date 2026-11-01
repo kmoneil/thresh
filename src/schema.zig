@@ -6,6 +6,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const stats = @import("stats.zig");
+const types = @import("types.zig");
 
 pub const Type = enum {
     bool,
@@ -47,9 +48,10 @@ pub const NameContext = struct {
 };
 
 /// The names a header gives its columns, read alike by infer and
-/// validate: each trimmed, and a blank one, or one a name before it took
-/// already (ASCII case aside), columnN by its place.
-pub fn headerNames(arena: Allocator, raw: []const []const u8) Allocator.Error![]const []const u8 {
+/// validate: each trimmed and as UTF-8 (in the file's encoding, U+FFFD
+/// for a byte that is no character), and a blank one, or one a name
+/// before it took already (ASCII case aside), columnN by its place.
+pub fn headerNames(arena: Allocator, raw: []const []const u8, encoding: types.Encoding) Allocator.Error![]const []const u8 {
     // A map holds at most a u32's count; a header past it (its fields
     // alone 64 GiB) cannot be named.
     const width = std.math.cast(u32, raw.len) orelse return error.OutOfMemory;
@@ -58,11 +60,11 @@ pub fn headerNames(arena: Allocator, raw: []const []const u8) Allocator.Error![]
     defer taken.deinit(arena);
     try taken.ensureTotalCapacity(arena, width);
     for (out, raw, 0..) |*n, r, i| {
-        const name = std.mem.trim(u8, r, " \t");
+        const name = try types.utf8Of(arena, std.mem.trim(u8, r, " \t"), encoding);
         n.* = if (name.len == 0 or taken.contains(name))
             try std.fmt.allocPrint(arena, "column{d}", .{i + 1})
         else
-            try arena.dupe(u8, name);
+            name;
         taken.putAssumeCapacity(n.*, {});
     }
     return out;
@@ -338,22 +340,32 @@ fn check(s: Schema, diag: *Diagnostic) error{InvalidSchema}!void {
         if (v > format_version) return diag.fail("format_version {d}: a newer thresh wrote this schema; this one reads up to version {d}", .{ v, format_version });
     }
     if (s.columns.len == 0) return diag.fail("no columns", .{});
-    for (s.columns, 0..) |c, i| {
-        if (std.mem.trim(u8, c.name, " \t").len == 0) return diag.fail("column {d} has no name", .{i + 1});
-        for (s.columns[0..i]) |prev| {
-            if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, prev.name, " \t"), std.mem.trim(u8, c.name, " \t")))
-                return diag.fail("two columns named '{s}'", .{c.name});
-        }
-        switch (c.type) {
-            .decimal => {
-                if (c.precision == 0 or c.precision > 38) return diag.fail("{s}: precision {d}: from 1 to 38", .{ c.name, c.precision });
-                if (c.scale > c.precision) return diag.fail("{s}: scale {d} is more than precision {d}", .{ c.name, c.scale, c.precision });
-            },
-            .@"enum" => if (c.values.len == 0) return diag.fail("{s}: an enum with no values", .{c.name}),
-            else => {},
-        }
-    }
+    if (!allUtf8(s.nulls)) return diag.fail("nulls: text that is not UTF-8", .{});
+    for (s.columns, 0..) |c, i| try checkColumn(c, i, s.columns[0..i], diag);
     if (s.threshold) |t| if (!(t >= 0 and t <= 1)) return diag.fail("threshold {d}: a fraction from 0 to 1", .{t});
+}
+
+/// Column i, after the columns before it: a name in UTF-8 (every report
+/// says it, and it names an Arrow field), not blank and not one of
+/// theirs, and what its type needs.
+fn checkColumn(c: Column, i: usize, before: []const Column, diag: *Diagnostic) error{InvalidSchema}!void {
+    // Not quoted back: the sentence would not be UTF-8 either. JSON can
+    // give a name as an array of bytes, and the inline form any bytes.
+    if (!types.utf8.valid(c.name)) return diag.fail("column {d}'s name is not UTF-8", .{i + 1});
+    const name = std.mem.trim(u8, c.name, " \t");
+    if (name.len == 0) return diag.fail("column {d} has no name", .{i + 1});
+    for (before) |prev| {
+        if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, prev.name, " \t"), name)) return diag.fail("two columns named '{s}'", .{c.name});
+    }
+    if (!allUtf8(c)) return diag.fail("{s}: text that is not UTF-8", .{c.name});
+    switch (c.type) {
+        .decimal => {
+            if (c.precision == 0 or c.precision > 38) return diag.fail("{s}: precision {d}: from 1 to 38", .{ c.name, c.precision });
+            if (c.scale > c.precision) return diag.fail("{s}: scale {d} is more than precision {d}", .{ c.name, c.scale, c.precision });
+        },
+        .@"enum" => if (c.values.len == 0) return diag.fail("{s}: an enum with no values", .{c.name}),
+        else => {},
+    }
 }
 
 /// The schema as JSON, in the shape parseJson reads: what infer writes.
@@ -477,6 +489,43 @@ test "a schema reads with its format_version, and without one" {
     try testing.expectEqual(@as(?u32, null), without.schema.format_version);
 }
 
+/// Whether every string x holds is UTF-8: a string, a list or an optional
+/// of them, a struct's fields in turn.
+fn allUtf8(x: anytype) bool {
+    const T = @TypeOf(x);
+    if (T == []const u8) return types.utf8.valid(x);
+    return switch (@typeInfo(T)) {
+        .optional => if (x) |v| allUtf8(v) else true,
+        .pointer => |p| p.size != .slice or itemsUtf8(x),
+        .@"struct" => fieldsUtf8(x),
+        else => true,
+    };
+}
+
+fn itemsUtf8(xs: anytype) bool {
+    for (xs) |x| if (!allUtf8(x)) return false;
+    return true;
+}
+
+fn fieldsUtf8(x: anytype) bool {
+    inline for (@typeInfo(@TypeOf(x)).@"struct".field_names) |f| if (!allUtf8(@field(x, f))) return false;
+    return true;
+}
+
+test "a column name that is not UTF-8 is refused, inline or as JSON bytes" {
+    var diag: Diagnostic = .{};
+    try testing.expectError(error.InvalidSchema, parseInline(testing.allocator, "id:int64,caf\xe9:string", &diag));
+    try testing.expectEqualStrings("column 2's name is not UTF-8", diag.message);
+    try testing.expectError(error.InvalidSchema, parseJson(testing.allocator, "{\"columns\":[{\"name\":[99,97,102,233],\"type\":\"int64\"}]}", &diag));
+    try testing.expectEqualStrings("column 1's name is not UTF-8", diag.message);
+    // Any text a schema holds: an enum's values become an Arrow
+    // dictionary's, and describe writes a schema given it back.
+    try testing.expectError(error.InvalidSchema, parseJson(testing.allocator, "{\"columns\":[{\"name\":\"k\",\"type\":\"enum\",\"values\":[\"a\",[233]]}]}", &diag));
+    try testing.expectEqualStrings("k: text that is not UTF-8", diag.message);
+    try testing.expectError(error.InvalidSchema, parseJson(testing.allocator, "{\"columns\":[{\"name\":\"k\",\"type\":\"string\"}],\"nulls\":[[255]]}", &diag));
+    try testing.expectEqualStrings("nulls: text that is not UTF-8", diag.message);
+}
+
 test "inline errors" {
     var diag: Diagnostic = .{};
     try testing.expectError(error.InvalidSchema, parseInline(testing.allocator, "id", &diag));
@@ -489,9 +538,17 @@ test "inline errors" {
 test headerNames {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const got = try headerNames(arena.allocator(), &.{ " zv_id ", "", "ZV_ID", "column2", "zv_vol" });
+    const got = try headerNames(arena.allocator(), &.{ " zv_id ", "", "ZV_ID", "column2", "zv_vol" }, .utf8);
     const want = [_][]const u8{ "zv_id", "column2", "column3", "column4", "zv_vol" };
     for (want, got) |w, g| try testing.expectEqualStrings(w, g);
+    // As UTF-8 whatever the bytes: transcoded, or U+FFFD under utf8, which
+    // two names may then share.
+    const cp = try headerNames(arena.allocator(), &.{ "caf\xe9", "l\x92\x9cuvre" }, .cp1252);
+    try testing.expectEqualStrings("caf\u{e9}", cp[0]);
+    try testing.expectEqualStrings("l\u{2019}\u{153}uvre", cp[1]);
+    const bad = try headerNames(arena.allocator(), &.{ "caf\xe9", "caf\xff" }, .utf8);
+    try testing.expectEqualStrings("caf\u{fffd}", bad[0]);
+    try testing.expectEqualStrings("column2", bad[1]);
 }
 
 test headerWidth {

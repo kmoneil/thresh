@@ -151,6 +151,13 @@ pub fn dateReason(p: date.Problem) Reason {
     };
 }
 
+/// bytes as they are when they are UTF-8, else in a with U+FFFD for each
+/// byte that is not part of a character: a path or a name for JSON.
+pub fn asUtf8(a: std.mem.Allocator, bytes: []const u8) std.mem.Allocator.Error![]const u8 {
+    if (utf8.valid(bytes)) return bytes;
+    return utf8Of(a, bytes, .utf8);
+}
+
 /// bytes as UTF-8, in a: Latin-1 or Windows-1252 transcoded, and under
 /// UTF-8 any byte that is not part of a character replaced with U+FFFD, so
 /// a report is valid JSON whatever a cell held.

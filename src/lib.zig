@@ -526,6 +526,27 @@ test "sniff: a file's dialect, or why there is none" {
     try testing.expectEqual(@as(?Verdict, null), missing.verdict);
 }
 
+test "a Latin-1 file's names and samples are UTF-8, and its schema reads it back" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const env: Env = .{ .io = testing.io, .gpa = testing.allocator };
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "harvest.csv", .data = "id;r\xe9colte\n1;pr\xe9coce\n2;tardive\n" });
+    const path = try pathIn(a, tmp, "harvest.csv");
+    const o: Options = .{ .encoding = .latin1 };
+    const got = try infer(env, a, &.{path}, o);
+    const s = got.schema.?;
+    try testing.expectEqualStrings("r\u{e9}colte", s.columns[1].name);
+    try testing.expectEqualStrings("pr\u{e9}coce", s.columns[1].samples.?[0]);
+    var out: Io.Writer.Allocating = .init(a);
+    try writeSchema(s, &out.writer);
+    try testing.expect(try std.json.validate(a, out.written()));
+    const f = try validate(env, a, path, &s, o, null);
+    try testing.expectEqual(report.Result.pass, f.outcome.result);
+}
+
 test "infer, then validate: a schema from two files, a file held to it, its rejects" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
