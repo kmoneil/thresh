@@ -94,6 +94,13 @@ A status other than `THRESH_OK` is for the call itself:
 schema: line 1, column 12: ...`. A reader has `thresh_reader_error` for
 its own calls, and a stream `get_last_error`, as Arrow has it.
 
+No file, schema or option brings the host process down: whatever their
+bytes, each call returns one of these statuses or a report. A panic is
+left only for a broken invariant of thresh's own, which is a bug to
+report. `src/capi_fuzz_test.zig` holds the calls to that under Zig's
+fuzzer (`tools/fuzz.sh`), through this header, on any file bytes,
+schema text and options.
+
 ## Options
 
 `thresh_options` set to zero is every default: the sniffer settles the

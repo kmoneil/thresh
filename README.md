@@ -196,7 +196,9 @@ numbers, stage by stage, and the regression gate.
 ## How it is tested
 
 - A SIMD structural index checked against a scalar reference parser, on
-  random inputs and under a fuzzer (`tools/fuzz.sh`).
+  random inputs and under a fuzzer (`tools/fuzz.sh`), and the C library's
+  calls fuzzed on any file, schema and options, held to return a status
+  or a report, never to panic.
 - A fixture corpus written by `test/gen/corpus.py`: 165 files across
   delimiter, quote, newline, header, encoding and field profiles, an
   adversarial set, and a set in the shapes of real exports, each with its

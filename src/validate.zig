@@ -237,6 +237,7 @@ pub const Validator = struct {
             defer v.gpa.free(next);
             var first: schema_mod.NameMap(u32) = .empty;
             defer first.deinit(v.gpa);
+            // headerNames named at most a u32's count.
             try first.ensureTotalCapacity(v.gpa, @intCast(h.len));
             var i = h.len;
             while (i > 0) {

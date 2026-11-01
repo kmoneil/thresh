@@ -9,9 +9,10 @@
 # this). The file it names as the saved input comes out empty, so the input
 # is read from the fuzzer's own input files, .zig-cache/f/in<N>: a 20-byte
 # header whose last u32 is the length, then the input. Each is printed in
-# hex. An input is what the target's Smith read: a four-byte little-endian
-# length and the bytes, then the choice bytes. Add it to the seeds in
-# src/fuzz_test.zig before fixing what it found.
+# hex. An input is what the target's Smith read: for each string a
+# four-byte little-endian length and its bytes, then each choice as eight
+# bytes little-endian. Add it to the seeds in src/fuzz_test.zig, or the C
+# calls' in src/capi_fuzz_test.zig, before fixing what it found.
 #
 # The fuzzer turns between every target in the test binary, but Zig
 # 0.17's report names only the first ("the scanner agrees ..."): its Runs

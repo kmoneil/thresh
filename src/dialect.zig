@@ -232,6 +232,17 @@ pub const SniffError = error{
     Unscorable,
 } || Allocator.Error;
 
+/// Where data's text starts: past a UTF-8 byte order mark, which warnings
+/// notes. A UTF-16 one is refused: input.Input transcodes those first.
+fn textStart(data: []const u8, warnings: *Warnings) SniffError!usize {
+    if (std.mem.startsWith(u8, data, "\xef\xbb\xbf")) {
+        warnings.utf8_bom = true;
+        return 3;
+    }
+    if (std.mem.startsWith(u8, data, "\xff\xfe") or std.mem.startsWith(u8, data, "\xfe\xff")) return error.Utf16;
+    return 0;
+}
+
 /// The delimiters tried first, in the order a tie goes.
 const prior_delimiters = [_]u8{ ',', '\t', '|', ';', ':', '~', 0x01, 0x1f, ' ' };
 const prior_quotes = [_]?u8{ '"', '\'', null };
@@ -242,13 +253,7 @@ const prior_quotes = [_]?u8{ '"', '\'', null };
 /// text full of delimiters does not fool the way character counts are.
 pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOptions) SniffError!Verdict {
     var warnings: Warnings = .{};
-    var start: usize = 0;
-    if (std.mem.startsWith(u8, data, "\xef\xbb\xbf")) {
-        start = 3;
-        warnings.utf8_bom = true;
-    } else if (std.mem.startsWith(u8, data, "\xff\xfe") or std.mem.startsWith(u8, data, "\xfe\xff")) {
-        return error.Utf16;
-    }
+    const start = try textStart(data, &warnings);
     if (std.mem.findScalar(u8, data[0..@min(data.len, 8192)], 0) != null) return error.Binary;
 
     var parser_fields: std.ArrayList(Field) = .empty;
@@ -256,14 +261,16 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
     var counts: std.ArrayList(u32) = .empty;
     defer counts.deinit(gpa);
     const pins = options.pins;
-    const delimiters = candidateDelimiters(data[start..@min(data.len, options.sample_bytes)], pins);
+    // The sample counts a byte order mark's bytes, and always holds them.
+    const sample_bytes = @max(options.sample_bytes, start + 1);
+    const delimiters = candidateDelimiters(data[start..@min(data.len, sample_bytes)], pins);
     const pinned_quote = [1]?u8{if (pins.quote) |pq| switch (pq) {
         .none => null,
         .byte => |b| b,
     } else null};
     const quotes: []const ?u8 = if (pins.quote != null) &pinned_quote else &prior_quotes;
 
-    var window = @max(options.sample_bytes, 1);
+    var window = sample_bytes;
     var best: Scored = undefined;
     var runners: [2]?Verdict.Runner = undefined;
     while (true) {
@@ -295,7 +302,7 @@ pub fn sniff(gpa: Allocator, data: []const u8, complete: bool, options: SniffOpt
         // records, so a bigger window costs little unless a record is big.
         const clear = best.records >= options.records and confidenceOf(best, runners, options) == .high;
         if (clear or whole or len == data.len or window >= options.max_sample) break;
-        window = @min(window * 2, @max(options.max_sample, options.sample_bytes));
+        window = @min(window * 2, @max(options.max_sample, sample_bytes));
     }
 
     var d = best.dialect;
