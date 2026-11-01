@@ -250,12 +250,19 @@ pub fn build(b: *std.Build) void {
     // seeds, as `zig build test` does; tools/fuzz.sh runs them under the
     // fuzzer. Always the LLVM backend: the self-hosted x86_64 one, the
     // Debug default there, emits no coverage for the fuzzer to steer by.
+    // The C entry points' target calls libthresh through include/thresh.h.
     const fuzz_options = b.addOptions();
     fuzz_options.addOption(u32, "differential_cases", 0);
+    fuzz_options.addOption([]const u8, "version", zon.version);
     const fuzz_mod = b.createModule(.{
         .root_source_file = b.path("src/fuzz_test.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "dateparsa", .module = dateparsa.module("dateparsa") },
+            .{ .name = "thresh_h", .module = b.addTranslateC(.{ .root_source_file = b.path("include/thresh.h"), .target = target, .optimize = optimize }).createModule() },
+        },
     });
     fuzz_mod.addOptions("build_options", fuzz_options);
     const fuzz_tests = b.addTest(.{ .root_module = fuzz_mod, .filters = &.{"fuzz:"}, .use_llvm = true });

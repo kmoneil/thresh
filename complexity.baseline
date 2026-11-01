@@ -9,7 +9,7 @@ src/dialect.zig	isHeader	61	124	95	5	4	4
 src/dialect.zig	looksTyped	20	21	21	3	1	1
 src/dialect.zig	pick	16	24	16	3	1	1
 src/dialect.zig	score	38	50	67	3	6	6
-src/dialect.zig	sniff	38	46	78	4	3	3
+src/dialect.zig	sniff	35	43	74	4	3	3
 src/dialect.zig	textHeader	22	37	38	3	5	5
 src/format_test.zig	walk	25	30	30	3	4	4
 src/infer.zig	Inferrer.observe	16	15	27	2	2	2
@@ -28,7 +28,6 @@ src/schema.zig	parseInline	14	28	31	3	2	2
 src/stats.zig	writeOrdered	21	18	28	2	3	3
 src/types.zig	Reason.text	21	1	22	1	0	0
 src/types.zig	read	26	27	20	3	3	3
-src/types/decimal.zig	parse	20	27	27	3	3	3
 src/types/float.zig	valid	22	27	20	2	1	1
 src/types/time.zig	parse	19	19	20	2	1	1
 src/validate.zig	Validator.columns	24	53	50	4	4	4

@@ -7,37 +7,35 @@ const std = @import("std");
 pub const Error = error{ NotDecimal, OverPrecision, OverScale };
 
 pub fn parse(v: []const u8, precision: u8, scale: u8) Error!i128 {
-    var i: usize = 0;
     const neg = v.len > 0 and v[0] == '-';
-    if (v.len > 0 and (v[0] == '-' or v[0] == '+')) i = 1;
-    var n: i128 = 0;
-    var int_digits: usize = 0;
-    var frac_digits: usize = 0;
-    var seen_digit = false;
-    var significant = false;
-    while (i < v.len and std.ascii.isDigit(v[i])) : (i += 1) {
-        seen_digit = true;
-        // Leading zeros are not digits of the value.
-        if (v[i] != '0') significant = true;
-        if (significant) int_digits += 1;
-        if (int_digits > precision) return error.OverPrecision;
-        n = n * 10 + (v[i] - '0');
+    const unsigned = if (neg or (v.len > 0 and v[0] == '+')) v[1..] else v;
+    const int = digitsFrom(unsigned, 0);
+    // Leading zeros are not digits of the value.
+    const int_digits = std.mem.trimStart(u8, int, "0").len;
+    if (int_digits > precision) return error.OverPrecision;
+    var rest = unsigned[int.len..];
+    var frac: []const u8 = "";
+    if (std.mem.startsWith(u8, rest, ".")) {
+        frac = digitsFrom(rest, 1);
+        if (frac.len > scale) return error.OverScale;
+        rest = rest[1 + frac.len ..];
     }
-    if (i < v.len and v[i] == '.') {
-        i += 1;
-        while (i < v.len and std.ascii.isDigit(v[i])) : (i += 1) {
-            seen_digit = true;
-            frac_digits += 1;
-            if (frac_digits > scale) return error.OverScale;
-            n = n * 10 + (v[i] - '0');
-        }
-    }
-    if (!seen_digit or i != v.len) return error.NotDecimal;
+    if (int.len + frac.len == 0 or rest.len > 0) return error.NotDecimal;
     if (int_digits + scale > precision) return error.OverPrecision;
-    // Up to the scale: 1.5 in decimal(10, 2) is 150.
-    var pad = scale - frac_digits;
-    while (pad > 0) : (pad -= 1) n *= 10;
+    // At most precision digits now, which schema.check holds to 38: an
+    // i128 takes them. Up to the scale: 1.5 in decimal(10, 2) is 150.
+    var n: i128 = 0;
+    for (int) |c| n = n * 10 + (c - '0');
+    for (frac) |c| n = n * 10 + (c - '0');
+    for (frac.len..scale) |_| n *= 10;
     return if (neg) -n else n;
+}
+
+/// The run of digits in s from start.
+fn digitsFrom(s: []const u8, start: usize) []const u8 {
+    var end = start;
+    while (end < s.len and std.ascii.isDigit(s[end])) end += 1;
+    return s[start..end];
 }
 
 test parse {
@@ -53,5 +51,10 @@ test parse {
     try t.expectError(error.OverPrecision, parse("1234567890123.45", 12, 2));
     try t.expectError(error.OverPrecision, parse("1000", 5, 2));
     try t.expectError(error.OverPrecision, parse("99999999999999999999999999999999999999999", 38, 0));
+    // More digits in all than an i128 holds, each failing as it did.
+    try t.expectError(error.OverPrecision, parse("99999999999999999999.12345678901234567890123456", 38, 38));
+    try t.expectError(error.OverScale, parse("99999999999999999999.123456789012345678901234567890123456789", 38, 38));
+    try t.expectError(error.NotDecimal, parse("99999999999999999999.12345678901234567890123456x", 38, 38));
+    try t.expectEqual(@as(i128, 12345678901234567890123456789012345678), try parse(".12345678901234567890123456789012345678", 38, 38));
     for ([_][]const u8{ "", ".", "-", "12,50", "1e3", "1.2.3", "abc", "1 " }) |v| try t.expectError(error.NotDecimal, parse(v, 18, 2));
 }

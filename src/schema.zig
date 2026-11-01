@@ -50,10 +50,13 @@ pub const NameContext = struct {
 /// validate: each trimmed, and a blank one, or one a name before it took
 /// already (ASCII case aside), columnN by its place.
 pub fn headerNames(arena: Allocator, raw: []const []const u8) Allocator.Error![]const []const u8 {
+    // A map holds at most a u32's count; a header past it (its fields
+    // alone 64 GiB) cannot be named.
+    const width = std.math.cast(u32, raw.len) orelse return error.OutOfMemory;
     const out = try arena.alloc([]const u8, raw.len);
     var taken: NameMap(void) = .empty;
     defer taken.deinit(arena);
-    try taken.ensureTotalCapacity(arena, @intCast(raw.len));
+    try taken.ensureTotalCapacity(arena, width);
     for (out, raw, 0..) |*n, r, i| {
         const name = std.mem.trim(u8, r, " \t");
         n.* = if (name.len == 0 or taken.contains(name))

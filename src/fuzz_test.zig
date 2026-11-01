@@ -2,8 +2,9 @@
 //! seeds replayed by `zig build test` and `zig build fuzz`.
 //!
 //! An input is what a target's Smith reads: strings, each a four-byte
-//! little-endian length and its bytes, and then a few bytes of choices.
-//! A seed may stop before the choices, which then read as zero.
+//! little-endian length and its bytes, and then its choices, each value
+//! eight bytes little-endian whatever its type (a u8's past 255 reads as
+//! zero). A seed may stop before the choices, which then read as zero.
 
 const std = @import("std");
 const Dialect = @import("dialect.zig").Dialect;
@@ -14,6 +15,11 @@ const reference = @import("reference.zig");
 const Allocator = std.mem.Allocator;
 const Smith = std.testing.Smith;
 const testing = std.testing;
+
+comptime {
+    // The C entry points' target, in a file of its own.
+    _ = @import("capi_fuzz_test.zig");
+}
 
 const max_input = 2048;
 
@@ -248,13 +254,22 @@ fn writeRecord(w: *std.Io.Writer, row: []const []const u8, d: Dialect) !void {
 }
 
 /// A seed as Smith reads one: each string a four-byte little-endian length
-/// and its bytes, then the choice bytes.
-fn seed(arena: Allocator, s: []const u8, choices: []const u8) ![]const u8 {
-    const out = try arena.alloc(u8, 4 + s.len + choices.len);
-    std.mem.writeInt(u32, out[0..4], @intCast(s.len), .little);
-    @memcpy(out[4..][0..s.len], s);
-    @memcpy(out[4 + s.len ..], choices);
-    return out;
+/// and its bytes, then each choice as the eight bytes Smith reads a value
+/// from.
+pub fn seed(arena: Allocator, strings: []const []const u8, choices: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (strings) |s| {
+        var len: [4]u8 = undefined;
+        std.mem.writeInt(u32, &len, @intCast(s.len), .little);
+        try out.appendSlice(arena, &len);
+        try out.appendSlice(arena, s);
+    }
+    for (choices) |c| {
+        var word: [8]u8 = undefined;
+        std.mem.writeInt(u64, &word, c, .little);
+        try out.appendSlice(arena, &word);
+    }
+    return out.items;
 }
 
 /// Inputs where the scanner's and the sniffer's answers turn on details:
@@ -278,7 +293,7 @@ fn seeds(arena: Allocator) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     for (inputs) |s| {
         for ([_]u8{ 0, 0x20, 0x08, 0x10, 0x41, 0xff }) |d| {
-            for ([_]u8{ 0, 0x55, 0xaa }) |k| try out.append(arena, try seed(arena, s, &.{ d, k }));
+            for ([_]u8{ 0, 0x55, 0xaa }) |k| try out.append(arena, try seed(arena, &.{s}, &.{ d, k }));
         }
     }
     return out.items;
