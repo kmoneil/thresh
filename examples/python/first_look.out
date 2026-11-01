@@ -1,0 +1,12 @@
+data/harvest.csv: delimiter=, quote=" escape=doubled newline=lf header=yes confidence=high
+  lug_id       int64
+  picked_on    date
+  orchard_row  string
+  lug_kg       decimal
+  cultivar     string
+  bruised      bool
+  remark       string
+pass  data/harvest.csv  40 rows  0 rejected
+lug_kg: 40 values from 14.3 to 22.9 kg, 30 distinct
+most picked: Brookwood (10), Starfall (9), Ember Pip (9)
+pass  data/harvest.csv  40 rows  0 rejected

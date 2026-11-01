@@ -1,0 +1,11 @@
+fail  data/harvest_dirty.csv  30 rows  1 rejected | inferred: True | encoding: utf8
+9,a,9-9-9,a9,9.9,a a,a,a 9
+  lug_id       int64    9
+  picked_on    string   9-9-9
+  orchard_row  string   a9
+  lug_kg       string   9.9
+  cultivar     string   a
+  bruised      string   a
+  remark       string   a
+['bytes', 'columns', 'dialect', 'encoding', 'file', 'format_version', 'inferred', 'limits', 'notes', 'problems', 'rejected_lines', 'rejected_sample', 'result', 'row_errors', 'rows', 'rows_rejected', 'schema', 'warnings']
+20 rejected lines at most

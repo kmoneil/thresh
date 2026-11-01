@@ -1,0 +1,15 @@
+lug_id: int64
+picked_on: date32[day]
+orchard_row: string
+lug_kg: decimal128(18, 1)
+cultivar: string
+bruised: bool
+remark: string
+[(21, 'Starfall', Decimal('22.9')), (19, 'Brookwood', Decimal('22.8'))]
+[('Brookwood', 10), ('Ember Pip', 9), ('Starfall', 9)]
+26 rows read, 4 set aside
+  {'_row': 5, '_errors': [{'column': 'lug_kg', 'code': 'not_decimal'}]}
+  {'_row': 9, '_errors': [{'column': 'picked_on', 'code': 'not_in_format'}]}
+  {'_row': 13, '_errors': [{'column': 'bruised', 'code': 'not_bool'}]}
+  {'_row': 22, '_errors': [{'column': None, 'code': 'ragged'}]}
+fail  data/harvest_dirty.csv  30 rows  4 rejected

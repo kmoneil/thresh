@@ -1,0 +1,15 @@
+fail  data/harvest_dirty.csv  30 rows  4 rejected
+  line 5  lug_kg: not_decimal
+    4,2026-09-05,R05,"18,5",Marrowdew,false,
+  line 9  picked_on: not_in_format
+    8,2026-09-31,R09,19.2,Brookwood,false,
+  line 13  bruised: not_bool
+    12,2026-09-13,R01,18.7,Marrowdew,maybe,
+  line 22  the row: ragged
+    21,extra,2026-09-22,R10,14.5,Ember Pip,false,ladder 2
+  picked_on: 96.6% fit; '2026-09-31' on line 9 is not_in_format
+  lug_kg: 96.6% fit; '18,5' on line 5 is not_decimal
+  bruised: 96.6% fit; 'maybe' on line 13 is not_bool
+fail  data/harvest_dirty.csv  30 rows  5 rejected
+stopped: data/harvest_dirty.csv: fail: 5 of 30 rows rejected
+rows set aside: [5, 9, 13, 17, 22]
