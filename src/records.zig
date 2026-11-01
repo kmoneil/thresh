@@ -574,7 +574,10 @@ pub const Scanner = struct {
 
 /// A record's values with escapes undone, into out; scratch holds the
 /// unescaped ones and is sized first, so no slice into it moves. Fields
-/// hold absolute offsets; data starts at base.
+/// hold absolute offsets; data starts at base. Aligned to a cache line, as
+/// reference.Parser.next is, so its loop sits where it did whatever changes
+/// around it: every stage past parse runs it, and a 16-byte shift cost the
+/// text profile 10% on the CI runner (docs/PERF.md).
 pub fn values(
     gpa: Allocator,
     fields: []const Field,
@@ -583,7 +586,7 @@ pub fn values(
     d: Dialect,
     scratch: *std.ArrayList(u8),
     out: *std.ArrayList([]const u8),
-) Allocator.Error!void {
+) align(64) Allocator.Error!void {
     out.clearRetainingCapacity();
     var need: usize = 0;
     for (fields) |f| {
