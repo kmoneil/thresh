@@ -56,11 +56,13 @@ pub fn build(b: *std.Build) void {
     // libthresh: include/thresh.h over src/capi.zig, static and shared,
     // into zig-out/lib and zig-out/include. On Windows the names keep the
     // DLL's import library and its .pdb from meeting the static library's
-    // and the executable's.
+    // and the executable's. -Dstrip leaves out the debug information, as
+    // the Python wheels do (tools/python_wheels.py).
     const capi_mod = b.createModule(.{
         .root_source_file = b.path("src/capi.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = b.option(bool, "strip", "libthresh without debug information"),
         .link_libc = true,
         .imports = &.{.{ .name = "dateparsa", .module = dateparsa.module("dateparsa") }},
     });
