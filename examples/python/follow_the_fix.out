@@ -1,0 +1,15 @@
+data/windows.csv
+  column_not_utf8: column 'remark' is not UTF-8 (row 1); read the file with --encoding cp1252 (Windows) or latin1
+  fix: {'encoding': 'cp1252'}
+  then: pass, 3 columns
+data/bins.txt
+  quote_is_data: the quotes look like data: 1 record holds 4 lines inside quotes, the first on line 13, and each of those lines is a whole row without them; pin --quote none to read quotes as data
+  fix: {'quote': False}
+  then: pass, 4 columns
+data/header_short.csv
+  header_width: row 1 is a header of 3 names over rows of 4 fields, and which names go with which columns cannot be told; fix the header, or pin --header no to read row 1 as data
+  fix: {'header': False}
+  then: pass, 4 columns
+dialect_unsettled {}
+fail  data/remarks.csv  30 rows  20 rejected
+2,2026-09-03,late pick, shade side,16.9 [RowError(column=None, code='ragged')]

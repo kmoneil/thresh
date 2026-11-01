@@ -13,8 +13,8 @@ and why, and which rows to set aside, before anything reaches a database
 or a dataframe. Then it writes the good rows as clean CSV or Arrow.
 
 One static binary, written in Zig. Any delimiter, any quoting, UTF-8,
-Windows-1252, Latin-1 or UTF-16. A C library too, with a Python package
-on its way.
+Windows-1252, Latin-1 or UTF-16. A C library too, and a Python package
+over it, [threshio](python/README.md).
 
 ```
  a.csv ─▶ sniff ─▶ infer ─▶ validate ─┬─▶ good rows ─▶ CSV or Arrow
@@ -30,7 +30,7 @@ on its way.
 | **Convert** | the good rows to clean CSV, or to Arrow that pyarrow, polars and DuckDB read straight in. |
 | **Report** | JSON in a [versioned format](docs/REPORT.md), every problem a stable [code](docs/PROBLEMS.md), with the fix where there is one, and what each column holds: its range, distinct values, the most common values and shapes. |
 | **Describe** | everything about a file in one JSON document, bounded whatever its size, for a person, code or an AI; with `--shapes-only`, none of its data. |
-| **Embed** | a [C library](docs/C.md) that hands rows and rejects to Arrow consumers in the same process, without a copy. |
+| **Embed** | a [C library](docs/C.md), and a [Python package](python/README.md) over it, that hand rows and rejects to Arrow consumers in the same process, without a copy. |
 
 ## Quick start
 
@@ -178,10 +178,21 @@ thresh_validate(t, "lugs.csv", schema, NULL, &report);   /* the file report, as 
 
 A file's own trouble is in its report, never an error code, so a caller
 acts on codes rather than parsing sentences. [docs/C.md](docs/C.md) has
-the calls, ownership and threads. Next is
-[threshio](https://pypi.org/project/threshio/), a Python package over the
-library: check a file before the rest of your code runs, then
-`pyarrow.table(threshio.read(path, schema))`.
+the calls, ownership and threads.
+
+From Python, [threshio](python/README.md) is the library with no other
+dependency (on PyPI from its first release):
+
+```python
+import pyarrow, threshio
+
+schema = threshio.infer("lugs.csv").schema
+report = threshio.validate("lugs.csv", schema)   # .passed, .rejected_lines, .problems
+table = pyarrow.table(threshio.read("lugs.csv", schema))
+```
+
+[examples/python](examples/python) has whole scripts, each with its
+output.
 
 ## Speed
 
@@ -211,6 +222,10 @@ numbers, stage by stage, and the regression gate.
   library's streams, value for value against the CSV output
   (`zig build arrow-check`); a C program drives the library through its
   header alone, linked static and shared.
+- threshio's wheel for each platform installed there and its tests run
+  against it: Linux (glibc and musl), macOS and Windows, on x86-64 and
+  arm64, with every block of its README and every script in
+  `examples/python` run as written.
 - Tests in Debug and ReleaseSafe in CI, and a benchmark gate on every pull
   request.
 
@@ -225,12 +240,8 @@ to a ratchet: none new over a critical limit, none worse than
 
 Early, and tried on real feeds. Problems are codes as well as sentences,
 the reports have a [versioned format](docs/REPORT.md), and thresh is a
-[C library](docs/C.md) as well as a command. Next: a Python package,
-[threshio](https://pypi.org/project/threshio/), over the C library, that
-checks a file before the rest of your code runs, describes it in one
-document (for people, code or an AI, with a shapes-only mode that leaves
-the data out), and hands rows and rejects to pyarrow, polars or DuckDB
-without a copy.
+[C library](docs/C.md) and a [Python package](python/README.md) as well
+as a command. Next: threshio's first release on PyPI.
 
 ## License
 

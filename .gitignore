@@ -25,6 +25,8 @@ CLAUDE.md
 # Zig build output
 .zig-cache/
 zig-out/
+# Python's bytecode, from threshio's tests and examples
+__pycache__/
 # Where `zig fetch` and `zig build` write fetched packages.
 zig-pkg/
 
