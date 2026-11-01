@@ -158,6 +158,9 @@ zig build corpus          # the fixture corpus, into zig-out/corpus (python3)
 zig build bench           # MB/s per parsing stage, ReleaseFast (-- --size BYTES)
 zig build scale -Doptimize=ReleaseFast  # 10,000 files, MB/s by --jobs, Ctrl-C
 zig build fuzz            # replay the fuzz seeds; tools/fuzz.sh [LIMIT] fuzzes
+                          # (tools/vmrun/vmrun tools/vmrun/jobs/fuzz.sh for
+                          # hours on a GCP spot VM; vmrun's header says what
+                          # it needs)
 zig build arrow-check     # Arrow output and C streams read back by pyarrow and DuckDB
 ```
 

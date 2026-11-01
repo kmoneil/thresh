@@ -1,0 +1,302 @@
+#!/bin/bash
+# vmrun: one job on a throwaway GCP VM, for what this Mac cannot hold:
+# a long fuzz campaign needs more space and hours than it has. It ships
+# the repository's files (what git tracks, and new files it does not
+# ignore) and a job script, runs the job on a new VM, brings its log and
+# results back to _vmrun/<date>-<n>-<name>/, deletes everything it made,
+# and exits with the job's exit code.
+#
+#   tools/vmrun/vmrun tools/vmrun/jobs/fuzz.sh                   # 6 hours
+#   tools/vmrun/vmrun --timeout 720 tools/vmrun/jobs/fuzz.sh     # 12
+#
+# A job is a bash script run from the root of the shipped tree, with
+# $RESULTS for anything it wants back and $VMRUN_DEADLINE, the Unix time
+# the VM deletes itself at, to stop in time. Its `# vmrun:` line says what it
+# wants (`image=`, `machine=`, `timeout=` in minutes, `spot=1`); the
+# options below override it.
+#
+# A job marked `spot=1` runs on a spot VM, at well under half the
+# on-demand price, because losing it costs nothing but a rerun: when
+# Google preempts one, this script says so and exits 75, and running it
+# again is the whole recovery. When no zone in the region has the
+# machine, the other US regions are tried too (the bucket is
+# multi-region US, so any of them reads it).
+#
+# The same inputs make the same run: the image family is resolved to one
+# image, recorded in the run's manifest.json (--image-name repeats it);
+# Zig comes at the pinned version, checked against its SHA-256; the VM,
+# its disk and the bucket are new each time and deleted after, on failure
+# and Ctrl-C too, and the VM deletes itself at the timeout whatever
+# happens to this script. Resources are labelled purpose=thresh-test.
+# (This is pawl.zig's tools/vmrun, itself ekur's cut down to Zig alone;
+# kb/extractctl on the karte board says how the project is used.)
+#
+# Options: --machine TYPE, --zone ZONE, --spot, --on-demand, --image
+# ubuntu-2404|debian-12, --image-name NAME, --name SLUG, --timeout
+# MINUTES, --key FILE (a service account's JSON key; GCP_KEY, else
+# ~/.gcp-keys/zig-gcp-sa-key.json). Needs bash, curl, jq, openssl, git,
+# tar.
+set -euo pipefail
+
+# Physical paths throughout, so a symlinked checkout compares alike.
+ROOT=$(cd "$(git rev-parse --show-toplevel)" && pwd -P)
+HERE=$(cd "$(dirname "$0")" && pwd -P)
+KEY=${GCP_KEY:-$HOME/.gcp-keys/zig-gcp-sa-key.json}
+ZONE=us-central1-a
+REGIONS="us-central1 us-east1 us-west1 us-east4"
+MACHINE="" IMAGE="" IMAGE_NAME="" NAME="" TIMEOUT=""
+SPOT="" SPOT_SET=""
+
+usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 2; }
+while [ $# -gt 0 ]; do
+  case $1 in
+    --machine) MACHINE=$2; shift 2 ;;
+    --zone) ZONE=$2; shift 2 ;;
+    --image) IMAGE=$2; shift 2 ;;
+    --image-name) IMAGE_NAME=$2; shift 2 ;;
+    --name) NAME=$2; shift 2 ;;
+    --timeout) TIMEOUT=$2; shift 2 ;;
+    --spot) SPOT=1 SPOT_SET=1; shift ;;
+    --on-demand) SPOT="" SPOT_SET=1; shift ;;
+    --key) KEY=$2; shift 2 ;;
+    -h|--help) usage ;;
+    --*) echo "vmrun: unknown option $1" >&2; usage ;;
+    *) break ;;
+  esac
+done
+[ $# -ge 1 ] || usage
+JOB=$1; shift
+[ -f "$JOB" ] || { echo "vmrun: no job $JOB" >&2; exit 2; }
+JOB_REL=$(cd "$(dirname "$JOB")" && pwd -P)/$(basename "$JOB")
+JOB_REL=${JOB_REL#"$ROOT"/}
+case $JOB_REL in /*) echo "vmrun: $JOB is not in this repository" >&2; exit 2 ;; esac
+
+# The job's own defaults, from its `# vmrun:` line.
+header=$(grep -m1 '^# vmrun:' "$JOB" | sed 's/^# vmrun://' || true)
+for kv in $header; do
+  k=${kv%%=*} v=${kv#*=}
+  case $k in
+    image) [ -n "$IMAGE" ] || IMAGE=$v ;;
+    machine) [ -n "$MACHINE" ] || MACHINE=$v ;;
+    timeout) [ -n "$TIMEOUT" ] || TIMEOUT=$v ;;
+    spot) [ -n "$SPOT_SET" ] || SPOT=$v ;;
+  esac
+done
+# e2: the small end, cheap, and it refuses onHostMaintenance=TERMINATE,
+# so that stays unset (kb/extractctl).
+MACHINE=${MACHINE:-e2-standard-4}
+IMAGE=${IMAGE:-ubuntu-2404}
+TIMEOUT=${TIMEOUT:-90}
+NAME=${NAME:-$(basename "$JOB" .sh)}
+NAME=$(printf '%s' "$NAME" | tr 'A-Z_' 'a-z-' | tr -cd 'a-z0-9-' | cut -c1-24)
+
+case $IMAGE in
+  ubuntu-2404) IMAGE_PROJECT=ubuntu-os-cloud FAMILY=ubuntu-2404-lts-amd64 ;;
+  debian-12) IMAGE_PROJECT=debian-cloud FAMILY=debian-12 ;;
+  *) echo "vmrun: --image is ubuntu-2404 or debian-12" >&2; exit 2 ;;
+esac
+
+# The pinned toolchain: the version this checkout builds with, and its
+# hash (ziglang.org/download/index.json).
+ZIG_VERSION=$(sed -n 's/.*\.minimum_zig_version = "\(.*\)".*/\1/p' "$ROOT/build.zig.zon")
+case $ZIG_VERSION in
+  0.17.0) ZIG_SHA=1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026 ;;
+  *) echo "vmrun: no pinned hash for Zig $ZIG_VERSION; add it to tools/vmrun/vmrun" >&2; exit 2 ;;
+esac
+
+for tool in curl jq openssl git tar; do command -v $tool > /dev/null || { echo "vmrun: needs $tool" >&2; exit 2; }; done
+[ -f "$KEY" ] || { echo "vmrun: no key at $KEY (--key or GCP_KEY)" >&2; exit 2; }
+PROJECT=$(jq -r .project_id "$KEY")
+EMAIL=$(jq -r .client_email "$KEY")
+STAMP=$(date -u +%Y%m%d%H%M%S)
+RAND=$(openssl rand -hex 3)
+VM="vmrun-$NAME-$STAMP"
+BK="$PROJECT-vmrun-$STAMP-$RAND"
+API=https://compute.googleapis.com/compute/v1/projects/$PROJECT
+STORE=https://storage.googleapis.com
+TMP=$(mktemp -d)
+T0=$(date +%s)
+
+token() {
+  local now hdr claim sig
+  b64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+  now=$(date +%s)
+  hdr=$(printf '{"alg":"RS256","typ":"JWT"}' | b64)
+  claim=$(printf '{"iss":"%s","scope":"https://www.googleapis.com/auth/cloud-platform","aud":"https://oauth2.googleapis.com/token","iat":%d,"exp":%d}' "$EMAIL" "$now" $((now + 3600)) | b64)
+  (umask 077; jq -r .private_key "$KEY" > "$TMP/key.pem")
+  sig=$(printf '%s.%s' "$hdr" "$claim" | openssl dgst -sha256 -sign "$TMP/key.pem" | b64)
+  rm -f "$TMP/key.pem"
+  curl -s -X POST https://oauth2.googleapis.com/token \
+    --data-urlencode grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer \
+    --data-urlencode assertion="$hdr.$claim.$sig" | jq -r .access_token
+}
+T=$(token)
+TOKEN_AT=$(date +%s)
+fresh() { if [ $(( $(date +%s) - TOKEN_AT )) -gt 2700 ]; then T=$(token); TOKEN_AT=$(date +%s); fi; }
+call() { curl -s -H "Authorization: Bearer $T" "$@"; }
+elapsed() { local s=$(( $(date +%s) - T0 )); printf '%dm%02ds' $((s / 60)) $((s % 60)); }
+
+made_vm="" made_bucket=""
+cleanup() {
+  local code=$?
+  trap - EXIT INT TERM
+  T=$(token)
+  local gone=1
+  if [ -n "$made_vm" ]; then
+    call -X DELETE "$API/zones/$ZONE/instances/$VM" > /dev/null || true
+    # A delete is an operation; "deleted" is said once it is done.
+    gone=""
+    for _ in $(seq 1 40); do
+      [ "$(call -o /dev/null -w '%{http_code}' "$API/zones/$ZONE/instances/$VM")" = 404 ] && { gone=1; break; }
+      sleep 3
+    done
+  fi
+  if [ -n "$made_bucket" ]; then
+    for n in $(call "$STORE/storage/v1/b/$BK/o" | jq -r '.items[]?.name'); do
+      call -X DELETE "$STORE/storage/v1/b/$BK/o/${n//\//%2F}" > /dev/null || true
+    done
+    call -X DELETE "$STORE/storage/v1/b/$BK" > /dev/null || true
+  fi
+  rm -rf "$TMP"
+  [ -n "$gone" ] || echo "vmrun: $VM is still being deleted after 2 minutes; it deletes itself at the timeout in any case" >&2
+  [ -z "$made_vm$made_bucket" ] || echo "vmrun: deleted ${gone:+${made_vm:+$VM }}${made_bucket:+$BK} ($(elapsed) in all)"
+  exit $code
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+if [ -z "$IMAGE_NAME" ]; then
+  IMAGE_NAME=$(call "https://compute.googleapis.com/compute/v1/projects/$IMAGE_PROJECT/global/images/family/$FAMILY" | jq -r '.name // empty')
+  [ -n "$IMAGE_NAME" ] || { echo "vmrun: cannot resolve image family $FAMILY" >&2; exit 1; }
+fi
+
+COMMIT=$(git -C "$ROOT" rev-parse --short HEAD)
+DIRTY=$(git -C "$ROOT" status --porcelain | wc -l | tr -d ' ')
+# COPYFILE_DISABLE and --no-xattrs: macOS's tar otherwise adds an
+# AppleDouble `._name` for each file with extended attributes (which
+# Linux's tar unpacks as a file of its own, that the build then reads as
+# Zig) and an extended header per xattr Linux's tar warns about.
+(cd "$ROOT" && git ls-files -z -co --exclude-standard | COPYFILE_DISABLE=1 tar --null -T - --no-xattrs -czf "$TMP/src.tgz")
+echo "vmrun: $JOB_REL on $MACHINE${SPOT:+ (spot)} ($IMAGE_NAME); $COMMIT with $DIRTY changed file(s), $(( $(wc -c < "$TMP/src.tgz") / 1024 )) KB"
+
+# Multi-region US, so the VM reads it from whichever region had room.
+r=$(call -X POST -H "Content-Type: application/json" "$STORE/storage/v1/b?project=$PROJECT" \
+  -d "{\"name\":\"$BK\",\"location\":\"US\",\"labels\":{\"purpose\":\"thresh-test\",\"tool\":\"vmrun\"},\"lifecycle\":{\"rule\":[{\"action\":{\"type\":\"Delete\"},\"condition\":{\"age\":1}}]}}")
+[ "$(printf '%s' "$r" | jq -r '.name // empty')" = "$BK" ] || { echo "vmrun: bucket: $(printf '%s' "$r" | jq -r '.error.message')" >&2; exit 1; }
+made_bucket=1
+upload() { call -X POST -H "Content-Type: application/octet-stream" --data-binary "@$2" "$STORE/upload/storage/v1/b/$BK/o?uploadType=media&name=$1" | jq -e '.size' > /dev/null; }
+upload src.tgz "$TMP/src.tgz" || { echo "vmrun: upload failed" >&2; exit 1; }
+
+printf '%s\n' "$@" > "$TMP/args"
+vm_json() { # zone
+  jq -n --arg name "$VM" --arg zone "$1" --arg machine "$MACHINE" --arg image "projects/$IMAGE_PROJECT/global/images/$IMAGE_NAME" \
+    --rawfile script "$HERE/remote.sh" --arg bk "$BK" --arg job "$JOB_REL" --rawfile args "$TMP/args" \
+    --arg zig "$ZIG_VERSION" --arg zig_sha "$ZIG_SHA" --arg spot "${SPOT:+1}" \
+    --arg secs "$((TIMEOUT * 60))" '{
+    name: $name,
+    machineType: "zones/\($zone)/machineTypes/\($machine)",
+    labels: { purpose: "thresh-test", tool: "vmrun" },
+    disks: [{ boot: true, autoDelete: true, initializeParams: { sourceImage: $image, diskSizeGb: "30",
+      diskType: "zones/\($zone)/diskTypes/pd-balanced" } }],
+    networkInterfaces: [{ network: "global/networks/default", nicType: "GVNIC", accessConfigs: [{ name: "External NAT", type: "ONE_TO_ONE_NAT" }] }],
+    serviceAccounts: [{ email: "default", scopes: ["https://www.googleapis.com/auth/devstorage.read_write"] }],
+    metadata: { items: [
+      { key: "startup-script", value: $script }, { key: "bucket", value: $bk }, { key: "job", value: $job },
+      { key: "job-args", value: $args },
+      { key: "zig-version", value: $zig }, { key: "zig-sha256", value: $zig_sha },
+      { key: "timeout-seconds", value: $secs } ] },
+    scheduling: ({ automaticRestart: false, maxRunDuration: { seconds: $secs }, instanceTerminationAction: "DELETE" }
+      + if $spot == "1" then { provisioningModel: "SPOT" } else {} end)
+  }'
+}
+
+# The zone asked for first, then the region's others, then the other US
+# regions, when one has no room for the machine (a stockout is Google's,
+# not the run's; a zone a region does not have answers Unknown zone,
+# which moves on the same way).
+REGION=${ZONE%-*}
+ZONES="$ZONE"
+for z in a b c d f; do [ "$REGION-$z" = "$ZONE" ] || ZONES="$ZONES $REGION-$z"; done
+for r in $REGIONS; do
+  [ "$r" = "$REGION" ] && continue
+  for z in a b c d f; do ZONES="$ZONES $r-$z"; done
+done
+created=""
+for z in $ZONES; do
+  ZONE=$z
+  vm_json "$ZONE" > "$TMP/vm.json"
+  r=$(call -X POST -H "Content-Type: application/json" --data-binary "@$TMP/vm.json" "$API/zones/$ZONE/instances")
+  err=$(printf '%s' "$r" | jq -r '.error.message // empty')
+  if [ -z "$err" ]; then
+    made_vm=1
+    # Creating is an operation: the VM is there once it is done.
+    op=$(printf '%s' "$r" | jq -r '.name')
+    o=""
+    for _ in $(seq 1 90); do
+      o=$(call "$API/zones/$ZONE/operations/$op")
+      [ "$(printf '%s' "$o" | jq -r '.status // empty')" = DONE ] && break
+      sleep 2
+    done
+    err=$(printf '%s' "$o" | jq -r '[.error.errors[]?.message] | join("; ")')
+    [ -n "$err" ] || [ "$(printf '%s' "$o" | jq -r '.status // empty')" = DONE ] || err="not created after 3 minutes"
+  fi
+  [ -n "$err" ] || { created=1; break; }
+  case $err in
+    *"does not have enough resources"*|*"ZONE_RESOURCE_POOL_EXHAUSTED"*|*"does not exist in zone"*|*"not supported in zone"*|*"Unknown zone"*)
+      echo "vmrun: no $MACHINE in $ZONE: $err" ;;
+    *) echo "vmrun: VM: $err" >&2; exit 1 ;;
+  esac
+done
+[ -n "$created" ] || { echo "vmrun: no zone in $REGIONS had a $MACHINE; try --machine or --zone" >&2; exit 1; }
+echo "vmrun: $VM started in $ZONE ($(elapsed))"
+
+# Wait for results/exit, printing each stage the VM reports. A VM that
+# stops without one failed before it could say so: show its console.
+seen="" deadline=$(( $(date +%s) + TIMEOUT * 60 + 300 ))
+while :; do
+  sleep 10
+  fresh
+  [ "$(call -o /dev/null -w '%{http_code}' "$STORE/storage/v1/b/$BK/o/results%2Fexit")" = 200 ] && break
+  stage=$(call -f "$STORE/storage/v1/b/$BK/o/results%2Fstage?alt=media" | head -1 || true)
+  if [ -n "$stage" ] && [ "$stage" != "$seen" ]; then echo "vmrun: $stage ($(elapsed))"; seen=$stage; fi
+  # Only a 404 is gone; any other failure is looked at again next time.
+  code=$(call -o "$TMP/vm-status.json" -w '%{http_code}' "$API/zones/$ZONE/instances/$VM" || true)
+  case $code in
+    200) status=$(jq -r '.status // "UNKNOWN"' "$TMP/vm-status.json") ;;
+    404) status=GONE ;;
+    *) status=UNKNOWN ;;
+  esac
+  case $status in
+    TERMINATED|STOPPED|GONE)
+      [ "$(call -o /dev/null -w '%{http_code}' "$STORE/storage/v1/b/$BK/o/results%2Fexit")" = 200 ] && break
+      # A spot VM Google took back is a rerun, not a failure to look at.
+      if [ -n "$SPOT" ] && call -G --data-urlencode "filter=(operationType = \"compute.instances.preempted\") AND (targetLink = \"$API/zones/$ZONE/instances/$VM\")" \
+          "$API/zones/$ZONE/operations" | jq -e '.items | length > 0' > /dev/null; then
+        echo "vmrun: $VM was preempted (a spot VM); nothing came back, run it again" >&2
+        exit 75
+      fi
+      echo "vmrun: the VM is $status and reported no result; its console ends:" >&2
+      call "$API/zones/$ZONE/instances/$VM/serialPort?port=1" | jq -r '.contents // empty' | tail -40 >&2
+      exit 1 ;;
+  esac
+  [ "$(date +%s)" -lt "$deadline" ] || { echo "vmrun: no result after $TIMEOUT minutes" >&2; exit 1; }
+done
+
+N=1
+while [ -n "$(command ls -d "$ROOT/_vmrun/$(date -u +%Y-%m-%d)-$N-"* 2>/dev/null)" ]; do N=$((N + 1)); done
+OUT="$ROOT/_vmrun/$(date -u +%Y-%m-%d)-$N-$NAME"
+mkdir -p "$OUT"
+for n in $(call "$STORE/storage/v1/b/$BK/o?prefix=results/" | jq -r '.items[]?.name'); do
+  rel=${n#results/}
+  mkdir -p "$OUT/$(dirname "$rel")"
+  call -o "$OUT/$rel" "$STORE/storage/v1/b/$BK/o/${n//\//%2F}?alt=media"
+done
+CODE=$(tr -dc '0-9' < "$OUT/exit")
+jq -n --arg job "$JOB_REL" --arg args "$*" --arg commit "$COMMIT" --argjson dirty "$DIRTY" --arg machine "$MACHINE" \
+  --arg zone "$ZONE" --arg image "$IMAGE_NAME" --arg zig "$ZIG_VERSION" --argjson exit "${CODE:-125}" --arg spot "${SPOT:+1}" \
+  --arg started "$(date -u -r "$T0" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$T0" +%Y-%m-%dT%H:%M:%SZ)" --argjson seconds "$(( $(date +%s) - T0 ))" \
+  '{ job: $job, args: $args, commit: $commit, changed_files: $dirty, machine: $machine, zone: $zone, image: $image,
+     spot: ($spot == "1"), zig: $zig, exit: $exit, started: $started, seconds: $seconds }' > "$OUT/manifest.json"
+echo "vmrun: exit ${CODE:-?} after $(elapsed); results in ${OUT#"$ROOT"/}"
+[ -f "$OUT/job.log" ] && tail -15 "$OUT/job.log"
+exit "${CODE:-125}"
