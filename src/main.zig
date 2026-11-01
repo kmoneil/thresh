@@ -13,6 +13,7 @@ const cli = @import("cli.zig");
 const dialect = @import("dialect.zig");
 const report = @import("report.zig");
 const problem = @import("problem.zig");
+const types = @import("types.zig");
 const Problem = problem.Problem;
 const lib = @import("lib.zig");
 const render = @import("render.zig");
@@ -463,7 +464,7 @@ fn sniff(env: Env, cfg: cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
         };
         const stop = sniffed.outcome.problem;
         if (cfg.json) {
-            try report.writeSniffLine(out, path, v, if (stop) |*p| p[0..1] else &.{});
+            try report.writeSniffLine(out, try types.asUtf8(env.arena, path), v, if (stop) |*p| p[0..1] else &.{});
         } else {
             try out.print("{s}: {f} confidence={t}", .{ path, v.dialect, v.confidence });
             if (@as(u8, @bitCast(v.warnings)) != 0) {

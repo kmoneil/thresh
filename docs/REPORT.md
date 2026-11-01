@@ -60,6 +60,10 @@ A reader can rely on this:
 - **Order and spacing are not part of the format.** Fields may come in
   another order; the report and summary.json are indented, the lines are
   not.
+- **Every document is UTF-8, and every string a string**, whatever the
+  file or its path held: names and values transcoded from the file's
+  encoding, and U+FFFD for a byte that is no character there (a path's
+  under UTF-8).
 
 A field marked "when ..." below is left out, not written as `null`, when
 that does not hold. A JSON integer may be as large as 2^64 - 1; a number
@@ -68,7 +72,8 @@ eight places.
 
 A schema without `format_version` is read as version 1, as a hand-written
 one is. One with a version newer than the thresh reading it is refused,
-naming both.
+naming both. A schema's text is UTF-8 too: a name, value or null that is
+not (JSON can spell a string as an array of bytes) is refused.
 
 A test (`src/format_test.zig`) writes every document with every field it
 can have and holds it to the tables below: a field thresh writes that has
@@ -97,12 +102,12 @@ as the file finishes. A file that could not be read has one too: its
 | `rows` | `integer` | data rows read: not the header, nor a repeat of it |
 | `result` | `string` | `pass`, `fail` (it fails its schema: a problem, a column whose `conformance` is below the threshold, or a smaller fraction of rows read whole than the threshold; exit 1) or `error` (it could not be read, or its dialect could not be settled or was wrong; exit 2) |
 | `dialect` | `object` | when the file was sniffed: how it is written, and how sure thresh is |
-| `dialect.delimiter` | `string` | the delimiter, one byte |
-| `dialect.quote` | `string` or `null` | the quote character, or `null` for none |
+| `dialect.delimiter` | `string` | the delimiter, one byte; one past ASCII is the character of its code point (byte 0xE9 is `é`) |
+| `dialect.quote` | `string` or `null` | the quote character, or `null` for none; one byte, as `delimiter` is |
 | `dialect.escape` | `string` | how a quote is written inside a quoted field: `doubled` or `backslash` |
 | `dialect.newline` | `string` | the line break records end in: `lf`, `crlf` or `cr` |
 | `dialect.header` | `boolean` | row 1 is a header |
-| `dialect.comment` | `string` | when `--comment` was given: the byte that starts a comment line |
+| `dialect.comment` | `string` | when `--comment` was given: the byte that starts a comment line, as `delimiter` is written |
 | `dialect.confidence` | `string` | `high`, `medium` or `low`; low stops the file unless every dimension was pinned |
 | `dialect.score` | `number` | the winning dialect's score, two places |
 | `dialect.runners_up` | `array` | up to two dialects with other delimiters, best first |
@@ -316,7 +321,7 @@ checked.
 | --- | --- | --- |
 | `format_version` | `integer` | 1; left out, read as 1 |
 | `columns` | `array` | the columns |
-| `columns[].name` | `string` | the column's name, as the header has it (ASCII case and surrounding spaces aside) |
+| `columns[].name` | `string` | the column's name, as the header has it (ASCII case and surrounding spaces aside), in UTF-8 as `samples` are |
 | `columns[].type` | `string` | `bool`, `int64`, `float64`, `decimal`, `date`, `timestamp`, `time`, `string`, `enum` or `binary` |
 | `columns[].nullable` | `boolean` | false: a null value is rejected. Written only when false |
 | `columns[].nulls` | `array` | values read as null in this column, besides the schema's |
@@ -383,10 +388,10 @@ fields as read, a short row's padded with empty fields, then:
 
 Through the library (`readArrow` in `src/lib.zig`), the same rows come as
 an Arrow C stream, a struct array a batch: a nullable `utf8` for each
-name of the header above, then `_row` (`int64`), `_errors` (a `list` of
-`struct<column: utf8, code: utf8>`, `column` null for a whole row's
-error, `code` the reason's code in PROBLEMS.md) and `_extra` (a nullable
-`utf8`). Where the CSV pads, the stream has nulls: a short row's missing
-fields, and `_extra` for a row no wider than the header. Every field is
-UTF-8, transcoded from the file's encoding, with U+FFFD for a byte that
-is not UTF-8.
+name of the header above (the name in UTF-8), then `_row` (`int64`),
+`_errors` (a `list` of `struct<column: utf8, code: utf8>`, `column` null
+for a whole row's error, `code` the reason's code in PROBLEMS.md) and
+`_extra` (a nullable `utf8`). Where the CSV pads, the stream has nulls:
+a short row's missing fields, and `_extra` for a row no wider than the
+header. Every field is UTF-8, transcoded from the file's encoding, with
+U+FFFD for a byte that is not UTF-8.

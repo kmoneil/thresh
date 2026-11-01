@@ -285,7 +285,7 @@ fn sniff(m: *Message, path_c: ?[*:0]const u8, o: ?*const Options, json: ?*?[*:0]
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     const s = try lib.sniff(env(), path, try optionsOf(m, arena.allocator(), o));
-    out.* = try jsonOf(report.writeSniffLine, .{ path, s.verdict, if (s.outcome.problem) |*p| p[0..1] else &[_]Problem{} });
+    out.* = try jsonOf(report.writeSniffLine, .{ try types.asUtf8(arena.allocator(), path), s.verdict, if (s.outcome.problem) |*p| p[0..1] else &[_]Problem{} });
 }
 
 export fn thresh_infer(t: ?*Thresh, paths: ?[*]const ?[*:0]const u8, paths_len: usize, o: ?*const Options, json: ?*?[*:0]u8) c_int {
@@ -698,4 +698,22 @@ test "the cancel flag stops a call" {
     var json: ?[*:0]u8 = null;
     try testing.expectEqual(@backingInt(Status.interrupted), thresh_validate(t, lugs, schema, &o, &json));
     try testing.expectEqualStrings("interrupted", std.mem.span(thresh_error(t)));
+}
+
+test "a path that is not UTF-8 is named in UTF-8" {
+    const t = thresh_new().?;
+    defer thresh_free(t);
+    var schema: ?[*:0]u8 = null;
+    try testing.expectEqual(@as(c_int, 0), thresh_columns(t, lugs_columns, &schema));
+    defer thresh_string_free(schema);
+    const path = "test/c/none-\xff.csv";
+    var json: ?[*:0]u8 = null;
+    try testing.expectEqual(@as(c_int, 0), thresh_sniff(t, path, null, &json));
+    for (0..2) |i| {
+        const got = std.mem.span(json.?);
+        try testing.expect(try std.json.validate(testing.allocator, got));
+        try testing.expect(std.mem.find(u8, got, "none-\u{fffd}.csv") != null);
+        thresh_string_free(json);
+        if (i == 0) try testing.expectEqual(@as(c_int, 0), thresh_validate(t, path, schema, null, &json));
+    }
 }

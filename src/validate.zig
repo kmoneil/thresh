@@ -88,8 +88,11 @@ pub const Validator = struct {
     mapping: []?u32,
     /// Fields a record should have: the header's, or the schema's.
     width: usize,
-    /// The header's names, for the reject file.
+    /// The header's names as the file has them, for the reject file and
+    /// to know the header when it comes again.
     names: []const []const u8,
+    /// The same as UTF-8, for the Arrow rejects stream's fields.
+    labels: []const []const u8,
     stats: []ColumnStats,
     /// What each schema column's values are like (stats.zig).
     profiles: []stats_mod.Column,
@@ -146,6 +149,7 @@ pub const Validator = struct {
             .mapping = &.{},
             .width = s.columns.len,
             .names = &.{},
+            .labels = &.{},
             .stats = &.{},
             .profiles = &.{},
             .dates = &.{},
@@ -170,6 +174,7 @@ pub const Validator = struct {
         const ns = try a.alloc([]const u8, s.columns.len);
         for (ns, s.columns) |*n, c| n.* = c.name;
         v.names = ns;
+        v.labels = ns;
         return v;
     }
 
@@ -210,24 +215,10 @@ pub const Validator = struct {
         const by_name = (s.match orelse if (header != null) schema_mod.Match.name else .position) == .name;
         if (by_name and header == null) return v.fail(.match_needs_header);
         const a = v.arena.allocator();
-        if (header) |h| {
-            const names = try a.alloc([]const u8, h.len);
-            for (names, h) |*n, f| n.* = try a.dupe(u8, try v.valueOf(f, data, base));
-            v.names = names[0..schema_mod.headerWidth(names, width)];
-            v.width = v.names.len;
-            v.header_seen = true;
-        } else {
-            v.width = width;
-            // The reject file's header, a name a field: the schema's by
-            // position, and columnN past them.
-            const names = try a.alloc([]const u8, width);
-            for (names, 0..) |*n, i| n.* = if (i < s.columns.len) s.columns[i].name else try std.fmt.allocPrint(a, "column{d}", .{i + 1});
-            v.names = names;
-        }
-
+        try v.nameFields(header, width, data, base);
         if (by_name) {
             // Named as infer names them, so its schema matches its files.
-            const h = try schema_mod.headerNames(a, v.names);
+            const h = try schema_mod.headerNames(a, v.names, v.options.encoding);
             const used = try v.gpa.alloc(bool, h.len);
             defer v.gpa.free(used);
             @memset(used, false);
@@ -475,6 +466,28 @@ pub const Validator = struct {
         const errors = try a.alloc(builders.RowError, v.codes.items.len);
         for (errors, v.codes.items) |*e, c| e.* = .{ .column = if (c.column) |n| try a.dupe(u8, n) else null, .reason = c.reason };
         try v.rejected_lines.append(v.gpa, .{ .row = rec.line, .text = try a.dupe(u8, raw[0..cut]), .len = raw.len, .errors = errors });
+    }
+
+    /// The names of the fields, as the reject file and stream head them:
+    /// the header's, or the schema's by position and columnN past them.
+    fn nameFields(v: *Validator, header: ?[]const Field, width: usize, data: []const u8, base: u64) Allocator.Error!void {
+        const a = v.arena.allocator();
+        const h = header orelse {
+            v.width = width;
+            const names = try a.alloc([]const u8, width);
+            for (names, 0..) |*n, i| n.* = if (i < v.schema.columns.len) v.schema.columns[i].name else try std.fmt.allocPrint(a, "column{d}", .{i + 1});
+            v.names = names;
+            v.labels = names;
+            return;
+        };
+        const names = try a.alloc([]const u8, h.len);
+        for (names, h) |*n, f| n.* = try a.dupe(u8, try v.valueOf(f, data, base));
+        v.names = names[0..schema_mod.headerWidth(names, width)];
+        v.width = v.names.len;
+        v.header_seen = true;
+        const labels = try a.alloc([]const u8, v.names.len);
+        for (labels, v.names) |*l, n| l.* = try types.utf8Of(a, n, v.options.encoding);
+        v.labels = labels;
     }
 
     /// Whether fields are the header's names again, trimmed and in any

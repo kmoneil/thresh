@@ -17,7 +17,8 @@ const Problem = @import("problem.zig").Problem;
 const infer = @import("infer.zig");
 const stats = @import("stats.zig");
 const shapes_mod = @import("shapes.zig");
-const Encoding = @import("types.zig").Encoding;
+const types = @import("types.zig");
+const Encoding = types.Encoding;
 
 pub const Env = struct {
     io: Io,
@@ -125,7 +126,8 @@ pub const Reader = struct {
     /// Opens path and sniffs it, ready to read against s. arena holds the
     /// schema's names for the sniffer, and what the reader keeps of nulls.
     pub fn open(env: Env, arena: Allocator, path: []const u8, s: *const Schema, nulls: []const []const u8, threshold: f64, opts: Options) !Opened {
-        var out: report.Outcome = .{ .file = path, .result = .@"error" };
+        // What is said of the file names it in UTF-8; path still opens it.
+        var out: report.Outcome = .{ .file = try types.asUtf8(arena, path), .result = .@"error" };
         const names = try arena.alloc([]const u8, s.columns.len);
         for (names, s.columns) |*n, c| n.* = c.name;
         var sniffed = (try openSniffed(env, opts, path, names, &out)) orelse return .{ .stopped = .{ .outcome = out } };
@@ -341,7 +343,7 @@ pub const Inferred = struct {
 pub fn inferFile(env: Env, opts: Options, nulls: []const []const u8, path: []const u8, arena: Allocator) !Inferred {
     const io = env.io;
     const gpa = env.gpa;
-    var out: report.Outcome = .{ .file = path, .result = .@"error" };
+    var out: report.Outcome = .{ .file = try types.asUtf8(arena, path), .result = .@"error" };
     var sniffed = (try openSniffed(env, opts, path, null, &out)) orelse return .{ .outcome = out };
     defer sniffed.in.close(io, gpa);
     const in = &sniffed.in;

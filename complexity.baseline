@@ -23,13 +23,12 @@ src/records.zig	Scanner.classify	19	28	33	3	3	3
 src/records.zig	Scanner.next	14	26	17	3	1	1
 src/reference.zig	Parser.next	16	29	28	4	1	1
 src/render.zig	validateNamed	19	22	47	2	4	4
-src/schema.zig	check	18	35	17	3	2	2
 src/schema.zig	parseInline	14	28	31	3	2	2
 src/stats.zig	writeOrdered	21	18	28	2	3	3
 src/types.zig	Reason.text	21	1	22	1	0	0
 src/types.zig	read	26	27	20	3	3	3
 src/types/float.zig	valid	22	27	20	2	1	1
 src/types/time.zig	parse	19	19	20	2	1	1
-src/validate.zig	Validator.columns	24	53	50	4	4	4
+src/validate.zig	Validator.columns	20	44	40	4	4	4
 src/validate.zig	Validator.rejectRow	18	26	30	3	4	4
 src/worker.zig	inferFile	23	42	85	4	4	4

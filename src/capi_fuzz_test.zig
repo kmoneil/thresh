@@ -64,28 +64,13 @@ fn optionsOf(smith: *Smith, cancel: *const volatile u8) h.thresh_options {
     return o;
 }
 
-/// Until t75, JSON may carry a file's bytes that are not UTF-8: checked
-/// with every byte past ASCII read as 'x'.
-const strict_utf8 = false;
-
-/// s as the checks read it: as it is, or under strict_utf8 false, with
-/// every byte past ASCII an 'x'.
-fn checkable(gpa: Allocator, s: []const u8) ![]u8 {
-    const out = try gpa.dupe(u8, s);
-    if (!strict_utf8) for (out) |*c| if (c.* >= 0x80) {
-        c.* = 'x';
-    };
-    return out;
-}
-
 /// A status as the header promises it: a known one, and out what it says.
 fn expectKept(t: ?*h.thresh, status: h.thresh_status, json: [*c]u8) !void {
     if (status > h.THRESH_ERROR_INTERRUPTED) return error.UnknownStatus;
     if (status == h.THRESH_OK) {
+        // std.json refuses what is not UTF-8 too.
         const s = std.mem.span(json orelse return error.OkWithoutJson);
-        const c = try checkable(testing.allocator, s);
-        defer testing.allocator.free(c);
-        if (!try std.json.validate(testing.allocator, c)) {
+        if (!try std.json.validate(testing.allocator, s)) {
             std.debug.print("not JSON: {f}\n", .{std.zig.fmtString(s)});
             return error.NotJson;
         }
@@ -124,9 +109,7 @@ fn inferred(gpa: Allocator, c: Call) !?[:0]u8 {
     defer if (status == h.THRESH_OK) h.thresh_string_free(json);
     try expectKept(c.t, status, json);
     if (status != h.THRESH_OK) return null;
-    const text = try checkable(gpa, std.mem.span(json));
-    defer gpa.free(text);
-    const parsed = try std.json.parseFromSlice(std.json.Value, gpa, text, .{});
+    const parsed = try std.json.parseFromSlice(std.json.Value, gpa, std.mem.span(json), .{});
     defer parsed.deinit();
     const schema = parsed.value.object.get("schema") orelse return null;
     if (schema == .null) return null;
@@ -154,17 +137,39 @@ fn schemaFor(gpa: Allocator, c: Call, text: []const u8, choice: u8) !?[:0]u8 {
     }
 }
 
-/// Every batch of a stream, then its end or its error, released.
+/// Every batch of a stream, then its end or its error, released; the
+/// names and strings in them UTF-8, as Arrow has them.
 fn drain(s: *h.struct_ArrowArrayStream) !void {
     defer s.release.?(s);
     var schema: h.struct_ArrowSchema = undefined;
     if (s.get_schema.?(s, &schema) != 0) return expectLastError(s);
-    schema.release.?(&schema);
+    defer schema.release.?(&schema);
+    try expectUtf8Names(&schema);
     while (true) {
         var a: h.struct_ArrowArray = undefined;
         if (s.get_next.?(s, &a) != 0) return expectLastError(s);
         const release = a.release orelse return;
-        release(&a);
+        defer release(&a);
+        try expectUtf8Strings(&schema, &a);
+    }
+}
+
+/// The schema's field names, and its children's.
+fn expectUtf8Names(schema: *const h.struct_ArrowSchema) !void {
+    if (schema.name != null and !std.unicode.utf8ValidateSlice(std.mem.span(schema.name))) return error.NameNotUtf8;
+    for (0..@intCast(schema.n_children)) |i| try expectUtf8Names(schema.children[i]);
+}
+
+/// The values of each utf8 ("u") column of a batch.
+fn expectUtf8Strings(schema: *const h.struct_ArrowSchema, a: *const h.struct_ArrowArray) !void {
+    for (0..@intCast(a.n_children)) |i| {
+        if (!std.mem.eql(u8, std.mem.span(schema.children[i].*.format), "u")) continue;
+        const c = a.children[i].*;
+        const offsets: [*]const i32 = @ptrCast(@alignCast(c.buffers[1]));
+        const data: [*]const u8 = @ptrCast(c.buffers[2]);
+        const first: usize = @intCast(offsets[@intCast(c.offset)]);
+        const last: usize = @intCast(offsets[@intCast(c.offset + c.length)]);
+        if (!std.unicode.utf8ValidateSlice(data[first..last])) return error.StringNotUtf8;
     }
 }
 
@@ -307,6 +312,13 @@ const found = [_]Seed{
     // A byte order mark longer than sample_bytes: sniff sliced past its
     // sample's end.
     .{ .file = "\xef\xbb\xbfcaf\xe9,l\x92\x9cuvre\n1,2\n", .text = "lug_id:int64", .choices = &.{ 0, 0, 0, 0, 0, 0x2a, 0, 0 } },
+    // A cp1252 header and values read as latin1 and as cp1252 (sizes 2
+    // and 3): their names and samples written as UTF-8 (t75).
+    .{ .file = files[4], .text = "", .choices = &.{ 0, 0, 0, 0, 0, 2, 0, 0 } },
+    .{ .file = files[4], .text = "", .choices = &.{ 0, 0, 0, 0, 0, 3, 0, 0x04 } },
+    // A column name that is not UTF-8, given in the inline columns: it
+    // became an Arrow field name (t75).
+    .{ .file = files[0], .text = "R\xcbb\xa7$\x1ea\x19?}K\x89Y\xa0\xb0.\xeaDlug_id:int64,cultivar:string,lug_kg:decimal(5,2)", .choices = &.{ 0x80, 0, 0, '(', 0x2c, 0, 0x10, 0x09 } },
     // Forty-six digits in a decimal(38, 38): decimal.parse overflowed its
     // i128 before it checked the precision.
     .{ .file = files[5], .text = texts[3], .choices = &.{ 0x20, 0xb7, 0, '_', 0x20, 0, 0, 0x0a } },

@@ -21,6 +21,7 @@ const arrow_c = @import("write/arrow_c.zig");
 const builders = @import("builders.zig");
 const report = @import("report.zig");
 const schema_mod = @import("schema.zig");
+const types = @import("types.zig");
 const worker = @import("worker.zig");
 const Problem = @import("problem.zig").Problem;
 
@@ -133,7 +134,7 @@ pub const Export = struct {
         switch (try worker.Reader.openFor(own, a, try a.dupe(u8, path), &e.schema, opts)) {
             .stopped => |st| {
                 var out = st;
-                out.outcome.file = path;
+                out.outcome.file = try types.asUtf8(arena, path);
                 if (st.outcome.problem) |p| out.outcome.problem = try p.dupe(arena);
                 e.arena.deinit();
                 gpa.destroy(e);
@@ -277,7 +278,7 @@ fn getSchema(stream: *arrow_c.ArrayStream, out: *arrow_c.Schema) callconv(.c) c_
                 if (e.failure) |f| return f.code;
                 e.pump() catch |err| return e.fail(err);
             }
-            arrow_c.exportRejectsSchema(e.gpa, e.reader.v.names, out) catch |err| return e.fail(err);
+            arrow_c.exportRejectsSchema(e.gpa, e.reader.v.labels, out) catch |err| return e.fail(err);
         },
     }
     return 0;

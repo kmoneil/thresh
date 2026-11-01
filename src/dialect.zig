@@ -55,9 +55,9 @@ pub const Dialect = struct {
     pub fn jsonStringify(d: Dialect, s: *std.json.Stringify) std.json.Stringify.Error!void {
         try s.beginObject();
         try s.objectField("delimiter");
-        try s.write(@as([]const u8, &.{d.delimiter}));
+        try jsonByte(s, d.delimiter);
         try s.objectField("quote");
-        if (d.quote) |q| try s.write(@as([]const u8, &.{q})) else try s.write(null);
+        if (d.quote) |q| try jsonByte(s, q) else try s.write(null);
         try s.objectField("escape");
         try s.write(@tagName(d.escape));
         try s.objectField("newline");
@@ -66,7 +66,7 @@ pub const Dialect = struct {
         try s.write(d.header);
         if (d.comment) |c| {
             try s.objectField("comment");
-            try s.write(@as([]const u8, &.{c}));
+            try jsonByte(s, c);
         }
         try s.endObject();
     }
@@ -96,6 +96,13 @@ pub const Pins = struct {
 
 /// A byte as `--delimiter` reads it back: itself when printable, `\t` for a
 /// tab, `\xHH` otherwise (space is printable, so `--delimiter ' '`).
+/// A dialect byte as a JSON string: the character whose code point it is,
+/// so one past ASCII (a caller may pin any byte) is still one character.
+fn jsonByte(s: *std.json.Stringify, b: u8) std.json.Stringify.Error!void {
+    if (b < 0x80) return s.write(@as([]const u8, &.{b}));
+    return s.write(@as([]const u8, &.{ 0xc0 | b >> 6, 0x80 | (b & 0x3f) }));
+}
+
 fn writeByte(w: *Io.Writer, c: u8) Io.Writer.Error!void {
     switch (c) {
         '\t' => try w.writeAll("\\t"),
@@ -189,9 +196,9 @@ pub const Verdict = struct {
         const d = v.dialect;
         try s.beginObject();
         try s.objectField("delimiter");
-        try s.write(@as([]const u8, &.{d.delimiter}));
+        try jsonByte(s, d.delimiter);
         try s.objectField("quote");
-        if (d.quote) |q| try s.write(@as([]const u8, &.{q})) else try s.write(null);
+        if (d.quote) |q| try jsonByte(s, q) else try s.write(null);
         try s.objectField("escape");
         try s.write(@tagName(d.escape));
         try s.objectField("newline");
@@ -200,7 +207,7 @@ pub const Verdict = struct {
         try s.write(d.header);
         if (d.comment) |c| {
             try s.objectField("comment");
-            try s.write(@as([]const u8, &.{c}));
+            try jsonByte(s, c);
         }
         try s.objectField("confidence");
         try s.write(@tagName(v.confidence));
@@ -211,7 +218,7 @@ pub const Verdict = struct {
         for (v.runners_up) |r| if (r) |runner| {
             try s.beginObject();
             try s.objectField("delimiter");
-            try s.write(@as([]const u8, &.{runner.delimiter}));
+            try jsonByte(s, runner.delimiter);
             try s.objectField("score");
             try s.print("{d:.2}", .{runner.score});
             try s.endObject();
@@ -951,6 +958,14 @@ test "jsonStringify matches the report's dialect object" {
     try std.json.Stringify.value(d, .{}, &w);
     try std.testing.expectEqualStrings(
         \\{"delimiter":"|","quote":null,"escape":"doubled","newline":"lf","header":false}
+    , w.buffered());
+    // A byte past ASCII is the character of its code point, not a number.
+    d.delimiter = 0xe9;
+    d.quote = 0xb7;
+    w = .fixed(&buf);
+    try std.json.Stringify.value(d, .{}, &w);
+    try std.testing.expectEqualStrings(
+        \\{"delimiter":"é","quote":"·","escape":"doubled","newline":"lf","header":false}
     , w.buffered());
 }
 

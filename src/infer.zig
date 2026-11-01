@@ -117,7 +117,10 @@ pub const ColumnState = struct {
     /// in: worker.inferFile refuses the file, naming the encodings to try.
     invalid_utf8: bool = false,
     invalid_row: u64 = 0,
+    /// Values as the file has them, in its encoding: columnsOf writes them
+    /// as UTF-8.
     samples: [3]?[]const u8 = .{ null, null, null },
+    encoding: types.Encoding = .utf8,
     widened_by: ?[]const u8 = null,
     /// The spellings of an empty date the column has held, at most two (a
     /// date's and a timestamp's): its nulls if it ends one, values if not.
@@ -181,7 +184,7 @@ pub const Inferrer = struct {
     pub fn header(f: *Inferrer, names: ?[]const []const u8, width: usize) Allocator.Error!void {
         if (names) |ns| {
             f.named = true;
-            for (try schema.headerNames(f.arena, ns)) |name| try f.addColumn(name);
+            for (try schema.headerNames(f.arena, ns, f.options.encoding)) |name| try f.addColumn(name);
             return;
         }
         for (0..width) |i| try f.addColumn(try std.fmt.allocPrint(f.arena, "column{d}", .{i + 1}));
@@ -190,7 +193,7 @@ pub const Inferrer = struct {
     fn addColumn(f: *Inferrer, name: []const u8) Allocator.Error!void {
         const s = try f.arena.create(stats.Column);
         s.* = try .init(f.arena, f.options.encoding);
-        try f.columns.append(f.arena, .{ .name = name, .stats = s });
+        try f.columns.append(f.arena, .{ .name = name, .stats = s, .encoding = f.options.encoding });
     }
 
     /// One record's values, in the header's order. A record wider than a
@@ -291,9 +294,19 @@ pub const Inferrer = struct {
                 if (std.mem.eql(u8, have, v)) return;
                 continue;
             }
-            s.* = try f.arena.dupe(u8, v[0..@min(v.len, 64)]);
+            s.* = try f.arena.dupe(u8, cut(v, 64, f.options.encoding));
             return;
         }
+    }
+
+    /// v's first max bytes, a UTF-8 character not cut in two.
+    fn cut(v: []const u8, max: usize, encoding: types.Encoding) []const u8 {
+        if (v.len <= max) return v;
+        var end = max;
+        if (encoding == .utf8) while (end + 3 > max and v[end] & 0xc0 == 0x80) {
+            end -= 1;
+        };
+        return v[0..end];
     }
 
     /// The type the column moves to for v, recording what that type keeps.
@@ -593,7 +606,7 @@ pub fn columnsOf(arena: Allocator, states: []const ColumnState) Allocator.Error!
     const out = try arena.alloc(schema.Column, states.len);
     for (out, states) |*o, s| {
         var samples: std.ArrayList([]const u8) = .empty;
-        for (s.samples) |x| if (x) |v| try samples.append(arena, v);
+        for (s.samples) |x| if (x) |v| try samples.append(arena, try types.utf8Of(arena, v, s.encoding));
         var blanks: std.ArrayList([]const u8) = .empty;
         for (s.blanks) |x| if (x) |v| try blanks.append(arena, v);
         const kind = finalKind(s);
@@ -698,6 +711,16 @@ fn join(a: *const ColumnState, b: ColumnState) Kind {
 }
 
 const testing = std.testing;
+
+test "a sample is cut at 64 bytes, a UTF-8 character kept whole" {
+    var buf: [69]u8 = @splat('a');
+    @memcpy(buf[63..], "\u{e9}tude");
+    const v: []const u8 = &buf;
+    try testing.expectEqual(@as(usize, 63), Inferrer.cut(v, 64, .utf8).len);
+    // In Latin-1 every byte is a character.
+    try testing.expectEqual(@as(usize, 64), Inferrer.cut(v, 64, .latin1).len);
+    try testing.expectEqualStrings("abc", Inferrer.cut("abc", 64, .utf8));
+}
 
 test "decimalShape's value is parseFloat's" {
     try testing.expectEqual(@as(?f64, -17.5), decimalShape("-17.50").?.value);
