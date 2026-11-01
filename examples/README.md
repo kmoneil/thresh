@@ -6,7 +6,9 @@ every line of output below is run and compared by `zig build test`
 (`tools/examples_check.py`), so this page is what thresh does today. The
 files are made by `data/make.py`; every name and value in them is made up.
 
-Run them from this directory with `thresh` on your PATH.
+Run them from this directory with `thresh` on your PATH. The same files
+from Python, through threshio, are in [python/](python/): each script
+beside its output, run and compared by threshio's tests.
 
 ## A clean file
 
