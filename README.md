@@ -3,6 +3,7 @@
 [![CI](https://github.com/kmoneil/thresh/actions/workflows/ci.yml/badge.svg)](https://github.com/kmoneil/thresh/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Zig 0.17](https://img.shields.io/badge/zig-0.17.0-f7a41d.svg)](https://ziglang.org/download/)
+[![PyPI](https://img.shields.io/pypi/v/threshio.svg)](https://pypi.org/project/threshio/)
 
 **Know what is in a delimited file before you load it.**
 
@@ -184,7 +185,7 @@ acts on codes rather than parsing sentences. [docs/C.md](docs/C.md) has
 the calls, ownership and threads.
 
 From Python, [threshio](python/README.md) is the library with no other
-dependency (on PyPI from its first release):
+dependency (`pip install threshio`):
 
 ```python
 import pyarrow, threshio
@@ -244,7 +245,8 @@ to a ratchet: none new over a critical limit, none worse than
 Early, and tried on real feeds. Problems are codes as well as sentences,
 the reports have a [versioned format](docs/REPORT.md), and thresh is a
 [C library](docs/C.md) and a [Python package](python/README.md) as well
-as a command. Next: threshio's first release on PyPI.
+as a command. Each release, and what changed in it:
+[CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
