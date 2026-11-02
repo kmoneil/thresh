@@ -12,6 +12,32 @@ and fields. Before 1.0 a breaking change is a minor bump.
 
 Nothing yet.
 
+## [0.2.0] - 2026-11-02
+
+One command for everything thresh knows of a file and every row it set
+aside, with no schema written first.
+
+### Added
+
+- `describe --reject DIR --report DIR`: the rejected rows, whole, with
+  their lines and reasons; the file report, with each column's
+  statistics; and `summary.json`, as `validate` writes them, from the same
+  read as the description. Without `--schema`, describe reads the file
+  against the schema it infers from it.
+- `lib.describeWith` in the Zig library: describe, with each rejected row
+  written as it is read. `lib.describe`, the C library and threshio are
+  unchanged.
+
+### Changed
+
+- `sniff` and `infer` refuse `--reject` and `--report` (exit 3) rather than
+  taking them and writing nothing.
+
+### Fixed
+
+- With `--report`, `summary.json` could give a file whose name is not
+  UTF-8 a garbled name, read from memory the next file had reused.
+
 ## [0.1.0] - 2026-11-02
 
 The first release, for threshio on PyPI.
@@ -32,5 +58,6 @@ The first release, for threshio on PyPI.
   musl), macOS 13 and later, and Windows, on x86-64 and arm64, Python 3.9
   and later; each attached here with SHA256SUMS and build provenance.
 
-[Unreleased]: https://github.com/kmoneil/thresh/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/kmoneil/thresh/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/kmoneil/thresh/releases/tag/v0.2.0
 [0.1.0]: https://github.com/kmoneil/thresh/releases/tag/v0.1.0
