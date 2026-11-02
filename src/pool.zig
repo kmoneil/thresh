@@ -139,8 +139,11 @@ fn one(w: *Worker, task: Task, i: usize, outcomes: []report.Outcome, lines: *Lin
         .result = .@"error",
         .problem = Problem.of(e),
     };
-    // The outcome's strings outlive the file's scratch.
+    // The outcome's strings outlive the file's scratch: its name too, which
+    // a report (report.fileOf) or a UTF-8 copy of a name that is not may
+    // have put there.
     const a = w.keep;
+    o.file = a.dupe(u8, o.file) catch task.files[i];
     if (o.problem) |p| o.problem = p.dupe(a) catch .out_of_memory;
     if (o.written) |p| o.written = a.dupe(u8, p) catch null;
     outcomes[i] = o;

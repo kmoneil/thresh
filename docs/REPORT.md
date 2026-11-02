@@ -4,8 +4,8 @@ thresh writes seven kinds of JSON document for programs to read:
 
 | Document | Written by | Where |
 | --- | --- | --- |
-| [The file report](#the-file-report) | validate, convert, run with `--report DIR` | `DIR/<file>.report.json`, one per input |
-| [summary.json](#summaryjson) | validate, convert, run with `--report DIR` | `DIR/summary.json`, one per run |
+| [The file report](#the-file-report) | validate, convert, run, describe with `--report DIR` | `DIR/<file>.report.json`, one per input |
+| [summary.json](#summaryjson) | validate, convert, run, describe with `--report DIR` | `DIR/summary.json`, one per run |
 | [A file's line](#a-files-line---json) | validate, convert, run with `--json` | stdout, one line per input as it finishes |
 | [A sniff line](#a-sniff-line-sniff---json) | sniff with `--json`; the C library's `thresh_sniff` | stdout, one line per input |
 | [An infer result](#an-infer-result-the-c-library) | the C library's `thresh_infer` | returned, one per call |
@@ -290,6 +290,10 @@ one from the file first, and reads the file twice. It is bounded whatever
 the file's size, each list's cap in `limits`; with `--shapes-only` it
 holds none of the file's values ([Shapes only](#shapes-only)), and under
 it the most common values are shapes, so two of them may read the same.
+With `--report` and `--reject`, `describe` also writes the file report,
+`summary.json` and the [reject file](#reject-files), from the same read
+as the description: every row it set aside, where `rejected_lines` has
+the first twenty.
 
 Its fields are the [file report](#the-file-report)'s, with `columns[].stats`
 always there, but for `timing_ms` and `throughput_mb_s`: a description of
@@ -372,7 +376,8 @@ checked.
 ## Reject files
 
 Not JSON, but read by programs too, and versioned with the reports. With
-`--reject DIR`, each file with a rejected row has `DIR/<file>.rejects.csv`:
+`--reject DIR` (validate, convert, run, describe), each file with a
+rejected row has `DIR/<file>.rejects.csv`:
 RFC 4180 CSV (commas, double quotes, LF). Its header is a name for each
 of the file's fields (the header's; for a file without one, the schema's
 by position, then `column4` and so on past them), then `_row`, `_errors`

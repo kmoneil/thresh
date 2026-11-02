@@ -116,7 +116,9 @@ fn convertFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writ
 
 /// describe: each file's description (lib.describe, files in parallel),
 /// on stdout in the order given: indented, or a line apiece with --json,
-/// which then is all stdout holds. The exit is the worst file's.
+/// which then is all stdout holds; with --reject and --report, its
+/// rejected rows, its report and summary.json, as validate writes them,
+/// from the same read. The exit is the worst file's.
 fn describeFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
     var owned: ?lib.OwnedSchema = if (cfg.schema != null or cfg.columns != null) (try loadSchema(env, cfg, err)) orelse return .usage else null;
     defer if (owned) |*o| o.deinit();
@@ -124,33 +126,48 @@ fn describeFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Wri
         options: lib.Options,
         schema: ?*const lib.Schema,
         files: []const []const u8,
+        names: []const []const u8,
         texts: [][]const u8,
         compact: bool,
+        report_dir: ?[]const u8,
+        reject_dir: ?[]const u8,
 
         fn run(ctx: *anyopaque, w: *pool.Worker, i: usize) anyerror!report.Outcome {
             const c: *@This() = @ptrCast(@alignCast(ctx));
-            const d = try lib.describe(w.env, w.scratch.allocator(), c.files[i], c.schema, c.options);
+            const d = try c.describeOne(w.env, w.scratch.allocator(), i);
             // The text outlives the file: the run's arena.
             var text: Io.Writer.Allocating = .init(w.keep);
             lib.writeDescription(&text.writer, d, c.compact) catch return error.OutOfMemory;
             c.texts[i] = text.written();
             return d.file.outcome;
         }
+
+        /// File i described, its rejected rows and report written as asked.
+        fn describeOne(c: *const @This(), e: lib.Env, a: std.mem.Allocator, i: usize) !lib.Description {
+            var rejects: ?render.Rejects = if (c.reject_dir) |dir| try .create(e.io, e.gpa, .{ .dir = dir, .name = c.names[i] }) else null;
+            defer if (rejects) |*r| r.sink.close(e.io, e.gpa);
+            errdefer if (rejects) |*r| r.discard(e.io, e.gpa);
+            const d = try lib.describeWith(e, a, c.files[i], c.options, .{ .schema = c.schema, .reject = if (rejects) |*r| r.writer() else null });
+            if (rejects) |*r| try r.finish(e.io, e.gpa, if (d.file.read) |rd| rd.rows_rejected else 0);
+            if (c.report_dir) |dir| try render.writeReportFile(e, .{ .dir = dir, .name = c.names[i] }, d.file, true);
+            return d;
+        }
     };
     var ctx: Ctx = .{
         .options = try optionsOf(env.arena, cfg),
         .schema = if (owned) |*o| &o.schema else null,
         .files = cfg.files,
+        .names = try pool.uniqueNames(env.arena, cfg.files),
         .texts = try env.arena.alloc([]const u8, cfg.files.len),
         .compact = cfg.json,
+        .report_dir = cfg.report_dir,
+        .reject_dir = cfg.reject_dir,
     };
     @memset(ctx.texts, "");
     const outcomes = try runPool(env, cfg, .{ .ctx = &ctx, .files = cfg.files, .run = Ctx.run }, out, err, cfg.json);
     if (interrupt.requested()) return interrupted(err);
     for (ctx.texts) |t| try out.writeAll(t);
-    var code: Exit = .ok;
-    for (outcomes) |o| code = code.worst(@fromBackingInt(o.result.exitCode()));
-    return code;
+    return finishRun(env, cfg, outcomes, err);
 }
 
 /// How each file is read, from the flags; Ctrl-C (interrupt) cancels.
@@ -574,6 +591,7 @@ test "--shapes-only: none of a file's values leaves thresh; --shape-names, none 
         &.{ "sniff", file, "--json" },
         &.{ "describe", file },
         &.{ "describe", file, "--columns", columns, "--json" },
+        &.{ "describe", file, "--report", reports },
     };
     for (runs) |args| {
         // Without the flags the markers are there: the test sees them.
@@ -621,6 +639,56 @@ test "describe --json: stdout is a description a line, one a file, in their orde
         try t.expectEqualStrings(f, d.object.get("file").?.string);
     }
     try t.expectEqual(@as(?[]const u8, null), lines.next());
+}
+
+test "describe --reject --report: every rejected row, the report and summary.json, no schema given" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Whole rows enough that the dialect is settled, then a short row and
+    // a wide one: lines 22 and 23.
+    var data: Io.Writer.Allocating = .init(t.allocator);
+    defer data.deinit();
+    try data.writer.writeAll("lug_id,cultivar,lug_kg\n");
+    for (0..20) |i| try data.writer.print("{d},Brookwood,1{d}.5\n", .{ i + 1, i % 10 });
+    try data.writer.writeAll("21,Ember Pip\n22,Brookwood,14.5,ladder 2\n");
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "ragged.csv", .data = data.written() });
+    const dir = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    const ragged = try std.fmt.allocPrint(a, "{s}/ragged.csv", .{dir});
+    const rejects = try std.fmt.allocPrint(a, "{s}/rejects", .{dir});
+    const reports = try std.fmt.allocPrint(a, "{s}/reports", .{dir});
+    var out: Io.Writer.Allocating = .init(t.allocator);
+    defer out.deinit();
+    var err: Io.Writer.Allocating = .init(t.allocator);
+    defer err.deinit();
+    const args = [_][]const u8{ "describe", ragged, "test/cli/orders.csv", "--reject", rejects, "--report", reports, "--json" };
+    try t.expectEqual(Exit.failed, try execute(.{ .io = t.io, .gpa = t.allocator, .arena = a }, &args, &out.writer, &err.writer));
+
+    // Both rows, whole, from the one read describe made of the file.
+    const rows = try tmp.dir.readFileAlloc(t.io, "rejects/ragged.csv.rejects.csv", a, .limited(1 << 16));
+    try t.expectEqualStrings("lug_id,cultivar,lug_kg,_row,_errors,_extra\n" ++
+        "21,Ember Pip,,22,*:a different number of fields,\n" ++
+        "22,Brookwood,14.5,23,*:a different number of fields,ladder 2\n", rows);
+    // A file with no rejected row has no reject file.
+    try t.expectError(error.FileNotFound, tmp.dir.access(t.io, "rejects/orders.csv.rejects.csv", .{}));
+
+    // Its report says what the description does, and the summary counts both.
+    const said = try std.json.parseFromSliceLeaky(std.json.Value, a, std.mem.sliceTo(out.written(), '\n'), .{});
+    const rep = try std.json.parseFromSliceLeaky(std.json.Value, a, try tmp.dir.readFileAlloc(t.io, "reports/ragged.csv.report.json", a, .limited(1 << 20)), .{});
+    try t.expectEqualStrings("fail", rep.object.get("result").?.string);
+    try t.expectEqualStrings(said.object.get("result").?.string, rep.object.get("result").?.string);
+    for ([_][]const u8{ "rows", "rows_rejected" }) |k|
+        try t.expectEqual(said.object.get(k).?.integer, rep.object.get(k).?.integer);
+    try t.expectEqual(@as(i64, 2), rep.object.get("rows_rejected").?.integer);
+    try t.expect(rep.object.get("columns").?.array.items[0].object.get("stats") != null);
+    _ = try tmp.dir.access(t.io, "reports/orders.csv.report.json", .{});
+    const summary = try std.json.parseFromSliceLeaky(std.json.Value, a, try tmp.dir.readFileAlloc(t.io, "reports/summary.json", a, .limited(1 << 20)), .{});
+    try t.expectEqual(@as(i64, 1), summary.object.get("passed").?.integer);
+    try t.expectEqual(@as(i64, 1), summary.object.get("failed").?.integer);
+    try t.expectEqual(@as(i64, 1), summary.object.get("exit").?.integer);
 }
 
 test "worst keeps the higher status" {

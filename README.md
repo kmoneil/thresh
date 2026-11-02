@@ -116,6 +116,7 @@ thresh validate <file>... --schema s.json       report, and rejected rows with t
 thresh convert  <file>... --to csv|arrow        writes output; infers types if no --schema
 thresh run      <file>... --schema s.json --to arrow --out dir/
 thresh describe <file>... [--schema s.json]     everything about each file in one JSON document
+                [--reject dir/] [--report dir/]  and its rejected rows and report, no schema needed
 ```
 
 Files run in parallel, one per worker (`--jobs`, default one per CPU).
@@ -126,6 +127,9 @@ every option.
 `summary.json`; `--json` prints one object per file; `--reject DIR`
 writes each failing row with its source line (`_row`), its errors
 (`_errors`) and a wide row's fields past the header (`_extra`).
+`describe` writes both too, so one command, with no schema written
+first, gives everything thresh knows of a file and every row it set
+aside.
 [docs/REPORT.md](docs/REPORT.md) describes every field and
 what may change between versions; [docs/PROBLEMS.md](docs/PROBLEMS.md)
 lists every code. `--shapes-only` writes every value in them as its shape

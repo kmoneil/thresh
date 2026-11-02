@@ -16,7 +16,8 @@ pub const usage =
     \\  convert    write each file --to csv or arrow; infers types with no --schema
     \\  run        validate and convert in one pass (--schema, --to, --out)
     \\  describe   everything about each file in one JSON document: read against
-    \\             --schema, or one inferred from it; with --shapes-only, no data
+    \\             --schema, or one inferred from it; with --shapes-only, no data;
+    \\             --report and --reject as validate writes them
     \\
     \\Dialect (each pins one dimension; the sniffer scores the rest):
     \\      --delimiter C      one ASCII byte, tab, \t or \xHH
@@ -42,7 +43,8 @@ pub const usage =
     \\      --pad              fill a short row's missing fields with null
     \\      --truncate         drop a long row's extra fields
     \\      --report DIR       write <file>.report.json per input and summary.json
-    \\      --reject DIR       write failing rows to <file>.rejects.csv
+    \\                         (validate, convert, run, describe)
+    \\      --reject DIR       write failing rows to <file>.rejects.csv (the same)
     \\      --sample N         infer: read only the first N rows
     \\
     \\Output (convert, run):
@@ -189,6 +191,8 @@ const Flag = enum {
         return switch (f) {
             .sample => &.{ .infer, .describe },
             .out => &.{ .infer, .convert, .run },
+            // What reads a file against a schema has rows to reject and a report.
+            .report, .reject => &.{ .validate, .convert, .run, .describe },
             .to, .out_delimiter, .out_newline, .normalize_dates, .arrow_file => &.{ .convert, .run },
             else => null,
         };
@@ -596,6 +600,9 @@ test "usage errors" {
     try expectUsage(&.{ "validate", "a", "--columns", "id:int64", "--reject", "r", "--shape-names" }, "--reject writes the rows themselves; --shapes-only leaves them out");
     try expectUsage(&.{ "sniff", "a", "--threshold", "1.5" }, "--threshold 1.5: a fraction from 0 to 1");
     try expectUsage(&.{ "infer", "a", "--out-newline", "crlf" }, "--out-newline is not an option of infer");
+    try expectUsage(&.{ "sniff", "a", "--reject", "r" }, "--reject is not an option of sniff");
+    try expectUsage(&.{ "infer", "a", "--report", "r" }, "--report is not an option of infer");
+    try expectUsage(&.{ "describe", "a", "--reject", "r", "--shapes-only" }, "--reject writes the rows themselves; --shapes-only leaves them out");
     try expectUsage(&.{ "convert", "a", "--out-newline", "cr" }, "--out-newline cr: lf or crlf");
 }
 
