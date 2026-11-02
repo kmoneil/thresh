@@ -509,6 +509,37 @@ fail 30 rows; 9,a,9-9-9,a9,9.9,a a,a,a 9
   remark string a
 ```
 
+The same command writes the rows it rejected (`--reject`), the report
+and `summary.json` (`--report`), as `validate` does, from the same read:
+one command, and no schema to write first. With none given, the schema
+is the file's own, so a value that does not fit its column turns the
+column to text rather than failing its row, and only the row of another
+width is set aside:
+
+```console
+$ thresh describe data/harvest_dirty.csv --reject described --report described > harvest_dirty.json
+fail  data/harvest_dirty.csv  30 rows  1 rejected  1 MB/s
+[exit 1]
+$ ls described
+harvest_dirty.csv.rejects.csv
+harvest_dirty.csv.report.json
+summary.json
+```
+
+Given the schema of a clean delivery, every bad row is:
+
+```console
+$ thresh describe data/harvest_dirty.csv --schema harvest.schema.json --reject described --report described > harvest_dirty.json
+fail  data/harvest_dirty.csv  30 rows  4 rejected  1 MB/s
+[exit 1]
+$ cat described/harvest_dirty.csv.rejects.csv
+lug_id,picked_on,orchard_row,lug_kg,cultivar,bruised,remark,_row,_errors,_extra
+4,2026-09-05,R05,"18,5",Marrowdew,false,,5,lug_kg:not a decimal,
+8,2026-09-31,R09,19.2,Brookwood,false,,9,picked_on:not in the column's format,
+12,2026-09-13,R01,18.7,Marrowdew,maybe,,13,bruised:not a bool,
+21,extra,2026-09-22,R10,14.5,Ember Pip,false,22,*:a different number of fields,ladder 2
+```
+
 ## Commas nobody quoted
 
 A free-text column holds commas that were never quoted, so its rows have

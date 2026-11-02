@@ -177,15 +177,10 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
     };
     defer r.deinit();
 
-    var reject: ?Sink = if (plan.reject_dir) |dir| try .create(io, gpa, dir, name, ".rejects.csv") else null;
-    defer if (reject) |*s| s.close(io, gpa);
-    // Interrupted or failed: no partial reject file left behind either,
-    // as far as deleting it can; the error being returned is the news.
-    errdefer if (reject) |*s| {
-        s.close(io, gpa);
-        removeSink(io, plan.reject_dir.?, name, ".rejects.csv") catch {};
-    };
-    if (reject) |*s| r.v.reject = &s.writer.interface;
+    var reject: ?Rejects = if (plan.reject_dir) |dir| try .create(io, gpa, .{ .dir = dir, .name = name }) else null;
+    defer if (reject) |*s| s.sink.close(io, gpa);
+    errdefer if (reject) |*s| s.discard(io, gpa);
+    if (reject) |*s| r.v.reject = s.writer();
 
     var output: ?Output = if (plan.output) |op| try .create(env, arena, op, opts.encoding, plan.schema, name) else null;
     var output_done = false;
@@ -217,14 +212,7 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
     }
     details.verdict = r.verdict;
     details.validator = &r.v;
-    if (reject) |*s| {
-        try s.writer.interface.flush();
-        if (r.v.rejected == 0) {
-            s.close(io, gpa);
-            reject = null;
-            try removeSink(io, plan.reject_dir.?, name, ".rejects.csv");
-        }
-    }
+    if (reject) |*s| try s.finish(io, gpa, r.v.rejected);
     try writeReport(env, plan, arena, out, name, details);
     // The lines and summary.json say what the report does.
     return shapes.outcome(arena, out, opts.shapes);
@@ -232,11 +220,51 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
 
 fn writeReport(env: Env, plan: Plan, arena: Allocator, out: report.Outcome, name: []const u8, details: report.Details) !void {
     const dir = plan.report_dir orelse return;
-    var sink: Sink = try .create(env.io, env.gpa, dir, name, ".report.json");
+    try writeReportFile(env, .{ .dir = dir, .name = name }, try report.fileOf(arena, out, details), plan.timing);
+}
+
+/// Where a file's report or reject file goes: the directory, and the
+/// file's name in the run (pool.uniqueNames).
+pub const Place = struct { dir: []const u8, name: []const u8 };
+
+/// f as DIR/<name>.report.json (--report).
+pub fn writeReportFile(env: Env, at: Place, f: report.File, timing: bool) !void {
+    var sink: Sink = try .create(env.io, env.gpa, at.dir, at.name, ".report.json");
     defer sink.close(env.io, env.gpa);
-    try report.writeFileReport(&sink.writer.interface, try report.fileOf(arena, out, details), plan.timing);
+    try report.writeFileReport(&sink.writer.interface, f, timing);
     try sink.writer.interface.flush();
 }
+
+/// A file's rejected rows, DIR/<name>.rejects.csv (--reject): kept when a
+/// row went into it, and only then.
+pub const Rejects = struct {
+    sink: Sink,
+    at: Place,
+
+    pub fn create(io: Io, gpa: Allocator, at: Place) !Rejects {
+        return .{ .sink = try .create(io, gpa, at.dir, at.name, ".rejects.csv"), .at = at };
+    }
+
+    /// Where the validator writes the rows.
+    pub fn writer(r: *Rejects) *Io.Writer {
+        return &r.sink.writer.interface;
+    }
+
+    /// Flushes the rows and closes the file; with none rejected, removes it.
+    pub fn finish(r: *Rejects, io: Io, gpa: Allocator, rejected: u64) !void {
+        try r.sink.writer.interface.flush();
+        r.sink.close(io, gpa);
+        if (rejected == 0) try removeSink(io, r.at.dir, r.at.name, ".rejects.csv");
+    }
+
+    /// Interrupted or failed: closed and removed, as far as removing it
+    /// can, so no partial file is left; the error on its way out is the
+    /// news, not this one's.
+    pub fn discard(r: *Rejects, io: Io, gpa: Allocator) void {
+        r.sink.close(io, gpa);
+        removeSink(io, r.at.dir, r.at.name, ".rejects.csv") catch {};
+    }
+};
 
 /// An output file in dir named for the input: its base name and ext. The
 /// buffer is on the heap, so a Sink copies safely; one inside the struct

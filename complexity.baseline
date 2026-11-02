@@ -22,7 +22,7 @@ src/problem.zig	Problem.format	44	23	45	3	1	1
 src/records.zig	Scanner.classify	19	28	33	3	3	3
 src/records.zig	Scanner.next	14	26	17	3	1	1
 src/reference.zig	Parser.next	16	29	28	4	1	1
-src/render.zig	validateNamed	19	22	47	2	4	4
+src/render.zig	validateNamed	18	20	40	2	4	4
 src/schema.zig	parseInline	14	28	31	3	2	2
 src/stats.zig	writeOrdered	21	18	28	2	3	3
 src/types.zig	Reason.text	21	1	22	1	0	0

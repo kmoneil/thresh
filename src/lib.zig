@@ -205,9 +205,25 @@ pub const Description = struct {
 /// with each column's statistics. A file that cannot be read is its
 /// report's error, not an error returned.
 pub fn describe(env: Env, arena: Allocator, path: []const u8, s: ?*const Schema, o: Options) !Description {
+    return describeWith(env, arena, path, o, .{ .schema = s });
+}
+
+/// What describeWith reads a file against, and where its rejected rows go.
+pub const Describing = struct {
+    /// The schema to read against; null infers one from the file.
+    schema: ?*const Schema = null,
+    /// Each rejected row as it is read, as a reject file has it
+    /// (docs/REPORT.md, "Reject files"): the rows the description's
+    /// rejected_lines begin, every one of them.
+    reject: ?*Io.Writer = null,
+};
+
+/// describe, against with.schema, its rejected rows written to with.reject.
+pub fn describeWith(env: Env, arena: Allocator, path: []const u8, o: Options, with: Describing) !Description {
     var opts = o;
     opts.stats = true;
-    if (s) |given| return describeAgainst(env, arena, path, given, opts, .{ .schema = try shapes.schemaOf(arena, given.*, opts.shapes), .inferred = false });
+    const reject = with.reject;
+    if (with.schema) |given| return describeAgainst(env, arena, path, given, opts, .{ .schema = try shapes.schemaOf(arena, given.*, opts.shapes), .inferred = false, .reject = reject });
     const columns = try inferFile(env, arena, path, opts);
     const merged = try merge(arena, &.{columns}, opts);
     const said = try shaped(arena, &.{columns}, merged, opts.shapes);
@@ -222,7 +238,7 @@ pub fn describe(env: Env, arena: Allocator, path: []const u8, s: ?*const Schema,
     };
     // Read with the schema as inferred; said as shapes, when asked, and
     // without the statistics infer gives it: the report's columns have them.
-    return describeAgainst(env, arena, path, &sc, opts, .{ .schema = try withoutStats(arena, said.merged.schema.?), .inferred = true, .notes = notes });
+    return describeAgainst(env, arena, path, &sc, opts, .{ .schema = try withoutStats(arena, said.merged.schema.?), .inferred = true, .notes = notes, .reject = reject });
 }
 
 /// s with no column's statistics or samples, for a document that has its
@@ -238,14 +254,16 @@ fn withoutStats(arena: Allocator, s: Schema) Allocator.Error!Schema {
     return out;
 }
 
-/// The file at path validated against s, its report put into d.
-fn describeAgainst(env: Env, arena: Allocator, path: []const u8, s: *const Schema, o: Options, d: struct { schema: ?Schema, inferred: bool, notes: []const Problem = &.{} }) !Description {
+/// The file at path validated against s, its report put into d, and its
+/// rejected rows written to d.reject.
+fn describeAgainst(env: Env, arena: Allocator, path: []const u8, s: *const Schema, o: Options, d: struct { schema: ?Schema, inferred: bool, notes: []const Problem = &.{}, reject: ?*Io.Writer = null }) !Description {
     var out: Description = .{ .file = undefined, .schema = d.schema, .inferred = d.inferred, .notes = d.notes, .encoding = @tagName(o.encoding) };
     var opened = try read(env, arena, path, s, o, null);
     switch (opened) {
         .stopped => |st| out.file = try report.fileOf(arena, st.outcome, .{ .verdict = st.verdict, .encoding = o.encoding, .shapes = o.shapes }),
         .reader => |*r| {
             defer r.deinit();
+            r.v.reject = d.reject;
             while (try r.next()) {}
             out.file = try r.fileReport(arena, try r.finish(arena));
             if (r.in.utf16) |u| out.encoding = if (u.order == .little) "utf16le" else "utf16be";
