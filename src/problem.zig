@@ -154,7 +154,7 @@ pub const Problem = union(enum) {
             .not_reached => try w.writeAll("not reached: interrupted"),
             .dialect_unsettled => |x| try w.print("the dialect is not settled (confidence low, score {d:.2}); pin it with --delimiter, --quote, --escape, --newline and --header", .{x.score}),
             .header_width => |x| try w.print("row 1 is a header of {d} names over rows of {d} fields, and which names go with which columns cannot be told; fix the header, or pin --header no to read row 1 as data", .{ x.header_fields, x.fields }),
-            .quote_is_data => |x| try w.print("the quotes look like data: {d} record{s} {s} {d} lines inside quotes, the first on line {d}, and each of those lines is a whole row without them; pin --quote none to read quotes as data", .{ x.records, plural(x.records), if (x.records == 1) "holds" else "hold", x.lines, x.line }),
+            .quote_is_data => |x| try quotesAreData(w, x),
             .match_needs_header => try w.writeAll("match by name needs a header"),
             .column_missing => |x| try w.print("the schema's column '{s}' is not in the header", .{x.column}),
             .column_extra => |x| try w.print("the header's column '{s}' is not in the schema", .{x.column}),
@@ -234,6 +234,8 @@ pub const Problem = union(enum) {
                     const T = @TypeOf(v);
                     if (T == []const u8) {
                         @field(c, name) = try a.dupe(u8, v);
+                    } else if (T == ?[]const u8) {
+                        if (v) |s| @field(c, name) = try a.dupe(u8, s);
                     } else if (T == []const []const u8) {
                         const names = try a.alloc([]const u8, v.len);
                         for (names, v) |*n, s| n.* = try a.dupe(u8, s);
@@ -252,6 +254,24 @@ pub const Problem = union(enum) {
 
 fn plural(n: u64) []const u8 {
     return if (n == 1) "" else "s";
+}
+
+/// quote_is_data's sentence: where a loader that reads quotes first goes
+/// wrong and why, then how often, then the fix.
+fn quotesAreData(w: *Io.Writer, x: records.Folded) Io.Writer.Error!void {
+    try w.print("the quotes look like data: on line {d} a value that starts with a quote (field {d}", .{ x.line, x.field });
+    if (x.column) |c| try w.print(", '{s}'", .{c});
+    try w.writeAll(") runs on to the next one, so ");
+    if (x.end_line > x.line) {
+        try w.print("lines {d} to {d} read as one record", .{ x.line, x.end_line });
+    } else try w.print("the line reads as {d} fields of {d}", .{ x.fields, x.width });
+    if (x.records + x.narrowed > 1) {
+        try w.writeAll("; in all, ");
+        if (x.narrowed > 0) try w.print("{d} row{s} lose{s} fields on {s} own line", .{ x.narrowed, plural(x.narrowed), if (x.narrowed == 1) "s" else "", if (x.narrowed == 1) "its" else "their" });
+        if (x.narrowed > 0 and x.records > 0) try w.writeAll(" and ");
+        if (x.records > 0) try w.print("{d} record{s} hold{s} {d} lines", .{ x.records, plural(x.records), if (x.records == 1) "s" else "", x.lines });
+    }
+    try w.writeAll("; each line is a whole row without the quotes: pin --quote none to read quotes as data");
 }
 
 /// A writer that writes what it is given to out as JSON string characters.
@@ -305,7 +325,9 @@ test "every code says what the CLI has always said" {
         .{ .not_reached, "not reached: interrupted" },
         .{ .{ .dialect_unsettled = .{ .score = 0.9234 } }, "the dialect is not settled (confidence low, score 0.92); pin it with --delimiter, --quote, --escape, --newline and --header" },
         .{ .{ .header_width = .{ .header_fields = 69, .fields = 70 } }, "row 1 is a header of 69 names over rows of 70 fields, and which names go with which columns cannot be told; fix the header, or pin --header no to read row 1 as data" },
-        .{ .{ .quote_is_data = .{ .records = 1, .lines = 3, .line = 82 } }, "the quotes look like data: 1 record holds 3 lines inside quotes, the first on line 82, and each of those lines is a whole row without them; pin --quote none to read quotes as data" },
+        .{ .{ .quote_is_data = .{ .records = 1, .lines = 3, .line = 82, .end_line = 84, .fields = 3, .width = 3, .field = 2, .column = "bin" } }, "the quotes look like data: on line 82 a value that starts with a quote (field 2, 'bin') runs on to the next one, so lines 82 to 84 read as one record; each line is a whole row without the quotes: pin --quote none to read quotes as data" },
+        .{ .{ .quote_is_data = .{ .records = 45, .lines = 2565, .narrowed = 5, .line = 41, .end_line = 41, .fields = 78, .width = 79, .field = 65 } }, "the quotes look like data: on line 41 a value that starts with a quote (field 65) runs on to the next one, so the line reads as 78 fields of 79; in all, 5 rows lose fields on their own line and 45 records hold 2565 lines; each line is a whole row without the quotes: pin --quote none to read quotes as data" },
+        .{ .{ .quote_is_data = .{ .records = 0, .lines = 0, .narrowed = 2, .line = 7, .end_line = 7, .fields = 3, .width = 4, .field = 2 } }, "the quotes look like data: on line 7 a value that starts with a quote (field 2) runs on to the next one, so the line reads as 3 fields of 4; in all, 2 rows lose fields on their own line; each line is a whole row without the quotes: pin --quote none to read quotes as data" },
         .{ .match_needs_header, "match by name needs a header" },
         .{ .{ .column_missing = .{ .column = "amount" } }, "the schema's column 'amount' is not in the header" },
         .{ .{ .column_extra = .{ .column = "note" } }, "the header's column 'note' is not in the schema" },

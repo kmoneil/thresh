@@ -17,7 +17,7 @@ src/infer.zig	merge	28	47	37	5	3	3
 src/input.zig	Input.transcode	15	31	35	4	0	0
 src/lib.zig	merge	19	34	51	3	2	2
 src/main.zig	sniff	10	29	27	6	4	4
-src/problem.zig	Problem.format	44	23	45	3	1	1
+src/problem.zig	Problem.format	43	21	45	3	1	1
 src/records.zig	Scanner.classify	19	28	33	3	3	3
 src/records.zig	Scanner.next	14	26	17	3	1	1
 src/reference.zig	Parser.next	16	29	28	4	1	1
