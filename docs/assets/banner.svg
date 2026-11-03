@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1280 360" width="1280" height="360" role="img" aria-labelledby="t d">
+  <title id="t">thresh</title>
+  <desc id="d">Rows of a CSV file come in from the left, some with a bad value in red. They pass through the thresh wordmark: the good rows carry on to the right, each with a green tick, and the bad ones drop into a tray marked set aside, each with its line number and the reason.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#16110a"/>
+      <stop offset="0.55" stop-color="#271b0c"/>
+      <stop offset="1" stop-color="#36240a"/>
+    </linearGradient>
+    <radialGradient id="glowGold" cx="0.5" cy="0.38" r="0.42">
+      <stop offset="0" stop-color="#fbbf24" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="#fbbf24" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowGreen" cx="0.86" cy="0.5" r="0.32">
+      <stop offset="0" stop-color="#4ade80" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#4ade80" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowRed" cx="0.5" cy="1" r="0.3">
+      <stop offset="0" stop-color="#f87171" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#f87171" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="word" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fef3c7"/>
+      <stop offset="0.55" stop-color="#fcd34d"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+    <linearGradient id="flowIn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fcd34d" stop-opacity="0"/>
+      <stop offset="1" stop-color="#fcd34d" stop-opacity="0.6"/>
+    </linearGradient>
+    <linearGradient id="flowOut" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4ade80" stop-opacity="0.6"/>
+      <stop offset="1" stop-color="#4ade80" stop-opacity="0"/>
+    </linearGradient>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.2" fill="#ffffff" fill-opacity="0.06"/>
+    </pattern>
+    <!-- An ear of wheat, pointing up, 36 high. -->
+    <g id="ear" fill="#fcd34d">
+      <path d="M0 36 L0 4" stroke="#fcd34d" stroke-width="1.6" stroke-linecap="round" fill="none"/>
+      <ellipse cx="0" cy="3" rx="2.6" ry="5.5"/>
+      <ellipse cx="-3.8" cy="10" rx="2.6" ry="5.5" transform="rotate(-28 -3.8 10)"/>
+      <ellipse cx="3.8" cy="10" rx="2.6" ry="5.5" transform="rotate(28 3.8 10)"/>
+      <ellipse cx="-3.8" cy="18" rx="2.6" ry="5.5" transform="rotate(-28 -3.8 18)"/>
+      <ellipse cx="3.8" cy="18" rx="2.6" ry="5.5" transform="rotate(28 3.8 18)"/>
+      <ellipse cx="-3.8" cy="26" rx="2.6" ry="5.5" transform="rotate(-28 -3.8 26)"/>
+      <ellipse cx="3.8" cy="26" rx="2.6" ry="5.5" transform="rotate(28 3.8 26)"/>
+    </g>
+    <!-- A green tick in a circle, centred on 0,0. -->
+    <g id="tick">
+      <circle r="9" fill="#22c55e"/>
+      <path d="M-4 0 L-1 3 L4.5 -3.5" stroke="#052e16" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    </g>
+  </defs>
+
+  <rect width="1280" height="360" rx="28" fill="url(#bg)"/>
+  <rect width="1280" height="360" rx="28" fill="url(#dots)"/>
+  <rect width="1280" height="360" rx="28" fill="url(#glowGold)"/>
+  <rect width="1280" height="360" rx="28" fill="url(#glowGreen)"/>
+  <rect width="1280" height="360" rx="28" fill="url(#glowRed)"/>
+
+  <!-- A delivery coming in, as it was written -->
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="19" font-weight="600" fill="#f3e3b5">
+    <text x="46" y="84" fill-opacity="0.45" transform="rotate(-3 46 84)">lug_id,picked_on,lug_kg,bruised</text>
+    <text x="58" y="128" fill-opacity="0.75" transform="rotate(2 58 128)">3,2026-09-04,17.9,false</text>
+    <text x="40" y="172" fill-opacity="0.8" transform="rotate(-2 40 172)">4,2026-09-05,<tspan fill="#f87171" fill-opacity="1">"18,5"</tspan>,false</text>
+    <text x="66" y="214" fill-opacity="0.75" transform="rotate(3 66 214)">7,2026-09-08,16.2,true</text>
+    <text x="44" y="258" fill-opacity="0.8" transform="rotate(-2 44 258)">8,<tspan fill="#f87171" fill-opacity="1">2026-09-31</tspan>,19.2,false</text>
+    <text x="60" y="302" fill-opacity="0.8" transform="rotate(2 60 302)">12,2026-09-13,18.7,<tspan fill="#f87171" fill-opacity="1">maybe</tspan></text>
+  </g>
+
+  <!-- Into thresh -->
+  <g fill="none" stroke="url(#flowIn)" stroke-width="2" stroke-linecap="round">
+    <path d="M362 124 C 400 124, 410 132, 452 132"/>
+    <path d="M384 166 C 418 166, 420 140, 452 140"/>
+    <path d="M356 208 C 404 208, 412 148, 452 148"/>
+    <path d="M372 250 C 414 250, 418 156, 452 156"/>
+  </g>
+
+  <text x="640" y="176" text-anchor="middle" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="118" font-weight="800" letter-spacing="-3" fill="url(#word)">thresh</text>
+
+  <use xlink:href="#ear" href="#ear" transform="translate(446 192) rotate(-16)"/>
+  <use xlink:href="#ear" href="#ear" transform="translate(834 192) rotate(16)"/>
+  <text x="640" y="220" text-anchor="middle" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="700" letter-spacing="5" fill="#fde68a" fill-opacity="0.9">GOOD ROWS FROM THE BAD</text>
+
+  <!-- The good rows carry on -->
+  <g fill="none" stroke="url(#flowOut)" stroke-width="2" stroke-linecap="round">
+    <path d="M822 134 C 850 134, 848 116, 874 116"/>
+    <path d="M822 142 C 848 142, 850 156, 874 156"/>
+    <path d="M822 150 C 846 150, 852 196, 874 196"/>
+  </g>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="19" font-weight="600" fill="#dcfce7">
+    <use xlink:href="#tick" href="#tick" transform="translate(892 116)"/>
+    <text x="912" y="122">3,2026-09-04,17.9,false</text>
+    <use xlink:href="#tick" href="#tick" transform="translate(892 156)"/>
+    <text x="912" y="162">7,2026-09-08,16.2,true</text>
+    <use xlink:href="#tick" href="#tick" transform="translate(892 196)"/>
+    <text x="912" y="202">9,2026-09-10,15.8,false</text>
+    <use xlink:href="#tick" href="#tick" transform="translate(892 236)"/>
+    <text x="912" y="242" fill-opacity="0.8">10,2026-09-11,17.3,true</text>
+    <use xlink:href="#tick" href="#tick" transform="translate(892 276)" opacity="0.7"/>
+    <text x="912" y="282" fill-opacity="0.6">11,2026-09-12,16.6,false</text>
+  </g>
+
+  <!-- The bad ones are set aside, each with its line and why -->
+  <g fill="none" stroke="#f87171" stroke-opacity="0.55" stroke-width="2" stroke-dasharray="3 6" stroke-linecap="round">
+    <path d="M600 230 L600 248"/>
+    <path d="M640 230 L640 248"/>
+    <path d="M680 230 L680 248"/>
+  </g>
+  <rect x="444" y="252" width="392" height="88" rx="12" fill="#450a0a" fill-opacity="0.55" stroke="#f87171" stroke-opacity="0.6" stroke-width="1.5"/>
+  <text x="462" y="274" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="800" letter-spacing="3" fill="#fca5a5">SET ASIDE</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="600">
+    <text x="462" y="296" fill="#fca5a5" fill-opacity="0.8">line 5</text>
+    <text x="536" y="296" fill="#fecaca">lug_kg: not a decimal</text>
+    <text x="462" y="314" fill="#fca5a5" fill-opacity="0.8">line 13</text>
+    <text x="536" y="314" fill="#fecaca">bruised: not a bool</text>
+    <text x="462" y="332" fill="#fca5a5" fill-opacity="0.8">line 22</text>
+    <text x="536" y="332" fill="#fecaca">a different number of fields</text>
+  </g>
+</svg>
