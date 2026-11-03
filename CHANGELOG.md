@@ -10,7 +10,14 @@ and fields. Before 1.0 a breaking change is a minor bump.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- The `thresh` command, ready to run, in every release: an archive for
+  macOS (Apple silicon and Intel), Linux (x86-64 and arm64; static, so
+  any distribution) and Windows (x86-64 and arm64), each with the
+  license and a short README, in SHA256SUMS and attested with the
+  wheels. Each is unpacked and run on its own platform before it is
+  published. No Zig needed to use thresh any more.
 
 ## [0.2.0] - 2026-11-02
 
