@@ -6,6 +6,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Dialect = @import("dialect.zig").Dialect;
 const reference = @import("reference.zig");
+const push = @import("list.zig").push;
 const scan = @import("scan.zig");
 
 /// One field: where its content is in the input, 16 bytes.
@@ -434,7 +435,7 @@ pub const Scanner = struct {
                 // The end of the input, which is final, without a line break.
                 std.debug.assert(w.final);
                 const f = s.classify(field_start, data.len, &inner_lines) orelse return null;
-                try fields.append(s.gpa, f);
+                try push(Field, fields, s.gpa, f);
                 w.next = i;
                 s.cur = data.len;
                 defer s.line += inner_lines;
@@ -442,7 +443,7 @@ pub const Scanner = struct {
             }
             const e = w.start + s.positions[i];
             const f = s.classify(field_start, e, &inner_lines) orelse return null;
-            try fields.append(s.gpa, f);
+            try push(Field, fields, s.gpa, f);
             const c = data[e];
             if (c == s.dialect.delimiter) {
                 field_start = e + 1;
@@ -588,6 +589,7 @@ pub fn values(
     out: *std.ArrayList([]const u8),
 ) align(64) Allocator.Error!void {
     out.clearRetainingCapacity();
+    try out.ensureTotalCapacity(gpa, fields.len);
     var need: usize = 0;
     for (fields) |f| {
         if (f.flags.needs_unescape) need += f.len;
@@ -597,10 +599,10 @@ pub fn values(
     for (fields) |f| {
         const local: Field = .{ .start = f.start - base, .len = f.len, .flags = f.flags };
         if (!f.flags.needs_unescape) {
-            try out.append(gpa, local.raw(data));
+            out.appendAssumeCapacity(local.raw(data));
             continue;
         }
-        try out.append(gpa, local.value(data, d, scratch.items[at..][0..f.len]));
+        out.appendAssumeCapacity(local.value(data, d, scratch.items[at..][0..f.len]));
         at += f.len;
     }
 }
@@ -650,8 +652,8 @@ pub const Batch = struct {
             const first = b.fields.items.len;
             switch (try s.next(&b.fields)) {
                 .record => |rec| {
-                    try b.records.append(gpa, rec);
-                    try b.firsts.append(gpa, first);
+                    try push(Record, &b.records, gpa, rec);
+                    try push(usize, &b.firsts, gpa, first);
                     for (b.fields.items[first..]) |f| b.field_bytes += f.len + @sizeOf(Field);
                 },
                 .need_more => return .need_more,

@@ -9,6 +9,22 @@ pub fn parse(v: []const u8) Error!i64 {
     const neg = v[0] == '-';
     const digits = if (v[0] == '-' or v[0] == '+') v[1..] else v;
     if (digits.len == 0) return error.NotInt;
+    return if (digits.len <= 18) short(digits, neg) else long(digits, neg);
+}
+
+/// Up to 18 digits, which cannot overflow an i64: no checks on the way.
+fn short(digits: []const u8, neg: bool) Error!i64 {
+    var u: u64 = 0;
+    for (digits) |c| {
+        if (c < '0' or c > '9') return error.NotInt;
+        u = u * 10 + (c - '0');
+    }
+    const s: i64 = @intCast(u);
+    return if (neg) -s else s;
+}
+
+/// More digits, each step checked for overflow.
+fn long(digits: []const u8, neg: bool) Error!i64 {
     // Accumulate negatively, so the most negative i64 fits.
     var n: i64 = 0;
     for (digits) |c| {

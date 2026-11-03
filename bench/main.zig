@@ -2,7 +2,8 @@
 //! memory, so the disk is not what is measured (the page cache serves a
 //! mapped file the same way).
 //!
-//!   zig build bench -- [--size BYTES] [--runs N] [--profile narrow|wide|text] [--json]
+//!   zig build bench -- [--size BYTES] [--runs N] [--profile narrow|wide|text]
+//!                      [--stage NAME] [--json]
 //!
 //! Profiles: narrow (six short numeric and code columns), wide (thirty
 //! mixed columns, some quoted with embedded delimiters and doubled
@@ -19,7 +20,11 @@
 //!   reference the scalar reference parser, for scale
 //!
 //! Each runs --runs times and the fastest counts. --json prints one object,
-//! profile to stage to MB/s, for tools/bench_gate.sh.
+//! profile to stage to MB/s, for tools/bench_gate.sh. --stage runs that one
+//! stage alone, for a profiler to attach to (sample(1), perf record).
+//! --allocs runs each stage once through an allocator that counts, and
+//! prints its calls (allocations, and resizes that grew) and bytes instead
+//! of its speed: a count that grows with --size is an allocation a row.
 
 const std = @import("std");
 const thresh = @import("thresh");
@@ -34,50 +39,72 @@ const Allocator = std.mem.Allocator;
 const Profile = enum { narrow, wide, text };
 pub const Stage = enum { stage1, parse, validate, report, infer, csv, arrow, reference };
 
+/// What the command line asks for.
+const Config = struct {
+    size: usize = 1 << 30,
+    runs: usize = 3,
+    json: bool = false,
+    allocs: bool = false,
+    profiles: []const Profile = &.{ .narrow, .wide, .text },
+    stages: []const Stage = std.enums.values(Stage),
+
+    fn parse(arena: Allocator, args: []const []const u8) !Config {
+        var c: Config = .{};
+        var i: usize = 1;
+        while (i < args.len) : (i += 1) {
+            const a = args[i];
+            if (std.mem.eql(u8, a, "--json")) {
+                c.json = true;
+            } else if (std.mem.eql(u8, a, "--allocs")) {
+                c.allocs = true;
+            } else {
+                if (i + 1 == args.len) return usage();
+                i += 1;
+                try c.set(arena, a, args[i]);
+            }
+        }
+        return c;
+    }
+
+    /// flag, one that takes a value, set to value.
+    fn set(c: *Config, arena: Allocator, flag: []const u8, value: []const u8) !void {
+        if (std.mem.eql(u8, flag, "--size")) {
+            c.size = try std.fmt.parseInt(usize, value, 10);
+        } else if (std.mem.eql(u8, flag, "--runs")) {
+            c.runs = try std.fmt.parseInt(usize, value, 10);
+        } else if (std.mem.eql(u8, flag, "--profile")) {
+            c.profiles = try arena.dupe(Profile, &.{std.meta.stringToEnum(Profile, value) orelse return usage()});
+        } else if (std.mem.eql(u8, flag, "--stage")) {
+            c.stages = try arena.dupe(Stage, &.{std.meta.stringToEnum(Stage, value) orelse return usage()});
+        } else return usage();
+    }
+};
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const gpa = init.gpa;
-    const args = try init.minimal.args.toSlice(init.arena.allocator());
-    var size: usize = 1 << 30;
-    var runs: usize = 3;
-    var json = false;
-    var profiles: []const Profile = &.{ .narrow, .wide, .text };
-    var one: [1]Profile = undefined;
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const a = args[i];
-        if (std.mem.eql(u8, a, "--json")) {
-            json = true;
-            continue;
-        }
-        if (i + 1 == args.len) return usage();
-        i += 1;
-        if (std.mem.eql(u8, a, "--size")) {
-            size = try std.fmt.parseInt(usize, args[i], 10);
-        } else if (std.mem.eql(u8, a, "--runs")) {
-            runs = try std.fmt.parseInt(usize, args[i], 10);
-        } else if (std.mem.eql(u8, a, "--profile")) {
-            one[0] = std.meta.stringToEnum(Profile, args[i]) orelse return usage();
-            profiles = &one;
-        } else return usage();
-    }
+    const arena = init.arena.allocator();
+    const cfg = try Config.parse(arena, try init.minimal.args.toSlice(arena));
+    const json = cfg.json;
+    const stages = cfg.stages;
 
     var out_buf: [4096]u8 = undefined;
     var out = Io.File.stdout().writerStreaming(io, &out_buf);
     const w = &out.interface;
+    if (cfg.allocs) return countAllocs(io, gpa, w, cfg);
     if (json) try w.writeByte('{') else {
         try w.print("{s:<8} {s:>6}", .{ "profile", "MB" });
-        for (std.enums.values(Stage)) |s| try w.print(" {s:>10}", .{@tagName(s)});
+        for (stages) |s| try w.print(" {s:>10}", .{@tagName(s)});
         try w.writeAll("   (MB/s)\n");
     }
-    for (profiles, 0..) |p, pi| {
-        const data = try generate(gpa, p, size);
+    for (cfg.profiles, 0..) |p, pi| {
+        const data = try generate(gpa, p, cfg.size);
         defer gpa.free(data);
         const mb = @as(f64, @floatFromInt(data.len)) / 1e6;
         const s = schemaOf(p);
         if (json) try w.print("{s}\"{t}\":{{", .{ if (pi > 0) "," else "", p }) else try w.print("{t:<8} {d:>6.0}", .{ p, mb });
-        for (std.enums.values(Stage), 0..) |stage, si| {
-            const seconds = try best(io, gpa, runs, data, &s, stage);
+        for (stages, 0..) |stage, si| {
+            const seconds = try best(io, gpa, cfg.runs, data, &s, stage);
             if (json) try w.print("{s}\"{t}\":{d:.0}", .{ if (si > 0) "," else "", stage, mb / seconds }) else try w.print(" {d:>10.0}", .{mb / seconds});
         }
         try w.writeAll(if (json) "}" else "\n");
@@ -87,10 +114,74 @@ pub fn main(init: std.process.Init) !void {
     try w.flush();
 }
 
+/// --allocs: each stage run once through a Counting allocator, its counts.
+fn countAllocs(io: Io, gpa: Allocator, w: *Io.Writer, cfg: Config) !void {
+    for (cfg.profiles) |p| {
+        const data = try generate(gpa, p, cfg.size);
+        defer gpa.free(data);
+        const s = schemaOf(p);
+        for (cfg.stages) |stage| {
+            var counting: Counting = .{ .child = gpa };
+            _ = try best(io, counting.allocator(), 1, data, &s, stage);
+            try w.print("{t:<8} {t:<10} {d:>10} allocations {d:>8} grown {d:>14} bytes\n", .{ p, stage, counting.allocs, counting.grows, counting.bytes });
+        }
+        try w.flush();
+    }
+}
+
 fn usage() error{Usage} {
-    std.debug.print("usage: bench [--size BYTES] [--runs N] [--profile narrow|wide|text] [--json]\n", .{});
+    std.debug.print("usage: bench [--size BYTES] [--runs N] [--profile narrow|wide|text] [--stage NAME] [--json] [--allocs]\n", .{});
     return error.Usage;
 }
+
+/// An allocator that counts what passes through it to child: each
+/// allocation, each resize or remap that grows a block, and the bytes
+/// asked for by both.
+const Counting = struct {
+    child: Allocator,
+    allocs: u64 = 0,
+    grows: u64 = 0,
+    bytes: u64 = 0,
+
+    fn allocator(c: *Counting) Allocator {
+        return .{ .ptr = c, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+
+    fn of(ctx: *anyopaque) *Counting {
+        return @ptrCast(@alignCast(ctx));
+    }
+
+    fn grew(c: *Counting, old: usize, new: usize) void {
+        if (new <= old) return;
+        c.grows += 1;
+        c.bytes += new - old;
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, a: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const c = of(ctx);
+        c.allocs += 1;
+        c.bytes += len;
+        return c.child.rawAlloc(len, a, ra);
+    }
+
+    fn resize(ctx: *anyopaque, m: []u8, a: std.mem.Alignment, n: usize, ra: usize) bool {
+        const c = of(ctx);
+        const ok = c.child.rawResize(m, a, n, ra);
+        if (ok) c.grew(m.len, n);
+        return ok;
+    }
+
+    fn remap(ctx: *anyopaque, m: []u8, a: std.mem.Alignment, n: usize, ra: usize) ?[*]u8 {
+        const c = of(ctx);
+        const p = c.child.rawRemap(m, a, n, ra);
+        if (p != null) c.grew(m.len, n);
+        return p;
+    }
+
+    fn free(ctx: *anyopaque, m: []u8, a: std.mem.Alignment, ra: usize) void {
+        of(ctx).child.rawFree(m, a, ra);
+    }
+};
 
 /// The fastest of runs runs of the stage over data, in seconds.
 fn best(io: Io, gpa: Allocator, runs: usize, data: []const u8, s: *const schema.Schema, stage: Stage) !f64 {
@@ -162,6 +253,8 @@ fn pipeline(gpa: Allocator, data: []const u8, s: *const schema.Schema, stage: St
     try v.columns(null, s.columns.len, data, 0);
     var typed: ?thresh.builders.Batch = if (stage == .validate or stage == .report) null else try .init(gpa, s, .utf8);
     defer if (typed) |*t| t.deinit();
+    // As the CLI has it: only CSV writes a typed value's text.
+    if (typed) |*t| t.text = stage == .csv;
     if (typed) |*t| v.batch = t;
     var sink_buf: [1 << 20]u8 = undefined;
     var sink: Io.Writer.Discarding = .init(&sink_buf);

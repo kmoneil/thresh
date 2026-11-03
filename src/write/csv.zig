@@ -15,7 +15,24 @@ const quote = '"';
 
 /// One field's value, quoted and escaped when it needs to be.
 pub fn field(w: *Io.Writer, v: []const u8, o: Options) Io.Writer.Error!void {
+    // A short field, most of them, is copied into the buffer as it is
+    // checked: one pass, and no call to copy a few bytes. A long one is
+    // checked, then copied whole.
+    if (v.len <= 32 and v.len <= w.unusedCapacityLen()) {
+        const room = w.unusedCapacitySlice();
+        for (v, room[0..v.len]) |c, *r| {
+            if (c == o.delimiter or c == quote or c == '\n' or c == '\r') return quoted(w, v);
+            r.* = c;
+        }
+        w.advance(v.len);
+        return;
+    }
     if (!needsQuotes(v, o.delimiter)) return w.writeAll(v);
+    return quoted(w, v);
+}
+
+/// v in quotes, each quote in it doubled.
+fn quoted(w: *Io.Writer, v: []const u8) Io.Writer.Error!void {
     try w.writeByte(quote);
     var rest = v;
     while (std.mem.findScalar(u8, rest, quote)) |i| {

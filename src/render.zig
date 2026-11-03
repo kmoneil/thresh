@@ -88,6 +88,8 @@ const Output = struct {
         errdefer sink.close(env.io, env.gpa);
         var batch: builders.Batch = try .init(env.gpa, s, encoding);
         errdefer batch.deinit();
+        // Only CSV writes a typed value's text.
+        batch.text = plan.to == .csv;
         return .{
             .final_path = final_path,
             .tmp_path = tmp_path,

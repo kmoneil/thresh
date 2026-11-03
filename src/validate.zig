@@ -74,6 +74,14 @@ pub const ColumnStats = struct {
     nulls: u64 = 0,
     mismatches: u64 = 0,
     samples: std.ArrayList(Sample) = .empty,
+    /// The lengths of the strings the column reads as null, a bit each (bit
+    /// 63 for 63 bytes or more): a value of no such length, which is nearly
+    /// every value, is not null without comparing it with one.
+    null_lengths: u64 = 0,
+
+    fn lengthBit(len: usize) u64 {
+        return @as(u64, 1) << @intCast(@min(len, 63));
+    }
 };
 
 pub const Validator = struct {
@@ -160,6 +168,10 @@ pub const Validator = struct {
         errdefer v.deinit();
         v.stats = try gpa.alloc(ColumnStats, s.columns.len);
         @memset(v.stats, .{});
+        for (v.stats, s.columns) |*st, c| {
+            for (options.nulls) |n| st.null_lengths |= ColumnStats.lengthBit(n.len);
+            for (c.nulls) |n| st.null_lengths |= ColumnStats.lengthBit(n.len);
+        }
         if (options.stats) v.profiles = try profilesFor(gpa, s.columns.len, options.encoding);
         v.mapping = try gpa.alloc(?u32, s.columns.len);
         for (v.mapping, 0..) |*m, i| m.* = @intCast(i);
@@ -356,7 +368,7 @@ pub const Validator = struct {
     /// Why value does not fit column c, or null when it does: a null c
     /// allows is counted, and anything else read into cell.
     fn cellReason(v: *Validator, c: *const Column, dc: *?types.date.Column, st: *ColumnStats, value: []const u8, cell: *?types.Value) ?Reason {
-        if (v.isNull(c, value)) {
+        if (v.isNull(c, st, value)) {
             if (!c.nullable) return .null_value;
             st.nulls += 1;
             return null;
@@ -391,7 +403,8 @@ pub const Validator = struct {
         try v.codes.append(v.gpa, .{ .column = c.name, .reason = r });
     }
 
-    fn isNull(v: *const Validator, c: *const Column, value: []const u8) bool {
+    fn isNull(v: *const Validator, c: *const Column, st: *const ColumnStats, value: []const u8) bool {
+        if (st.null_lengths & ColumnStats.lengthBit(value.len) == 0) return false;
         for (v.options.nulls) |n| if (std.mem.eql(u8, n, value)) return true;
         for (c.nulls) |n| if (std.mem.eql(u8, n, value)) return true;
         return false;

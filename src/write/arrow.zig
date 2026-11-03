@@ -65,26 +65,49 @@ pub const Writer = struct {
     dictionary_blocks: std.ArrayList(Block) = .empty,
     batch_blocks: std.ArrayList(Block) = .empty,
     meta: std.ArrayList(u8) = .empty,
-    body: std.ArrayList(u8) = .empty,
+    /// The message's body, not copied into one: each buffer's bytes where
+    /// they are, in a column's list or in side, written out by message.
+    /// One a buffer, beside buffers.
+    parts: std.ArrayList(Part) = .empty,
+    /// What a buffer is made into before it is written (the bitmaps, a
+    /// string column's offsets as int32), for the message being built.
+    side: std.ArrayList(u8) = .empty,
+    /// The body's length so far, each buffer at an 8-byte boundary.
+    body_len: usize = 0,
     nodes: std.ArrayList(FieldNode) = .empty,
     buffers: std.ArrayList(Buffer) = .empty,
+    /// Where each message's flatbuffers are built: emptied for the next
+    /// one, its memory kept.
+    fb_arena: std.heap.ArenaAllocator,
+
+    /// A buffer's bytes: a slice that outlives the message, or a span of
+    /// side, which may move as it grows.
+    const Part = union(enum) {
+        bytes: []const u8,
+        side: struct { start: usize, len: usize },
+    };
 
     pub fn init(gpa: Allocator, s: *const schema.Schema, options: Options) Writer {
-        return .{ .gpa = gpa, .schema = s, .options = options };
+        return .{ .gpa = gpa, .schema = s, .options = options, .fb_arena = .init(gpa) };
+    }
+
+    /// A builder for the next message's flatbuffers, in the emptied arena.
+    fn builder(w: *Writer) fb.Builder {
+        _ = w.fb_arena.reset(.retain_capacity);
+        return .init(w.fb_arena.allocator());
     }
 
     pub fn deinit(w: *Writer) void {
-        inline for (.{ "dictionary_blocks", "batch_blocks", "meta", "body", "nodes", "buffers" }) |f| @field(w, f).deinit(w.gpa);
+        inline for (.{ "dictionary_blocks", "batch_blocks", "meta", "parts", "side", "nodes", "buffers" }) |f| @field(w, f).deinit(w.gpa);
+        w.fb_arena.deinit();
     }
 
     /// The file's magic (file format) and the schema message.
     pub fn header(w: *Writer, out: *Io.Writer) !void {
         if (w.options.file) try w.raw(out, magic ++ "\x00\x00");
-        var arena: std.heap.ArenaAllocator = .init(w.gpa);
-        defer arena.deinit();
-        var b: fb.Builder = .init(arena.allocator());
+        var b = w.builder();
         const s = try schemaTable(&b, w.schema);
-        w.body.clearRetainingCapacity();
+        w.clearBody();
         _ = try w.message(out, &b, header_schema, s);
     }
 
@@ -94,13 +117,9 @@ pub const Writer = struct {
             w.dictionaries_sent = true;
             try w.dictionaries(out);
         }
-        w.body.clearRetainingCapacity();
-        w.nodes.clearRetainingCapacity();
-        w.buffers.clearRetainingCapacity();
+        w.clearBody();
         for (b.columns, w.schema.columns) |*c, sc| try w.column(c, sc, b.rows);
-        var arena: std.heap.ArenaAllocator = .init(w.gpa);
-        defer arena.deinit();
-        var f: fb.Builder = .init(arena.allocator());
+        var f = w.builder();
         const rb = try w.recordBatch(&f, b.rows);
         const block = try w.message(out, &f, header_record_batch, rb);
         try w.batch_blocks.append(w.gpa, block);
@@ -118,9 +137,7 @@ pub const Writer = struct {
         std.mem.writeInt(u32, eos[4..8], 0, .little);
         try w.raw(out, &eos);
         if (!w.options.file) return;
-        var arena: std.heap.ArenaAllocator = .init(w.gpa);
-        defer arena.deinit();
-        var b: fb.Builder = .init(arena.allocator());
+        var b = w.builder();
         const footer = try b.table(&.{
             .{ .slot = 0, .value = .{ .i16 = metadata_v5 } },
             .{ .slot = 1, .value = .{ .ref = try schemaTable(&b, w.schema) } },
@@ -140,28 +157,56 @@ pub const Writer = struct {
         w.written += bytes.len;
     }
 
-    /// Writes the message with header as its header and w.body as its body.
+    /// No buffers yet: a message's body starts empty.
+    fn clearBody(w: *Writer) void {
+        w.parts.clearRetainingCapacity();
+        w.side.clearRetainingCapacity();
+        w.body_len = 0;
+        w.nodes.clearRetainingCapacity();
+        w.buffers.clearRetainingCapacity();
+    }
+
+    /// Writes the message with header as its header and the buffers added
+    /// since clearBody as its body.
     fn message(w: *Writer, out: *Io.Writer, b: *fb.Builder, header_type: u8, header_ref: fb.Ref) !Block {
-        try padBody(w.gpa, &w.body);
+        w.body_len = std.mem.alignForward(usize, w.body_len, 8);
         const m = try b.table(&.{
             .{ .slot = 0, .value = .{ .i16 = metadata_v5 } },
             .{ .slot = 1, .value = .{ .u8 = header_type } },
             .{ .slot = 2, .value = .{ .ref = header_ref } },
-            .{ .slot = 3, .value = .{ .i64 = @intCast(w.body.items.len) } },
+            .{ .slot = 3, .value = .{ .i64 = @intCast(w.body_len) } },
         });
         try b.finish(w.gpa, m, &w.meta);
         const block: Block = .{
             .offset = @intCast(w.written),
             .meta_data_length = @intCast(8 + w.meta.items.len),
-            .body_length = @intCast(w.body.items.len),
+            .body_length = @intCast(w.body_len),
         };
         var prefix: [8]u8 = undefined;
         std.mem.writeInt(u32, prefix[0..4], continuation, .little);
         std.mem.writeInt(i32, prefix[4..8], @intCast(w.meta.items.len), .little);
         try w.raw(out, &prefix);
         try w.raw(out, w.meta.items);
-        try w.raw(out, w.body.items);
+        try w.writeBody(out);
         return block;
+    }
+
+    /// Each buffer at its offset, zeros between them and after the last
+    /// up to body_len: the body as one copy of it would have it.
+    fn writeBody(w: *Writer, out: *Io.Writer) !void {
+        const zeros: [8]u8 = @splat(0);
+        var at: usize = 0;
+        for (w.parts.items, w.buffers.items) |p, buf| {
+            const offset: usize = @intCast(buf.offset);
+            try w.raw(out, zeros[0 .. offset - at]);
+            const bytes = switch (p) {
+                .bytes => |x| x,
+                .side => |s| w.side.items[s.start..][0..s.len],
+            };
+            try w.raw(out, bytes);
+            at = offset + bytes.len;
+        }
+        try w.raw(out, zeros[0 .. w.body_len - at]);
     }
 
     /// The enum columns' values, a dictionary batch each, id the column's
@@ -169,9 +214,7 @@ pub const Writer = struct {
     fn dictionaries(w: *Writer, out: *Io.Writer) !void {
         for (w.schema.columns, 0..) |c, i| {
             if (c.type != .@"enum") continue;
-            w.body.clearRetainingCapacity();
-            w.nodes.clearRetainingCapacity();
-            w.buffers.clearRetainingCapacity();
+            w.clearBody();
             var offsets: std.ArrayList(u8) = .empty;
             defer offsets.deinit(w.gpa);
             var data: std.ArrayList(u8) = .empty;
@@ -185,9 +228,7 @@ pub const Writer = struct {
             try w.addBuffer(&.{});
             try w.addBuffer(offsets.items);
             try w.addBuffer(data.items);
-            var arena: std.heap.ArenaAllocator = .init(w.gpa);
-            defer arena.deinit();
-            var b: fb.Builder = .init(arena.allocator());
+            var b = w.builder();
             const rb = try w.recordBatch(&b, c.values.len);
             const db = try b.table(&.{
                 .{ .slot = 0, .value = .{ .i64 = @intCast(i) } },
@@ -206,11 +247,23 @@ pub const Writer = struct {
         });
     }
 
-    /// Appends bytes to the body as the next buffer, 8-byte aligned.
+    /// bytes as the body's next buffer, 8-byte aligned. They are written
+    /// by message, so they must outlive it.
     fn addBuffer(w: *Writer, bytes: []const u8) !void {
-        try padBody(w.gpa, &w.body);
-        try w.buffers.append(w.gpa, .{ .offset = @intCast(w.body.items.len), .length = @intCast(bytes.len) });
-        try w.body.appendSlice(w.gpa, bytes);
+        try w.addPart(.{ .bytes = bytes }, bytes.len);
+    }
+
+    /// side's bytes from start on as the next buffer.
+    fn addSide(w: *Writer, start: usize) !void {
+        const len = w.side.items.len - start;
+        try w.addPart(.{ .side = .{ .start = start, .len = len } }, len);
+    }
+
+    fn addPart(w: *Writer, p: Part, len: usize) !void {
+        w.body_len = std.mem.alignForward(usize, w.body_len, 8);
+        try w.buffers.append(w.gpa, .{ .offset = @intCast(w.body_len), .length = @intCast(len) });
+        try w.parts.append(w.gpa, p);
+        w.body_len += len;
     }
 
     /// One column's node and buffers: validity, then its values.
@@ -219,40 +272,39 @@ pub const Writer = struct {
         var nulls: usize = 0;
         for (c.valid.items) |v| nulls += @intFromBool(!v);
         try w.nodes.append(gpa, .{ .length = @intCast(rows), .null_count = @intCast(nulls) });
-        var scratch: std.ArrayList(u8) = .empty;
-        defer scratch.deinit(gpa);
         // No nulls: no validity bitmap, which a buffer of length 0 says.
         if (nulls == 0) try w.addBuffer(&.{}) else {
-            try bitmap(gpa, &scratch, c.valid.items);
-            try w.addBuffer(scratch.items);
+            const start = w.side.items.len;
+            try bitmap(gpa, &w.side, c.valid.items);
+            try w.addSide(start);
         }
-        scratch.clearRetainingCapacity();
         switch (sc.type) {
             .int64, .timestamp, .time => try w.addBuffer(std.mem.sliceAsBytes(c.ints.items)),
             .date => try w.addBuffer(std.mem.sliceAsBytes(c.days.items)),
             .float64 => try w.addBuffer(std.mem.sliceAsBytes(c.floats.items)),
             .decimal => try w.addBuffer(std.mem.sliceAsBytes(c.decimals.items)),
             .bool => {
-                try bitmap(gpa, &scratch, c.bools.items);
-                try w.addBuffer(scratch.items);
+                const start = w.side.items.len;
+                try bitmap(gpa, &w.side, c.bools.items);
+                try w.addSide(start);
             },
             .@"enum" => try w.addBuffer(std.mem.sliceAsBytes(c.indices.items)),
             .string, .binary => {
+                const start = w.side.items.len;
+                try w.side.ensureUnusedCapacity(gpa, 4 * c.offsets.items.len);
                 for (c.offsets.items) |o| {
                     // A batch is at most 64 MiB of field bytes; one field
                     // over 2 GiB is not written (it would need LargeUtf8).
-                    try appendLe(gpa, &scratch, i32, std.math.cast(i32, o) orelse return error.StringColumnTooLong);
+                    var le: [4]u8 = undefined;
+                    std.mem.writeInt(i32, &le, std.math.cast(i32, o) orelse return error.StringColumnTooLong, .little);
+                    w.side.appendSliceAssumeCapacity(&le);
                 }
-                try w.addBuffer(scratch.items);
+                try w.addSide(start);
                 try w.addBuffer(c.bytes.items);
             },
         }
     }
 };
-
-fn padBody(gpa: Allocator, body: *std.ArrayList(u8)) Allocator.Error!void {
-    while (body.items.len % 8 != 0) try body.append(gpa, 0);
-}
 
 fn appendLe(gpa: Allocator, out: *std.ArrayList(u8), comptime T: type, x: T) Allocator.Error!void {
     var buf: [@sizeOf(T)]u8 = undefined;

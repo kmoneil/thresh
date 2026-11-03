@@ -22,14 +22,38 @@ pub fn parse(v: []const u8, precision: u8, scale: u8) Error!i128 {
     }
     if (int.len + frac.len == 0 or rest.len > 0) return error.NotDecimal;
     if (int_digits + scale > precision) return error.OverPrecision;
-    // At most precision digits now, which schema.check holds to 38: an
-    // i128 takes them. Up to the scale: 1.5 in decimal(10, 2) is 150.
-    var n: i128 = 0;
-    for (int) |c| n = n * 10 + (c - '0');
-    for (frac) |c| n = n * 10 + (c - '0');
-    for (frac.len..scale) |_| n *= 10;
+    const n = scaled(int, frac, scale);
     return if (neg) -n else n;
 }
+
+/// The digits of int and then frac as one integer, scaled to scale digits
+/// after the point: 1.5 in decimal(10, 2) is 150. At most precision
+/// digits, which schema.check holds to 38: an i128 takes them.
+fn scaled(int: []const u8, frac: []const u8, scale: u8) i128 {
+    var n: i128 = 0;
+    if (int.len + frac.len <= 18) {
+        // A u64 takes 18 digits, and its multiplies are cheaper.
+        var u: u64 = 0;
+        for (int) |c| u = u * 10 + (c - '0');
+        for (frac) |c| u = u * 10 + (c - '0');
+        n = u;
+    } else {
+        for (int) |c| n = n * 10 + (c - '0');
+        for (frac) |c| n = n * 10 + (c - '0');
+    }
+    return n * pow10[scale - frac.len];
+}
+
+/// 10^0 to 10^38, each an i128.
+const pow10: [39]i128 = blk: {
+    var t: [39]i128 = undefined;
+    var x: i128 = 1;
+    for (&t) |*p| {
+        p.* = x;
+        if (x < std.math.maxInt(i128) / 10) x *= 10;
+    }
+    break :blk t;
+};
 
 /// The run of digits in s from start.
 fn digitsFrom(s: []const u8, start: usize) []const u8 {

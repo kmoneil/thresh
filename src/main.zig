@@ -509,6 +509,7 @@ test {
     _ = cli;
     _ = dialect;
     _ = @import("records.zig");
+    _ = @import("list.zig");
     _ = @import("reference.zig");
     _ = @import("scan.zig");
     _ = @import("input.zig");
