@@ -1,0 +1,71 @@
+lug_id|bin|depth|cultivar
+1|A2|48 in|Brookwood
+2|A3|48 in|Ember Pip
+3|A4|48 in|Quillon
+4|A1|48 in|Marrowdew
+5|A2|48 in|Starfall
+6|A3|48 in|Brookwood
+7|A4|48 in|Ember Pip
+8|A1|48 in|Quillon
+9|A2|48 in|Marrowdew
+10|A3|48 in|Starfall
+11|A4|48 in|Brookwood
+12|A1|48 in|Ember Pip
+13|A2|48 in|Quillon
+14|A3|48 in|Marrowdew
+15|A4|48 in|Starfall
+16|A1|48 in|Brookwood
+17|A2|48 in|Ember Pip
+18|A3|48 in|Quillon
+19|A4|48 in|Marrowdew
+20|A1|48 in|Starfall
+21|A2|48 in|Brookwood
+22|A3|48 in|Ember Pip
+23|A4|48 in|Quillon
+24|A1|48 in|Marrowdew
+25|A2|48 in|Starfall
+26|A3|48 in|Brookwood
+27|A4|48 in|Ember Pip
+28|A1|48 in|Quillon
+29|A2|48 in|Marrowdew
+30|A3|48 in|Starfall
+31|A4|48 in|Brookwood
+32|A1|48 in|Ember Pip
+33|A2|48 in|Quillon
+34|A3|48 in|Marrowdew
+35|A4|48 in|Starfall
+36|A1|48 in|Brookwood
+37|A2|48 in|Ember Pip
+38|A3|48 in|Quillon
+39|A4|48 in|Marrowdew
+40|A1|48 in|Starfall
+41|A2|48 in|Brookwood
+42|A3|48 in|Ember Pip
+43|A4|48 in|Quillon
+44|A1|48 in|Marrowdew
+45|A2|48 in|Starfall
+46|A3|48 in|Brookwood
+47|A4|48 in|Ember Pip
+48|A1|48 in|Quillon
+49|A2|48 in|Marrowdew
+50|A3|48 in|Starfall
+51|A4|48 in|Brookwood
+52|A1|48 in|Ember Pip
+53|A2|48 in|Quillon
+54|A3|48 in|Marrowdew
+55|A4|48 in|Starfall
+56|A1|48 in|Brookwood
+57|A2|48 in|Ember Pip
+58|A3|48 in|Quillon
+59|A4|48 in|Marrowdew
+60|A1|48 in|Starfall
+61|"|24"|Brookwood
+62|A3|48 in|Ember Pip
+63|A4|36"|Quillon
+64|A1|36"|Marrowdew
+65|A2|48 in|Starfall
+66|"|24"|Brookwood
+67|A4|48 in|Ember Pip
+68|A1|48 in|Quillon
+69|A2|48 in|Marrowdew
+70|A3|48 in|Starfall
