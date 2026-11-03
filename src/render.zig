@@ -167,12 +167,10 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
     const io = env.io;
     const gpa = env.gpa;
     const opts = plan.options;
-    var details: report.Details = .{ .encoding = opts.encoding, .shapes = opts.shapes };
 
     var r = switch (try lib.read(env, arena, path, plan.schema, opts, null)) {
         .stopped => |st| {
-            details.verdict = st.verdict;
-            try writeReport(env, plan, arena, st.outcome, name, details);
+            try writeReport(env, plan, arena, st.outcome, name, .{ .verdict = st.verdict, .encoding = opts.encoding, .shapes = opts.shapes });
             return shapes.outcome(arena, st.outcome, opts.shapes);
         },
         .reader => |x| x,
@@ -212,10 +210,8 @@ pub fn validateNamed(env: Env, plan: Plan, path: []const u8, name: []const u8, a
         out.timing.write_ns += since(io, tw);
         if (keep) out.written = o.final_path;
     }
-    details.verdict = r.verdict;
-    details.validator = &r.v;
-    if (reject) |*s| try s.finish(io, gpa, r.v.rejected);
-    try writeReport(env, plan, arena, out, name, details);
+    if (reject) |*s| try s.finish(io, gpa, out.rows_rejected);
+    try writeReport(env, plan, arena, out, name, r.details(out));
     // The lines and summary.json say what the report does.
     return shapes.outcome(arena, out, opts.shapes);
 }
@@ -345,6 +341,28 @@ test "an output that cannot be renamed into place leaves no temporary" {
     const path = try std.fmt.allocPrint(a, "{s}/orders.csv", .{root});
     try testing.expectError(error.IsDir, validateFile(.{ .io = io, .gpa = gpa }, plan, path, a));
     try testing.expect(!try hasTemporary(io, tmp.dir, "out"));
+}
+
+test "a file whose quotes turn out to be data keeps no reject file" {
+    const io = testing.io;
+    const gpa = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const dir = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    const lugs: Schema = .{ .columns = &.{ .{ .name = "lug_id", .type = .int64 }, .{ .name = "bin", .type = .string }, .{ .name = "depth", .type = .string }, .{ .name = "cultivar", .type = .string } } };
+    // Past the sniff's 512 bytes, two rows a ditto quote reads a field
+    // short: rejected as they are read, and then the quotes are data.
+    const plan: Plan = .{ .options = .{ .sample_bytes = 512 }, .schema = &lugs, .timing = false, .reject_dir = dir, .report_dir = dir };
+    const out = try validateFile(.{ .io = io, .gpa = gpa }, plan, "test/cli/ditto.txt", a);
+    try testing.expectEqual(report.Result.@"error", out.result);
+    try testing.expectEqual(@as(u64, 0), out.rows_rejected);
+    try testing.expectError(error.FileNotFound, tmp.dir.access(io, "ditto.txt.rejects.csv", .{}));
+    const text = try tmp.dir.readFileAlloc(io, "ditto.txt.report.json", a, .unlimited);
+    try testing.expect(std.mem.find(u8, text, "\"quote_is_data\"") != null);
+    try testing.expect(std.mem.find(u8, text, "rows_rejected") == null);
 }
 
 test "an output whose last write fails is closed and leaves no temporary" {
