@@ -10,6 +10,12 @@ and fields. Before 1.0 a breaking change is a minor bump.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.1] - 2026-11-03
+
+The `thresh` command, ready to download for every platform, and faster.
+
 ### Added
 
 - The `thresh` command, ready to run, in every release: an archive for
@@ -18,6 +24,15 @@ and fields. Before 1.0 a breaking change is a minor bump.
   license and a short README, in SHA256SUMS and attested with the
   wheels. Each is unpacked and run on its own platform before it is
   published. No Zig needed to use thresh any more.
+
+### Changed
+
+- Faster, with every output byte for byte the same. On files of a few
+  narrow columns, `infer` reads 63% more a second, Arrow output 36%, CSV
+  output 24%, `--report` 19%, `validate` 16% and parsing 12%; on wide
+  files each is 8 to 19% faster. A folder of thousands of small files is
+  10% faster, and Arrow output of a wide file allocates a third less
+  memory. docs/PERF.md has the measurements.
 
 ## [0.2.0] - 2026-11-02
 
@@ -65,6 +80,7 @@ The first release, for threshio on PyPI.
   musl), macOS 13 and later, and Windows, on x86-64 and arm64, Python 3.9
   and later; each attached here with SHA256SUMS and build provenance.
 
-[Unreleased]: https://github.com/kmoneil/thresh/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/kmoneil/thresh/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/kmoneil/thresh/releases/tag/v0.2.1
 [0.2.0]: https://github.com/kmoneil/thresh/releases/tag/v0.2.0
 [0.1.0]: https://github.com/kmoneil/thresh/releases/tag/v0.1.0
