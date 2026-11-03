@@ -10,6 +10,13 @@ and fields. Before 1.0 a breaking change is a minor bump.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] - 2026-11-03
+
+A file whose quotes are data is stopped with the line a loader would
+fail on, and why.
+
 ### Changed
 
 - When a file's quotes look like data (`quote_is_data`), thresh now says
@@ -21,6 +28,9 @@ and fields. Before 1.0 a breaking change is a minor bump.
   be thousands of lines past the one a loader's error names. The
   problem gains `narrowed`, `end_line`, `fields`, `width`, `field` and
   `column`; `sniff` names the field by place only.
+- Breaking: `quote_is_data`'s `line` is the first line of either kind,
+  so for a file whose quotes shorten a row before any runs across lines
+  it is earlier than 0.2 gave.
 
 ## [0.2.1] - 2026-11-03
 
@@ -90,7 +100,8 @@ The first release, for threshio on PyPI.
   musl), macOS 13 and later, and Windows, on x86-64 and arm64, Python 3.9
   and later; each attached here with SHA256SUMS and build provenance.
 
-[Unreleased]: https://github.com/kmoneil/thresh/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/kmoneil/thresh/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/kmoneil/thresh/releases/tag/v0.3.0
 [0.2.1]: https://github.com/kmoneil/thresh/releases/tag/v0.2.1
 [0.2.0]: https://github.com/kmoneil/thresh/releases/tag/v0.2.0
 [0.1.0]: https://github.com/kmoneil/thresh/releases/tag/v0.1.0
