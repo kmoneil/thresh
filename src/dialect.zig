@@ -647,7 +647,7 @@ fn lines(gpa: Allocator, sample: []const u8, d: Dialect, width: usize, whole: bo
         const rec = try p.next(gpa, fields) orelse break;
         if (rec.stray_quotes > 0) shape.stray_quotes = true;
         shape.stray += rec.stray_quotes;
-        if (whole or rec.end < sample.len) shape.quotes.record(rec, fields.items.len, width, d, sample, 0);
+        if (whole or rec.end < sample.len) shape.quotes.record(rec, fields.items, width, d, sample, 0);
         const end: usize = @intCast(rec.end);
         if (end == 0) break;
         const kind: Dialect.Newline = switch (sample[end - 1]) {

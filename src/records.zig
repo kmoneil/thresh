@@ -81,9 +81,14 @@ pub const Record = struct {
 /// quotes trips on. So each record that spans lines is read again without
 /// quotes: lines that each split into a whole row are rows folded
 /// together; any other is quoted text with line breaks in it, which is
-/// what quoting is for. A record on one line is looked at only when it is
-/// narrower than a row, so a file with no line breaks inside quotes and no
-/// short rows pays a comparison or two a record.
+/// what quoting is for. A record on one line narrower than a row is
+/// narrowed when it is a whole row without quotes, and short when no
+/// quote explains it. A record on one line a row wide is held when a
+/// quoted field in it holds a delimiter: quoting is what keeps it whole,
+/// which a file that never quotes never needs. So the rows a quote ran
+/// together are weighed against those that say the file quotes, or is
+/// ragged anyway; a file with no quoted fields pays a look at each
+/// field's flags a row.
 pub const QuoteCheck = struct {
     /// Records whose every line is a whole row without quotes, and the
     /// lines they hold.
@@ -97,6 +102,11 @@ pub const QuoteCheck = struct {
     first: First = .{},
     /// Records across lines that are not rows folded together.
     multiline: u64 = 0,
+    /// Records on one line, a row wide, that a quoted delimiter keeps
+    /// whole.
+    held: u64 = 0,
+    /// Records on one line narrower than a row, not narrowed.
+    short: u64 = 0,
 
     pub const First = struct {
         line: u64 = 0,
@@ -109,33 +119,40 @@ pub const QuoteCheck = struct {
         field: u32 = 0,
     };
 
-    /// rec, its fields fields, in data from base, in a file whose rows are
+    /// rec and its fields, in data from base, in a file whose rows are
     /// width fields wide.
-    pub fn record(c: *QuoteCheck, rec: Record, fields: usize, width: usize, d: Dialect, data: []const u8, base: u64) void {
+    pub fn record(c: *QuoteCheck, rec: Record, fields: []const Field, width: usize, d: Dialect, data: []const u8, base: u64) void {
         // One field a row: every line splits into a whole row.
         if (width < 2) return;
         if (rec.inner_lines == 0) {
+            if (rec.problem != null or fields.len > width) return;
             // Nearly every record: a whole row on one line.
-            if (fields >= width or rec.problem != null) return;
-            return c.oneLine(rec, fields, width, d, textOf(rec, data, base));
+            if (fields.len == width) {
+                c.held += @intFromBool(holds(fields, d.delimiter, data, base));
+                return;
+            }
+            return c.oneLine(rec, fields.len, width, d, textOf(rec, data, base));
         }
         const text = textOf(rec, data, base);
         if (!wholeRows(text, d.delimiter, width)) {
             c.multiline += 1;
             return;
         }
-        c.note(rec, fields, width, opening(firstLine(text), d) orelse 0);
+        c.note(rec, fields.len, width, opening(firstLine(text), d) orelse 0);
         c.folded += 1;
         c.folded_lines += rec.inner_lines + 1;
     }
 
     /// A record on one line, text, narrower than a row: narrowed when a
     /// quote hid some of its delimiters, and without quotes it is a whole
-    /// row.
+    /// row; short when not.
     fn oneLine(c: *QuoteCheck, rec: Record, fields: usize, width: usize, d: Dialect, text: []const u8) void {
-        if (std.mem.countScalar(u8, text, d.delimiter) != width - 1) return;
-        const field = opening(text, d) orelse return;
-        c.note(rec, fields, width, field);
+        const field = if (std.mem.countScalar(u8, text, d.delimiter) == width - 1) opening(text, d) else null;
+        const f = field orelse {
+            c.short += 1;
+            return;
+        };
+        c.note(rec, fields, width, f);
         c.narrowed += 1;
     }
 
@@ -144,11 +161,13 @@ pub const QuoteCheck = struct {
         c.first = .{ .line = rec.line, .inner_lines = rec.inner_lines, .fields = fields, .width = width, .field = field };
     }
 
-    /// The quotes look like data: more records are rows folded together
-    /// than quoted text across lines, in a file whose unquoted fields hold
-    /// quotes too (stray_quotes), as a file that never quotes does.
+    /// The quotes look like data: more records are rows a quote ran
+    /// together (folded or narrowed) than say the file quotes (quoted text
+    /// across lines, a row a quoted delimiter keeps whole) or is ragged
+    /// anyway (short), in a file whose unquoted fields hold quotes too
+    /// (stray_quotes), as a file that never quotes does.
     pub fn isData(c: QuoteCheck, stray_quotes: u64) bool {
-        return c.folded > c.multiline and stray_quotes > 0;
+        return c.folded + c.narrowed > c.multiline + c.held + c.short and stray_quotes > 0;
     }
 
     /// The folded and narrowed rows when the quotes look like data, or null.
@@ -175,6 +194,15 @@ fn textOf(rec: Record, data: []const u8, base: u64) []const u8 {
         text.len -= 2;
     } else if (text.len > 0 and (text[text.len - 1] == '\n' or text[text.len - 1] == '\r')) text.len -= 1;
     return text;
+}
+
+/// Whether a quoted field of fields, in data from base, holds delimiter.
+fn holds(fields: []const Field, delimiter: u8, data: []const u8, base: u64) bool {
+    for (fields) |f| {
+        if (!f.flags.quoted) continue;
+        if (std.mem.findScalar(u8, data[@intCast(f.start - base)..][0..f.len], delimiter) != null) return true;
+    }
+    return false;
 }
 
 fn firstLine(text: []const u8) []const u8 {
@@ -244,7 +272,7 @@ test QuoteCheck {
     var stray: u64 = 0;
     var seen: usize = 0;
     while (try p.next(std.testing.allocator, &fields)) |rec| : (seen += 1) {
-        c.record(rec, fields.items.len, 3, d, data, 0);
+        c.record(rec, fields.items, 3, d, data, 0);
         stray += rec.stray_quotes;
     }
     try std.testing.expectEqual(@as(usize, 3), seen);
@@ -261,7 +289,7 @@ test QuoteCheck {
     var p4: reference.Parser = .init(same, d, .{});
     stray = 0;
     while (try p4.next(std.testing.allocator, &fields)) |rec| {
-        n.record(rec, fields.items.len, 3, d, same, 0);
+        n.record(rec, fields.items, 3, d, same, 0);
         stray += rec.stray_quotes;
     }
     try std.testing.expectEqual(@as(u64, 1), n.narrowed);
@@ -272,14 +300,15 @@ test QuoteCheck {
     var short: QuoteCheck = .{};
     const quoted = "lug_id,remark,kg\n1,\"late pick\"\n2,early\n";
     var p5: reference.Parser = .init(quoted, .rfc4180, .{});
-    while (try p5.next(std.testing.allocator, &fields)) |rec| short.record(rec, fields.items.len, 3, .rfc4180, quoted, 0);
+    while (try p5.next(std.testing.allocator, &fields)) |rec| short.record(rec, fields.items, 3, .rfc4180, quoted, 0);
     try std.testing.expectEqual(@as(u64, 0), short.narrowed);
+    try std.testing.expectEqual(@as(u64, 2), short.short);
 
     // Quoted text with a line break in it, as quoting means: not rows.
     var q: QuoteCheck = .{};
     const text = "lug_id,remark\n1,\"two lines\nof a remark, and, commas\"\n";
     var p2: reference.Parser = .init(text, .rfc4180, .{});
-    while (try p2.next(std.testing.allocator, &fields)) |rec| q.record(rec, fields.items.len, 2, .rfc4180, text, 0);
+    while (try p2.next(std.testing.allocator, &fields)) |rec| q.record(rec, fields.items, 2, .rfc4180, text, 0);
     try std.testing.expectEqual(@as(u64, 0), q.folded);
     try std.testing.expectEqual(@as(u64, 1), q.multiline);
     try std.testing.expect(!q.isData(1));
@@ -289,13 +318,56 @@ test QuoteCheck {
     var narrow: QuoteCheck = .{};
     const chance = "lug_id,remark\n1,\"late pick\nshade side, small\"\n";
     var p3: reference.Parser = .init(chance, .rfc4180, .{});
-    while (try p3.next(std.testing.allocator, &fields)) |rec| narrow.record(rec, fields.items.len, 2, .rfc4180, chance, 0);
+    while (try p3.next(std.testing.allocator, &fields)) |rec| narrow.record(rec, fields.items, 2, .rfc4180, chance, 0);
     try std.testing.expectEqual(@as(u64, 1), narrow.folded);
     try std.testing.expect(!narrow.isData(0));
     // A line break inside quotes in a one-column file says nothing.
     var one: QuoteCheck = .{};
-    one.record(.{ .start = 0, .end = 6, .line = 1, .inner_lines = 1 }, 1, 1, .rfc4180, "\"a\nb\"\n", 0);
+    one.record(.{ .start = 0, .end = 6, .line = 1, .inner_lines = 1 }, &.{.{ .start = 1, .len = 3, .flags = .{ .quoted = true } }}, 1, .rfc4180, "\"a\nb\"\n", 0);
     try std.testing.expectEqual(@as(u64, 0), one.folded + one.multiline);
+}
+
+/// QuoteCheck over every record of data, in rows width fields wide, and
+/// the stray quotes it weighs.
+fn checkAll(data: []const u8, d: Dialect, width: usize) !struct { QuoteCheck, u64 } {
+    var p: reference.Parser = .init(data, d, .{});
+    var fields: std.ArrayList(Field) = .empty;
+    defer fields.deinit(std.testing.allocator);
+    var c: QuoteCheck = .{};
+    var stray: u64 = 0;
+    while (try p.next(std.testing.allocator, &fields)) |rec| {
+        c.record(rec, fields.items, width, d, data, 0);
+        stray += rec.stray_quotes;
+    }
+    return .{ c, stray };
+}
+
+test "QuoteCheck weighs the rows a quote narrowed" {
+    // Inch marks whose quotes close on the line they open on: no record
+    // spans lines, and lines 3 and 5 each read a field short.
+    const d: Dialect = .{ .delimiter = '|', .quote = '"', .escape = .doubled, .newline = .lf, .header = true };
+    const inches = "lug_id|bin|depth|cultivar\n1|A|36|Starfall\n2|\"|36\"|Quillon\n3|B|48\"|Brookwood\n4|\"|24\"|Marrowdew\n";
+    const c, const stray = try checkAll(inches, d, 4);
+    try std.testing.expectEqual(@as(u64, 2), c.narrowed);
+    try std.testing.expectEqual(@as(u64, 0), c.folded + c.held + c.short);
+    try std.testing.expectEqualDeep(Folded{ .records = 0, .lines = 0, .narrowed = 2, .line = 3, .end_line = 3, .fields = 3, .width = 4, .field = 2 }, c.folding(stray).?);
+
+    // A file that quotes, with a row whose quoted comma makes up for the
+    // field it leaves off: two rows a quoted comma keeps whole say the
+    // quotes are quoting.
+    const quoting = "id,name,note\n1,\"Lee, A\",late\n2,\"Ono, B\"\n3,\"Ruiz, C\",early\n4,5'11\",tall\n";
+    const q, const q_stray = try checkAll(quoting, .rfc4180, 3);
+    try std.testing.expectEqual(@as(u64, 1), q.narrowed);
+    try std.testing.expectEqual(@as(u64, 2), q.held);
+    try std.testing.expect(!q.isData(q_stray));
+
+    // A ragged file: more rows are short with no quote in them than a
+    // quote narrowed.
+    const ragged = "id,name,note\n1,\"Ono, B\"\n2,Lee\n3,Ruiz\n4,5'11\",tall\n";
+    const r, const r_stray = try checkAll(ragged, .rfc4180, 3);
+    try std.testing.expectEqual(@as(u64, 1), r.narrowed);
+    try std.testing.expectEqual(@as(u64, 2), r.short);
+    try std.testing.expect(!r.isData(r_stray));
 }
 
 /// The bytes with their escapes undone: a doubled quote to one, and under

@@ -10,7 +10,20 @@ and fields. Before 1.0 a breaking change is a minor bump.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- A file whose quotes are data is now stopped (`quote_is_data`) when
+  every quote closes on the line it opens on, as a ditto mark and then
+  an inch mark do (`"|24"`). Before, it took a quote that ran across
+  lines, and such a file's rows came out a field short and were set
+  aside as "a different number of fields": a loader's symptom, without
+  the cause or the fix. The rows a quote ran together, across lines or
+  on one, are now weighed against the rows that say the file really
+  quotes (quoted text across lines, a row a quoted delimiter keeps
+  whole) or is ragged anyway (a row short with no quote to blame).
+- Breaking: such a file now ends in `error` where it ended in `fail`.
+  And a file with quotes across lines that has more rows saying it
+  quotes than rows run together is no longer stopped.
 
 ## [0.3.0] - 2026-11-03
 

@@ -405,9 +405,12 @@ pub fn inferFile(env: Env, opts: Options, nulls: []const []const u8, path: []con
         const state = try batch.fill(gpa, &s, .{});
         for (0..batch.len()) |i| {
             if (f.rows >= limit) break :read;
-            quotes.record(batch.records.items[i], batch.recordFields(i).len, verdict.fields, verdict.dialect, in.data(), in.base);
-            stray += batch.records.items[i].stray_quotes;
-            if (batch.records.items[i].problem != null) continue;
+            const rec = batch.records.items[i];
+            stray += rec.stray_quotes;
+            if (rec.problem != null) {
+                quotes.record(rec, batch.recordFields(i), verdict.fields, verdict.dialect, in.data(), in.base);
+                continue;
+            }
             try records.values(gpa, batch.recordFields(i), in.data(), in.base, verdict.dialect, &scratch, &values);
             if (header_pending) {
                 header_pending = false;
@@ -418,7 +421,8 @@ pub fn inferFile(env: Env, opts: Options, nulls: []const []const u8, path: []con
                 header_names = names;
                 continue;
             }
-            const rec = batch.records.items[i];
+            // Weighed past the header, which is no row, as validate weighs.
+            quotes.record(rec, batch.recordFields(i), verdict.fields, verdict.dialect, in.data(), in.base);
             if (header_names.len > 0 and sameNames(values.items, header_names)) {
                 if (repeated == 0) repeated_line = rec.line;
                 repeated += 1;
