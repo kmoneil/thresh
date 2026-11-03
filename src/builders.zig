@@ -7,6 +7,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const schema = @import("schema.zig");
 const types = @import("types.zig");
+const push = @import("list.zig").push;
 const Value = types.Value;
 
 pub const Column = struct {
@@ -40,6 +41,21 @@ pub const Column = struct {
         inline for (lists) |f| @field(c, f).clearRetainingCapacity();
     }
 
+    /// v onto the list its type keeps: a string's or binary's bytes, and
+    /// not yet their offset.
+    fn add(c: *Column, gpa: Allocator, v: Value, encoding: types.Encoding) Allocator.Error!void {
+        switch (v) {
+            .int, .time, .timestamp => |n| try push(i64, &c.ints, gpa, n),
+            .date => |d| try push(i32, &c.days, gpa, d),
+            .float => |f| try push(f64, &c.floats, gpa, f),
+            .decimal => |d| try push(i128, &c.decimals, gpa, d),
+            .bool => |x| try push(bool, &c.bools, gpa, x),
+            .enumeration => |i| try push(u32, &c.indices, gpa, i),
+            .string => |s| try appendUtf8(gpa, &c.bytes, s, encoding, c.utf8 == .replace),
+            .binary => |s| try c.bytes.appendSlice(gpa, s),
+        }
+    }
+
     /// Row i's bytes: its string or binary value, or its text as read.
     pub fn text(c: *const Column, i: usize) []const u8 {
         return c.bytes.items[@intCast(c.offsets.items[i])..@intCast(c.offsets.items[i + 1])];
@@ -51,6 +67,11 @@ pub const Batch = struct {
     encoding: types.Encoding,
     columns: []Column,
     rows: usize = 0,
+    /// Keep each typed value's text as read, for CSV, which writes values
+    /// as read. Arrow reads only a string or binary column's text, so a
+    /// batch for Arrow leaves this off, and a typed column keeps no text
+    /// and no offsets (Column.text is then for string and binary only).
+    text: bool = true,
 
     pub fn init(gpa: Allocator, s: *const schema.Schema, encoding: types.Encoding) Allocator.Error!Batch {
         const columns = try gpa.alloc(Column, s.columns.len);
@@ -81,24 +102,12 @@ pub const Batch = struct {
     pub fn append(b: *Batch, raw: []const []const u8, cells: []const ?Value) Allocator.Error!void {
         const gpa = b.gpa;
         for (b.columns, raw, cells) |*c, text, cell| {
-            try c.valid.append(gpa, cell != null);
-            const v = cell orelse {
-                try pushDefault(gpa, c);
-                try c.offsets.append(gpa, c.bytes.items.len);
-                continue;
-            };
-            switch (v) {
-                .int, .time, .timestamp => |n| try c.ints.append(gpa, n),
-                .date => |d| try c.days.append(gpa, d),
-                .float => |f| try c.floats.append(gpa, f),
-                .decimal => |d| try c.decimals.append(gpa, d),
-                .bool => |x| try c.bools.append(gpa, x),
-                .enumeration => |i| try c.indices.append(gpa, i),
-                .string => |s| try appendUtf8(gpa, &c.bytes, s, b.encoding, c.utf8 == .replace),
-                .binary => |s| try c.bytes.appendSlice(gpa, s),
-            }
-            if (v != .string and v != .binary) try c.bytes.appendSlice(gpa, text);
-            try c.offsets.append(gpa, c.bytes.items.len);
+            try push(bool, &c.valid, gpa, cell != null);
+            if (cell) |v| try c.add(gpa, v, b.encoding) else try pushDefault(gpa, c);
+            if (!(b.text or c.type == .string or c.type == .binary)) continue;
+            // A typed value's text as read; a null has none.
+            if (cell) |v| if (v != .string and v != .binary) try c.bytes.appendSlice(gpa, text);
+            try push(u64, &c.offsets, gpa, c.bytes.items.len);
         }
         b.rows += 1;
     }

@@ -45,6 +45,7 @@
 //! a guess the next file can break, and infer names it.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const dp = @import("dateparsa");
 const schema = @import("schema.zig");
@@ -137,7 +138,52 @@ pub const ColumnState = struct {
     tolerated: u64 = 0,
     /// What its values are like (stats.zig), in the inferrer's arena.
     stats: ?*stats.Column = null,
+    /// What time() last detected, kept to read the next value of the same
+    /// shape without detecting again; in the inferrer's arena, and shared
+    /// with rest, which it may be, being the same for any column.
+    time_seen: ?*TimeSeen = null,
 };
+
+/// A date or timestamp value's detection, kept for the values written the
+/// same way. A value of the same length with the same bytes but for its
+/// digits, which a layout dateparsa calls reusable reads, detects as the
+/// same layout (reusable: the format is not resolved per value, as DD/MM
+/// against MM/DD is), and a layout is spelled from the value's bytes that
+/// are not its fields' digits: so it is spelled the same too. In Debug
+/// builds every value read this way is detected as well, and the two must
+/// agree.
+pub const TimeSeen = struct {
+    layout: dp.Layout,
+    /// The value detected, each ASCII digit as '9'.
+    shape: [max_len]u8 = undefined,
+    len: u8 = 0,
+    /// The format as spelled, whole or as far as it could be (ok false).
+    spelled_buf: [128]u8 = undefined,
+    spelled_len: u8 = 0,
+    ok: bool = false,
+    has_time: bool = false,
+
+    const max_len = 64;
+
+    fn shapeOf(ch: u8) u8 {
+        return if (std.ascii.isDigit(ch)) '9' else ch;
+    }
+
+    /// v read with the kept layout, when v has the shape it was detected from.
+    fn read(seen: *const TimeSeen, v: []const u8) ?dp.DateTime {
+        if (v.len != seen.len) return null;
+        for (v, seen.shape[0..v.len]) |ch, s| if (shapeOf(ch) != s) return null;
+        return seen.layout.parse(v) catch null;
+    }
+
+    fn said(seen: *const TimeSeen) Spelled {
+        return .{ .text = seen.spelled_buf[0..seen.spelled_len], .ok = seen.ok, .has_time = seen.has_time };
+    }
+};
+
+/// A date or timestamp value's format, as a layout spelled it in strftime:
+/// whole, or as far as it could be (ok false), and whether it reads a time.
+const Spelled = struct { text: []const u8, ok: bool, has_time: bool };
 
 /// The most values the rest of a column may refuse and still be followed.
 const max_misfits = 100_000;
@@ -345,26 +391,58 @@ pub const Inferrer = struct {
 
     /// The date or timestamp v is, the column's format updated, or null.
     fn time(f: *Inferrer, c: *ColumnState, v: []const u8) ?Kind {
+        if (c.time_seen) |seen| if (seen.read(v)) |t| {
+            if (builtin.mode == .debug) f.checkSeen(seen, v, t);
+            f.last_time = types.date.micros(t);
+            return f.timeKind(c, seen.said());
+        };
         const r = dp.parseWith(v, .{ .prefer_day_first = f.options.day_first }) catch return null;
         if (r.kind != .absolute or r.layout.source != .program) return null;
         f.last_time = types.date.micros(r.time);
         var w: std.Io.Writer = .fixed(&f.format_buf);
-        r.layout.formatString(.strftime, v, &w) catch {
-            c.format_mixed = true;
-        };
-        const spelled = w.buffered();
-        const has_time = hasTimeDirective(spelled);
+        const ok = if (r.layout.formatString(.strftime, v, &w)) true else |_| false;
+        const said: Spelled = .{ .text = w.buffered(), .ok = ok, .has_time = hasTimeDirective(w.buffered()) };
+        if (r.layout.reusable() and v.len <= TimeSeen.max_len) f.keepSeen(c, r.layout, v, said);
+        return f.timeKind(c, said);
+    }
+
+    /// The column's format updated for a value spelled so, and its kind.
+    fn timeKind(f: *Inferrer, c: *ColumnState, said: Spelled) Kind {
+        if (!said.ok) c.format_mixed = true;
         if (!c.format_mixed) {
             if (c.format) |have| {
-                if (!std.mem.eql(u8, have, spelled)) c.format_mixed = true;
-            } else if (spelled.len > 0) {
-                c.format = f.arena.dupe(u8, spelled) catch null;
+                if (!std.mem.eql(u8, have, said.text)) c.format_mixed = true;
+            } else if (said.text.len > 0) {
+                c.format = f.arena.dupe(u8, said.text) catch null;
             }
         }
         // A date column takes a timestamp by becoming one; a timestamp
         // column takes a date as midnight.
-        if (has_time or c.kind == .timestamp) return .timestamp;
+        if (said.has_time or c.kind == .timestamp) return .timestamp;
         return .date;
+    }
+
+    /// Keeps what detecting v said, for the values of its shape. Without
+    /// the memory for it, the next value is detected as this one was.
+    fn keepSeen(f: *Inferrer, c: *ColumnState, layout: dp.Layout, v: []const u8, said: Spelled) void {
+        const seen = c.time_seen orelse (f.arena.create(TimeSeen) catch return);
+        seen.* = .{ .layout = layout, .len = @intCast(v.len), .ok = said.ok, .has_time = said.has_time };
+        for (seen.shape[0..v.len], v) |*s, ch| s.* = TimeSeen.shapeOf(ch);
+        const n = @min(said.text.len, seen.spelled_buf.len);
+        @memcpy(seen.spelled_buf[0..n], said.text[0..n]);
+        seen.spelled_len = @intCast(n);
+        c.time_seen = seen;
+    }
+
+    /// Debug builds: v, read with a kept layout as t, detects as kept.
+    fn checkSeen(f: *Inferrer, seen: *const TimeSeen, v: []const u8, t: dp.DateTime) void {
+        const r = dp.parseWith(v, .{ .prefer_day_first = f.options.day_first }) catch unreachable;
+        std.debug.assert(r.kind == .absolute and r.layout.source == .program and r.layout.reusable());
+        std.debug.assert(types.date.micros(r.time) == types.date.micros(t));
+        var buf: [128]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&buf);
+        const ok = if (r.layout.formatString(.strftime, v, &w)) true else |_| false;
+        std.debug.assert(ok == seen.ok and std.mem.eql(u8, w.buffered(), seen.said().text));
     }
 };
 
@@ -462,9 +540,23 @@ fn isBoolDigit(v: []const u8) bool {
 /// A number whose integer part has a zero before another digit: 007,
 /// -0123, 00.5. Not 0, 0.5 or 10.
 fn zeroPadded(v: []const u8) bool {
-    if (decimalShape(v) == null) return false;
     const digits = if (v.len > 0 and (v[0] == '-' or v[0] == '+')) v[1..] else v;
-    return digits.len > 1 and digits[0] == '0' and std.ascii.isDigit(digits[1]);
+    // Every value of every column comes here: the shape only for the few
+    // that start with a zero and a digit.
+    if (!(digits.len > 1 and digits[0] == '0' and std.ascii.isDigit(digits[1]))) return false;
+    return decimalShape(v) != null;
+}
+
+/// The digits of an integer int.parse took, leading zeros not counted:
+/// decimalShape's int, without the value it works out too.
+fn intDigits(v: []const u8) u8 {
+    var n: usize = 0;
+    for (v) |ch| {
+        if (!std.ascii.isDigit(ch)) continue;
+        if (n > 0 or ch != '0') n += 1;
+    }
+    if (builtin.mode == .debug) std.debug.assert(n == decimalShape(v).?.int);
+    return @intCast(@min(n, 255));
 }
 
 fn hasTimeDirective(format: []const u8) bool {
@@ -528,8 +620,7 @@ fn decimalShape(v: []const u8) ?struct { int: usize, frac: usize, value: ?f64 } 
 fn numberFrom(c: *ColumnState, v: []const u8, from: Kind, number: *?stats.Extreme) Kind {
     if (from == .int64) {
         if (types.int.parse(v)) |n| {
-            const shape = decimalShape(v).?;
-            c.int_digits = @intCast(@max(c.int_digits, shape.int));
+            c.int_digits = @max(c.int_digits, intDigits(v));
             number.* = .{ .int = n };
             return .int64;
         } else |_| {}

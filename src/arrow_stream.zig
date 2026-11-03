@@ -144,6 +144,8 @@ pub const Export = struct {
         }
         reading = true;
         e.rows = try .init(gpa, &e.schema, o.encoding);
+        // Arrow: a typed column's text is never read.
+        e.rows.text = false;
         return .{ .ready = e };
     }
 

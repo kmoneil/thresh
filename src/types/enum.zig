@@ -5,6 +5,8 @@ const std = @import("std");
 /// The value's index in values, or null.
 pub fn index(v: []const u8, values: []const []const u8, case_insensitive: bool) ?u32 {
     for (values, 0..) |s, i| {
+        // The lengths first, here, rather than in a call to compare them.
+        if (s.len != v.len) continue;
         const same = if (case_insensitive) std.ascii.eqlIgnoreCase(v, s) else std.mem.eql(u8, v, s);
         if (same) return @intCast(i);
     }

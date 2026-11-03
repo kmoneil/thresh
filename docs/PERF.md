@@ -55,6 +55,65 @@ first place to look for speed. On the text profile, where a long quoted field is
 mostly bytes the index skips, it is 1.7 times. CSV output costs more than
 Arrow because every field is scanned for bytes that need quoting.
 
+## The sweep of 2026-11-02
+
+A pass over every stage with a profiler (`bench --stage` under sample(1))
+and an allocation count (`bench --allocs`), each change measured against
+main in turns and its output compared byte for byte with main's (Arrow
+stream and file, CSV, reject files, reports, describe and infer, on eleven
+inputs). The machine was busy throughout (load about 14), so this says
+how much faster, not how fast: `tools/bench_gate.sh` at 256 MiB, best of
+three rounds in turns, main (5db619d) against the sweep:
+
+| profile | stage1 | parse | validate | report | infer | csv | arrow | reference |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| narrow | +5% | +12% | +16% | +19% | +63% | +24% | +36% | +11% |
+| wide | -2% | +8% | +13% | +11% | +19% | +15% | +8% | +2% |
+| text | +2% | +2% | +7% | +2% | +2% | +4% | +3% | +2% |
+
+stage1 and reference did not change: their numbers are the noise. What
+did:
+
+- **Dates in infer.** Every value of a date column was detected from
+  scratch, then its layout spelled as strftime, which parses it again.
+  A column now keeps the last reusable layout and its spelling, and a value
+  of the same shape but for its digits is read with that layout alone.
+  Debug builds detect each such value as well and assert they agree.
+- **Numbers in infer.** Every value of every column went through the full
+  decimal scan (with a division) to rule out a zero-padded number; the
+  cheap test of its first two bytes comes first now.
+- **Cells.** A cell was compared with every null string through a call to
+  `mem.eql`; a bitmask of the nulls' lengths rules nearly all out. Integers
+  of up to 18 digits and decimals of up to 18 digits are read without
+  overflow checks or i128 arithmetic, which they cannot need.
+- **Appends.** Each field (stage 2) and each typed cell (output) was an
+  `ArrayList.append` call; `list.push` does the common case inline.
+- **Output.** CSV copies a short field into its buffer as it checks it.
+  Arrow output keeps no text for typed columns (only CSV writes it), and
+  writes each message's buffers from where they are rather than copying
+  them into one body: at 64 MB, wide Arrow output allocates 110 MB in all
+  where it allocated 176, and the allocation count no longer grows with the
+  file.
+- **Small files.** A file under 64 KiB is read, not mapped: an unmap stops
+  every core's work on the process's memory map. 3,000 2 KB files
+  validate 10% faster with the default jobs, 3% with one.
+
+Rows allocate nothing: `bench --allocs` gives every stage the same count
+at 16 MB as at 64 MB, but for lists that grow to a batch's size once, and a
+string column's bytes now and then.
+
+Left as they are, each a choice rather than a fix:
+
+- Releases are ReleaseSafe, and there `std.process.Init` hands the CLI
+  `std.heap.SafeAllocator`, which checks every free. `c_allocator` instead
+  was 0 to 3% faster on large files and 5 to 8% on thousands of small ones.
+- Most of a small file's time is the sniffer, which scores about twenty
+  dialects by parsing the sample with the reference parser. describe
+  reports the runners-up's scores, so a cheaper sniffer has to keep them.
+- `@setRuntimeSafety(false)` in the hot loops, as the shipped build's
+  section below suggests, would give back some of ReleaseSafe's cost along
+  with its checks.
+
 ## Column statistics
 
 A report's statistics for each column (docs/REPORT.md, `columns[].stats`)
@@ -152,6 +211,8 @@ functions only moved.
 zig build bench                                   # all profiles, 1 GB each
 zig build bench -- --profile text --size 268435456 --runs 5
 zig build bench -- --json                         # what the gate reads
+zig build bench -- --profile narrow --stage infer # one stage, for a profiler
+zig build bench -- --size 67108864 --allocs       # allocations a stage, not speed
 zig build scale -Doptimize=ReleaseFast            # files in parallel
 tools/bench_gate.sh origin/main                   # this tree against main
 ```
