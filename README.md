@@ -153,6 +153,8 @@ Zig 0.17.0.
 
 ```sh
 zig build --release       # zig-out/bin/thresh and libthresh, ReleaseSafe: what a release ships
+                          # (python3 -I tools/release_archives.py packs the
+                          # command for every platform into zig-out/release)
 zig build                 # Debug
 zig build test            # unit tests, the corpus, the command and examples/
                           # (-Dcorpus=false skips the parts needing python3)

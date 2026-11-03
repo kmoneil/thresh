@@ -1,0 +1,112 @@
+# The thresh command, ready to download. One Linux runner builds every
+# platform's archive (tools/release_archives.py, Zig cross-compiling);
+# then each platform unpacks its own, with no Zig, and runs it on the
+# example files: its version, a schema inferred from a clean file, and a
+# dirty file checked against it, four rows set aside and exit 1. Linux's
+# binary is static, so it runs again on Alpine (musl) as it is.
+# release.yml calls this on the tagged commit and publishes the `binaries`
+# artifact it uploads, so a release ships only archives tested here.
+name: binaries
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  archives:
+    name: archives (every platform)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # No cache for a release: what it publishes is built from nothing it
+      # did not make. (Called from release.yml, github.ref is the tag.)
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          use-cache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - name: tools/release_archives.py
+        run: python3 -I tools/release_archives.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: binaries
+          path: |
+            zig-out/release/*.tar.gz
+            zig-out/release/*.zip
+          retention-days: 7
+          if-no-files-found: error
+
+  test:
+    name: run (${{ matrix.platform }})
+    needs: archives
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-x86_64, os: ubuntu-24.04 }
+          - { platform: linux-arm64, os: ubuntu-24.04-arm }
+          - { platform: macos-arm64, os: macos-latest }
+          - { platform: macos-x86_64, os: macos-15-intel }
+          - { platform: windows-x86_64, os: windows-latest }
+          - { platform: windows-arm64, os: windows-11-arm }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: binaries
+          path: ${{ runner.temp }}/archives
+      - name: the version, and where the binary is
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          version=$(sed -n 's/^ *\.version = "\(.*\)",$/\1/p' build.zig.zon)
+          dir="$RUNNER_TEMP/thresh-$version-$PLATFORM"
+          exe=thresh; case $PLATFORM in windows-*) exe=thresh.exe ;; esac
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "ARCHIVE=$RUNNER_TEMP/archives/thresh-$version-$PLATFORM" >> "$GITHUB_ENV"
+          echo "BIN=$dir/$exe" >> "$GITHUB_ENV"
+      # Unpacked as a person would: tar where there is one, and on Windows
+      # the zip by PowerShell, which every Windows has.
+      - name: unpack the archive
+        if: runner.os != 'Windows'
+        run: tar -xzf "$ARCHIVE.tar.gz" -C "$RUNNER_TEMP"
+      - name: unpack the archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Expand-Archive -Path "$env:ARCHIVE.zip" -DestinationPath "$env:RUNNER_TEMP"
+      - name: run it on the examples
+        run: |
+          ls -l "$(dirname "$BIN")"
+          said=$("$BIN" --version | tr -d '\r')
+          echo "$said"
+          [ "$said" = "thresh $VERSION" ] || { echo "expected 'thresh $VERSION'" >&2; exit 1; }
+          "$BIN" infer examples/data/harvest.csv --out "$RUNNER_TEMP/harvest.schema.json"
+          status=0
+          "$BIN" validate examples/data/harvest_dirty.csv --schema "$RUNNER_TEMP/harvest.schema.json" \
+            --reject "$RUNNER_TEMP/rejects" || status=$?
+          [ "$status" = 1 ] || { echo "expected exit 1 for the dirty file, got $status" >&2; exit 1; }
+          rows=$(($(wc -l < "$RUNNER_TEMP/rejects/harvest_dirty.csv.rejects.csv") - 1))
+          [ "$rows" = 4 ] || { echo "expected 4 rows set aside, got $rows" >&2; exit 1; }
+          echo "4 rows set aside, exit 1, as expected"
+      # The image python.yml tests the musl wheels in, pinned by its digest
+      # (the index of every arch).
+      - name: the same binary on Alpine
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$(dirname "$BIN"):/t:ro" -v "$PWD/examples:/e:ro" \
+            python:3.13-alpine@sha256:7984cf56ceaddebe4fefeb75d64000b9f45d8b77b11a09b24524da6cdc3af0c8 \
+            sh -euc '/t/thresh --version; /t/thresh sniff /e/data/harvest.csv'
