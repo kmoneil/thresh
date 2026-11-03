@@ -9,6 +9,7 @@ const Allocator = std.mem.Allocator;
 const dialect = @import("dialect.zig");
 const input = @import("input.zig");
 const records = @import("records.zig");
+const reference = @import("reference.zig");
 const schema_mod = @import("schema.zig");
 const Schema = schema_mod.Schema;
 const validate = @import("validate.zig");
@@ -133,7 +134,7 @@ pub const Reader = struct {
         var sniffed = (try openSniffed(env, opts, path, names, &out)) orelse return .{ .stopped = .{ .outcome = out } };
         errdefer sniffed.in.close(env.io, env.gpa);
         const verdict = sniffed.verdict;
-        if (verdictProblem(verdict, opts)) |p| {
+        if (try stopProblem(env.gpa, arena, &sniffed.in, verdict, opts)) |p| {
             sniffed.in.close(env.io, env.gpa);
             out.problem = p;
             return .{ .stopped = .{ .outcome = out, .verdict = verdict } };
@@ -225,7 +226,7 @@ pub const Reader = struct {
         // Quotes that are data folded lines into rows: what was read is not
         // the file's rows, so none of it is kept.
         const folded = if (r.opts.pins.quote == null) v.quotes.folding(v.stray_quotes) else null;
-        if (folded) |f| try v.structural.insert(v.gpa, 0, .{ .quote_is_data = f });
+        if (folded) |f| try v.structural.insert(v.gpa, 0, .{ .quote_is_data = f.named(if (r.verdict.dialect.header) v.names else &.{}) });
         out.result = if (folded != null) .@"error" else if (v.passed()) .pass else .fail;
         if (v.structural.items.len > 0) {
             out.problem = try v.structural.items[0].dupe(arena);
@@ -262,6 +263,25 @@ pub fn verdictProblem(v: dialect.Verdict, o: Options) ?Problem {
     if (v.confidence == .low and !o.pins.complete()) return .{ .dialect_unsettled = .{ .score = v.score } };
     if (v.folded) |f| return .{ .quote_is_data = f };
     return null;
+}
+
+/// verdictProblem, with the column a quote that is data opens in named
+/// from the header in in, the name in arena, as it outlives the file.
+fn stopProblem(gpa: Allocator, arena: Allocator, in: *const input.Input, v: dialect.Verdict, o: Options) Allocator.Error!?Problem {
+    var p = verdictProblem(v, o) orelse return null;
+    switch (p) {
+        .quote_is_data => |*f| if (v.dialect.header) {
+            var fields: std.ArrayList(records.Field) = .empty;
+            defer fields.deinit(gpa);
+            var parser: reference.Parser = .init(in.data(), v.dialect, .{ .start = v.start });
+            _ = try parser.next(gpa, &fields);
+            if (f.field - 1 < fields.items.len) {
+                f.column = try arena.dupe(u8, std.mem.trim(u8, fields.items[f.field - 1].raw(in.data()), " \t"));
+            }
+        },
+        else => {},
+    }
+    return p;
 }
 
 /// A UTF-16 file is transcoded to UTF-8 as it is read, so an --encoding
@@ -348,7 +368,7 @@ pub fn inferFile(env: Env, opts: Options, nulls: []const []const u8, path: []con
     defer sniffed.in.close(io, gpa);
     const in = &sniffed.in;
     const verdict = sniffed.verdict;
-    if (verdictProblem(verdict, opts)) |p| {
+    if (try stopProblem(gpa, arena, in, verdict, opts)) |p| {
         out.problem = p;
         return .{ .outcome = out };
     }
@@ -385,7 +405,7 @@ pub fn inferFile(env: Env, opts: Options, nulls: []const []const u8, path: []con
         const state = try batch.fill(gpa, &s, .{});
         for (0..batch.len()) |i| {
             if (f.rows >= limit) break :read;
-            quotes.record(batch.records.items[i], verdict.fields, verdict.dialect, in.data(), in.base);
+            quotes.record(batch.records.items[i], batch.recordFields(i).len, verdict.fields, verdict.dialect, in.data(), in.base);
             stray += batch.records.items[i].stray_quotes;
             if (batch.records.items[i].problem != null) continue;
             try records.values(gpa, batch.recordFields(i), in.data(), in.base, verdict.dialect, &scratch, &values);
@@ -421,7 +441,7 @@ pub fn inferFile(env: Env, opts: Options, nulls: []const []const u8, path: []con
     out.rows = f.rows;
     // Rows folded together by quotes that are data: no schema from them.
     if (opts.pins.quote == null) if (quotes.folding(stray)) |folded| {
-        out.problem = .{ .quote_is_data = folded };
+        out.problem = .{ .quote_is_data = folded.named(header_names) };
         return .{ .outcome = out };
     };
     // Read as UTF-8 and not UTF-8: a guess of replace would turn every

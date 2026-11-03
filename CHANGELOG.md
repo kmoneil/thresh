@@ -10,7 +10,17 @@ and fields. Before 1.0 a breaking change is a minor bump.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- When a file's quotes look like data (`quote_is_data`), thresh now says
+  where a loader that reads quotes first goes wrong, and why: the line,
+  the field and column the quote opens in, and what that line reads as
+  ("so the line reads as 78 fields of 79"). It also counts the rows a
+  quote shortens on their own line beside the records it runs across
+  lines; before, it gave only the first record across lines, which can
+  be thousands of lines past the one a loader's error names. The
+  problem gains `narrowed`, `end_line`, `fields`, `width`, `field` and
+  `column`; `sniff` names the field by place only.
 
 ## [0.2.1] - 2026-11-03
 

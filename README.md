@@ -256,7 +256,7 @@ without the quote:
 ```console
 $ thresh sniff data/bins.txt
 data/bins.txt: delimiter=| quote=" escape=doubled newline=lf header=yes confidence=high warnings=quote_in_unquoted
-thresh: data/bins.txt: the quotes look like data: 1 record holds 4 lines inside quotes, the first on line 13, and each of those lines is a whole row without them; pin --quote none to read quotes as data
+thresh: data/bins.txt: the quotes look like data: on line 13 a value that starts with a quote (field 3) runs on to the next one, so lines 13 to 16 read as one record; each line is a whole row without the quotes: pin --quote none to read quotes as data
 [exit 2]
 ```
 

@@ -576,23 +576,24 @@ const cli_checks = [_]struct {
         // window: three lines folded into one record are not rows.
         .args = &.{ "validate", "test/cli/inches.txt", "--columns", "lug_id:int64,bin:string,cultivar:string", "--sample-bytes", "512", "--json" },
         .stdout = "{\"format_version\":1,\"file\":\"test/cli/inches.txt\",\"result\":\"error\",\"rows\":68,\"rows_rejected\":0,\"problems\":[{\"code\":\"quote_is_data\"," ++
-            "\"message\":\"the quotes look like data: 1 record holds 3 lines inside quotes, the first on line 62, and each of those lines is a whole row without them; pin --quote none to read quotes as data\"," ++
-            "\"records\":1,\"lines\":3,\"line\":62,\"suggest\":{\"quote\":\"none\"}}]}\n",
+            "\"message\":\"the quotes look like data: on line 62 a value that starts with a quote (field 2, 'bin') runs on to the next one, so lines 62 to 64 read as one record; each line is a whole row without the quotes: pin --quote none to read quotes as data\"," ++
+            "\"records\":1,\"lines\":3,\"narrowed\":0,\"line\":62,\"end_line\":64,\"fields\":3,\"width\":3,\"field\":2,\"column\":\"bin\",\"suggest\":{\"quote\":\"none\"}}]}\n",
         .code = 2,
     },
     .{
         // The fold inside the sniffer's sample: sniff says so, and the file
-        // stops there, unread.
+        // stops there, unread. sniff names the field by place alone: the
+        // header's name would be the sample's, gone once the file is closed.
         .args = &.{ "sniff", "test/cli/inches.txt" },
         .stdout = "test/cli/inches.txt: delimiter=| quote=\" escape=doubled newline=lf header=yes confidence=high warnings=quote_in_unquoted\n",
-        .stderr = "thresh: test/cli/inches.txt: the quotes look like data: 1 record holds 3 lines inside quotes, the first on line 62, and each of those lines is a whole row without them; pin --quote none to read quotes as data\n",
+        .stderr = "thresh: test/cli/inches.txt: the quotes look like data: on line 62 a value that starts with a quote (field 2) runs on to the next one, so lines 62 to 64 read as one record; each line is a whole row without the quotes: pin --quote none to read quotes as data\n",
         .code = 2,
     },
     .{
         .args = &.{ "validate", "test/cli/inches.txt", "--columns", "lug_id:int64,bin:string,cultivar:string", "--json" },
         .stdout = "{\"format_version\":1,\"file\":\"test/cli/inches.txt\",\"result\":\"error\",\"rows\":0,\"rows_rejected\":0,\"problems\":[{\"code\":\"quote_is_data\"," ++
-            "\"message\":\"the quotes look like data: 1 record holds 3 lines inside quotes, the first on line 62, and each of those lines is a whole row without them; pin --quote none to read quotes as data\"," ++
-            "\"records\":1,\"lines\":3,\"line\":62,\"suggest\":{\"quote\":\"none\"}}]}\n",
+            "\"message\":\"the quotes look like data: on line 62 a value that starts with a quote (field 2, 'bin') runs on to the next one, so lines 62 to 64 read as one record; each line is a whole row without the quotes: pin --quote none to read quotes as data\"," ++
+            "\"records\":1,\"lines\":3,\"narrowed\":0,\"line\":62,\"end_line\":64,\"fields\":3,\"width\":3,\"field\":2,\"column\":\"bin\",\"suggest\":{\"quote\":\"none\"}}]}\n",
         .code = 2,
     },
     .{
@@ -616,14 +617,14 @@ const cli_checks = [_]struct {
         // Nor are they written out: no "written".
         .args = &.{ "run", "test/cli/inches.txt", "--columns", "lug_id:int64,bin:string,cultivar:string", "--sample-bytes", "512", "--to", "csv", "--out", ".zig-cache/cli-out/inches", "--json" },
         .stdout = "{\"format_version\":1,\"file\":\"test/cli/inches.txt\",\"result\":\"error\",\"rows\":68,\"rows_rejected\":0,\"problems\":[{\"code\":\"quote_is_data\"," ++
-            "\"message\":\"the quotes look like data: 1 record holds 3 lines inside quotes, the first on line 62, and each of those lines is a whole row without them; pin --quote none to read quotes as data\"," ++
-            "\"records\":1,\"lines\":3,\"line\":62,\"suggest\":{\"quote\":\"none\"}}]}\n",
+            "\"message\":\"the quotes look like data: on line 62 a value that starts with a quote (field 2, 'bin') runs on to the next one, so lines 62 to 64 read as one record; each line is a whole row without the quotes: pin --quote none to read quotes as data\"," ++
+            "\"records\":1,\"lines\":3,\"narrowed\":0,\"line\":62,\"end_line\":64,\"fields\":3,\"width\":3,\"field\":2,\"column\":\"bin\",\"suggest\":{\"quote\":\"none\"}}]}\n",
         .code = 2,
     },
     .{
         // Nor does infer type columns from them.
         .args = &.{ "infer", "test/cli/inches.txt", "--sample-bytes", "512" },
-        .stderr = "error test/cli/inches.txt  the quotes look like data: 1 record holds 3 lines inside quotes, the first on line 62, and each of those lines is a whole row without them; pin --quote none to read quotes as data\n" ++
+        .stderr = "error test/cli/inches.txt  the quotes look like data: on line 62 a value that starts with a quote (field 2, 'bin') runs on to the next one, so lines 62 to 64 read as one record; each line is a whole row without the quotes: pin --quote none to read quotes as data\n" ++
             "thresh: no file to infer a schema from\n",
         .code = 2,
     },
