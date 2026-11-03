@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1280 420" width="1280" height="420" role="img" aria-labelledby="t d">
+  <title id="t">How thresh works</title>
+  <desc id="d">Your file goes into thresh, which works out how it is written, works out what each column holds, then checks every row. Three things come out: the good rows, as clean CSV or Arrow; the set-aside rows, each with its line number and the reason; and a report of what each column holds and every problem, with a code and a fix.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#16110a"/>
+      <stop offset="0.6" stop-color="#231809"/>
+      <stop offset="1" stop-color="#2e1f09"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.45" r="0.4">
+      <stop offset="0" stop-color="#fbbf24" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#fbbf24" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.2" fill="#ffffff" fill-opacity="0.05"/>
+    </pattern>
+    <marker id="head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#fcd34d"/>
+    </marker>
+    <marker id="headGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#4ade80"/>
+    </marker>
+    <marker id="headRed" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#f87171"/>
+    </marker>
+    <marker id="headBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#93c5fd"/>
+    </marker>
+  </defs>
+
+  <rect width="1280" height="420" rx="28" fill="url(#bg)"/>
+  <rect width="1280" height="420" rx="28" fill="url(#dots)"/>
+  <rect width="1280" height="420" rx="28" fill="url(#glow)"/>
+
+  <g font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+
+    <!-- Your file -->
+    <text x="168" y="70" text-anchor="middle" font-size="13" font-weight="800" letter-spacing="3" fill="#fcd34d">YOUR FILE</text>
+    <path d="M56 92 h184 l32 32 v214 a12 12 0 0 1 -12 12 h-192 a12 12 0 0 1 -12 -12 v-234 a12 12 0 0 1 12 -12 z" fill="#21170a" stroke="#fcd34d" stroke-opacity="0.45" stroke-width="1.5"/>
+    <path d="M240 92 v20 a12 12 0 0 0 12 12 h20" fill="none" stroke="#fcd34d" stroke-opacity="0.45" stroke-width="1.5"/>
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="600" fill="#f3e3b5">
+      <text x="66" y="146" fill-opacity="0.5">lug_id,picked_on,lug_kg</text>
+      <text x="66" y="174">3,2026-09-04,17.9</text>
+      <text x="66" y="202">4,2026-09-05,<tspan fill="#f87171">"18,5"</tspan></text>
+      <text x="66" y="230">7,2026-09-08,16.2</text>
+      <text x="66" y="258">8,<tspan fill="#f87171">2026-09-31</tspan>,19.2</text>
+      <text x="66" y="286">9,2026-09-10,15.8</text>
+      <text x="66" y="314">21,<tspan fill="#f87171">extra</tspan>,2026-09-22</text>
+      <text x="66" y="338" fill-opacity="0.5">...</text>
+    </g>
+    <text x="168" y="382" text-anchor="middle" font-size="15" fill="#e7d9b0" fill-opacity="0.85">Commas, tabs or pipes,</text>
+    <text x="168" y="402" text-anchor="middle" font-size="15" fill="#e7d9b0" fill-opacity="0.85">from any system</text>
+
+    <path d="M290 220 H372" stroke="#fcd34d" stroke-width="2.5" fill="none" marker-end="url(#head)"/>
+
+    <!-- thresh -->
+    <rect x="392" y="56" width="468" height="322" rx="20" fill="#2a1d0b" stroke="#fcd34d" stroke-opacity="0.55" stroke-width="1.5"/>
+    <text x="626" y="98" text-anchor="middle" font-size="30" font-weight="800" letter-spacing="-0.5" fill="#fcd34d">thresh</text>
+
+    <g>
+      <circle cx="432" cy="140" r="15" fill="#fcd34d"/>
+      <text x="432" y="146" text-anchor="middle" font-size="16" font-weight="800" fill="#1c1408">1</text>
+      <text x="460" y="146" font-size="19" font-weight="700" fill="#fef3c7">How is it written?</text>
+      <text x="460" y="170" font-size="15" fill="#e7d9b0" fill-opacity="0.85">Comma, tab or pipe, quotes, header, encoding:</text>
+      <text x="460" y="190" font-size="15" fill="#e7d9b0" fill-opacity="0.85">worked out, with how sure it is.</text>
+    </g>
+    <g>
+      <circle cx="432" cy="230" r="15" fill="#fcd34d"/>
+      <text x="432" y="236" text-anchor="middle" font-size="16" font-weight="800" fill="#1c1408">2</text>
+      <text x="460" y="236" font-size="19" font-weight="700" fill="#fef3c7">What does each column hold?</text>
+      <text x="460" y="260" font-size="15" fill="#e7d9b0" fill-opacity="0.85">Numbers, decimals, dates in their own format,</text>
+      <text x="460" y="280" font-size="15" fill="#e7d9b0" fill-opacity="0.85">yes or no, codes; or what your rulebook says.</text>
+    </g>
+    <g>
+      <circle cx="432" cy="320" r="15" fill="#fcd34d"/>
+      <text x="432" y="326" text-anchor="middle" font-size="16" font-weight="800" fill="#1c1408">3</text>
+      <text x="460" y="326" font-size="19" font-weight="700" fill="#fef3c7">Check every row</text>
+      <text x="460" y="350" font-size="15" fill="#e7d9b0" fill-opacity="0.85">Each value against its column, each row's width.</text>
+    </g>
+
+    <!-- What comes out -->
+    <path d="M860 160 C 884 160, 878 112, 900 112" stroke="#4ade80" stroke-width="2.5" fill="none" marker-end="url(#headGreen)"/>
+    <path d="M860 216 H900" stroke="#f87171" stroke-width="2.5" fill="none" marker-end="url(#headRed)"/>
+    <path d="M860 272 C 884 272, 878 320, 900 320" stroke="#93c5fd" stroke-width="2.5" fill="none" marker-end="url(#headBlue)"/>
+
+    <rect x="912" y="70" width="328" height="84" rx="14" fill="#052e16" fill-opacity="0.6" stroke="#4ade80" stroke-opacity="0.6" stroke-width="1.5"/>
+    <circle cx="944" cy="112" r="14" fill="#22c55e"/>
+    <path d="M937 112 L942 117 L951 106" stroke="#052e16" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <text x="970" y="102" font-size="18" font-weight="700" fill="#dcfce7">Good rows</text>
+    <text x="970" y="124" font-size="14.5" fill="#bbf7d0" fill-opacity="0.85">carry on as clean CSV or Arrow,</text>
+    <text x="970" y="142" font-size="14.5" fill="#bbf7d0" fill-opacity="0.85">for a database, pandas or DuckDB</text>
+
+    <rect x="912" y="174" width="328" height="84" rx="14" fill="#450a0a" fill-opacity="0.6" stroke="#f87171" stroke-opacity="0.6" stroke-width="1.5"/>
+    <circle cx="944" cy="216" r="14" fill="#ef4444"/>
+    <path d="M938 210 L950 222 M950 210 L938 222" stroke="#450a0a" stroke-width="2.8" stroke-linecap="round" fill="none"/>
+    <text x="970" y="206" font-size="18" font-weight="700" fill="#fee2e2">Set-aside rows</text>
+    <text x="970" y="228" font-size="14.5" fill="#fecaca" fill-opacity="0.85">each one whole, with its line</text>
+    <text x="970" y="246" font-size="14.5" fill="#fecaca" fill-opacity="0.85">number and the reason</text>
+
+    <rect x="912" y="278" width="328" height="84" rx="14" fill="#172554" fill-opacity="0.6" stroke="#93c5fd" stroke-opacity="0.6" stroke-width="1.5"/>
+    <rect x="934" y="306" width="20" height="24" rx="3" fill="#93c5fd"/>
+    <path d="M938 313 h12 M938 318 h12 M938 323 h8" stroke="#172554" stroke-width="2" stroke-linecap="round"/>
+    <text x="970" y="310" font-size="18" font-weight="700" fill="#dbeafe">A report</text>
+    <text x="970" y="332" font-size="14.5" fill="#bfdbfe" fill-opacity="0.85">what each column holds, and each</text>
+    <text x="970" y="350" font-size="14.5" fill="#bfdbfe" fill-opacity="0.85">problem with a code and a fix</text>
+  </g>
+</svg>

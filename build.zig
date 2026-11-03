@@ -192,6 +192,14 @@ pub fn build(b: *std.Build) void {
         readme.addDirectoryArg(b.path("examples"));
         readme.has_side_effects = true;
         test_step.dependOn(&readme.step);
+        // Its terminal picture is drawn from one of those blocks
+        // (tools/console_cards.py), so it shows what the block shows.
+        const cards = b.addSystemCommand(&.{ "python3", "-I" });
+        cards.addFileArg(b.path("tools/console_cards.py"));
+        cards.addFileArg(b.path("README.md"));
+        cards.addArg("--check");
+        cards.has_side_effects = true;
+        test_step.dependOn(&cards.step);
         // NOTICE carries dateparsa's NOTICE as the pinned version ships it.
         const notice = b.addSystemCommand(&.{ "python3", "-I" });
         notice.addFileArg(b.path("tools/notice_check.py"));
