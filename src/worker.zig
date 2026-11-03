@@ -226,7 +226,11 @@ pub const Reader = struct {
         // Quotes that are data folded lines into rows: what was read is not
         // the file's rows, so none of it is kept.
         const folded = if (r.opts.pins.quote == null) v.quotes.folding(v.stray_quotes) else null;
-        if (folded) |f| try v.structural.insert(v.gpa, 0, .{ .quote_is_data = f.named(if (r.verdict.dialect.header) v.names else &.{}) });
+        if (folded) |f| {
+            try v.structural.insert(v.gpa, 0, .{ .quote_is_data = f.named(if (r.verdict.dialect.header) v.names else &.{}) });
+            // Nor are any of them set aside.
+            out.rows_rejected = 0;
+        }
         out.result = if (folded != null) .@"error" else if (v.passed()) .pass else .fail;
         if (v.structural.items.len > 0) {
             out.problem = try v.structural.items[0].dupe(arena);
@@ -242,7 +246,15 @@ pub const Reader = struct {
 
     /// The file's report, for out, finish's outcome, its strings in arena.
     pub fn fileReport(r: *const Reader, arena: Allocator, out: report.Outcome) !report.File {
-        return report.fileOf(arena, out, .{ .verdict = r.verdict, .validator = &r.v, .encoding = r.opts.encoding, .shapes = r.opts.shapes });
+        return report.fileOf(arena, out, r.details(out));
+    }
+
+    /// What the report of out is made from. An error (its quotes data, so
+    /// what was read is not its rows) says no more than a stop at the
+    /// sniff does: no columns, no rows set aside.
+    pub fn details(r: *const Reader, out: report.Outcome) report.Details {
+        const read = if (out.result == .@"error") null else &r.v;
+        return .{ .verdict = r.verdict, .validator = read, .encoding = r.opts.encoding, .shapes = r.opts.shapes };
     }
 };
 

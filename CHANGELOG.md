@@ -25,6 +25,14 @@ and fields. Before 1.0 a breaking change is a minor bump.
   And a file with quotes across lines that has more rows saying it
   quotes than rows run together is no longer stopped.
 
+### Fixed
+
+- A file stopped as `quote_is_data` after it is read no longer keeps a
+  reject file of the rows the quote misread, nor counts them as
+  rejected. As its output is not written, nothing of what was read is
+  kept: its report has no columns and no rows set aside, as for a file
+  stopped at its sniff.
+
 ## [0.3.0] - 2026-11-03
 
 A file whose quotes are data is stopped with the line a loader would

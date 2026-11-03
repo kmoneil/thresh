@@ -91,7 +91,10 @@ value of another type than its row says.
 
 One per input, `<file>.report.json` in the `--report` directory, written
 as the file finishes. A file that could not be read has one too: its
-`result` is `error` and its `problems` say why.
+`result` is `error` and its `problems` say why. So does a file whose
+quotes turn out to be data once it is read (`quote_is_data`): what was
+read is not its rows, so its report has no columns and no rows set
+aside, as for a file stopped at its sniff, and it has no reject file.
 
 <!-- fields: report -->
 | Field | Type | Meaning |
@@ -377,7 +380,7 @@ checked.
 
 Not JSON, but read by programs too, and versioned with the reports. With
 `--reject DIR` (validate, convert, run, describe), each file with a
-rejected row has `DIR/<file>.rejects.csv`:
+rejected row has `DIR/<file>.rejects.csv`, unless it ends in `error`:
 RFC 4180 CSV (commas, double quotes, LF). Its header is a name for each
 of the file's fields (the header's; for a file without one, the schema's
 by position, then `column4` and so on past them), then `_row`, `_errors`

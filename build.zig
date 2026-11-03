@@ -633,7 +633,7 @@ const cli_checks = [_]struct {
         // A ditto mark, then an inch mark: the quote closes on the line it
         // opens on, so no lines fold, but two rows each read a field short.
         .args = &.{ "validate", "test/cli/ditto.txt", "--columns", "lug_id:int64,bin:string,depth:string,cultivar:string", "--sample-bytes", "512", "--json" },
-        .stdout = "{\"format_version\":1,\"file\":\"test/cli/ditto.txt\",\"result\":\"error\",\"rows\":70,\"rows_rejected\":2,\"problems\":[{\"code\":\"quote_is_data\"," ++
+        .stdout = "{\"format_version\":1,\"file\":\"test/cli/ditto.txt\",\"result\":\"error\",\"rows\":70,\"rows_rejected\":0,\"problems\":[{\"code\":\"quote_is_data\"," ++
             "\"message\":\"the quotes look like data: on line 62 a value that starts with a quote (field 2, 'bin') runs on to the next one, so the line reads as 3 fields of 4; in all, 2 rows lose fields on their own line; each line is a whole row without the quotes: pin --quote none to read quotes as data\"," ++
             "\"records\":0,\"lines\":0,\"narrowed\":2,\"line\":62,\"end_line\":62,\"fields\":3,\"width\":4,\"field\":2,\"column\":\"bin\",\"suggest\":{\"quote\":\"none\"}}]}\n",
         .code = 2,
