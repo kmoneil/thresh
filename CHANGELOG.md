@@ -10,6 +10,13 @@ and fields. Before 1.0 a breaking change is a minor bump.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.4.0] - 2026-11-04
+
+A file whose quotes all close on the line they open on is stopped too,
+and a stopped file keeps nothing of what was read.
+
 ### Changed
 
 - A file whose quotes are data is now stopped (`quote_is_data`) when
@@ -121,7 +128,8 @@ The first release, for threshio on PyPI.
   musl), macOS 13 and later, and Windows, on x86-64 and arm64, Python 3.9
   and later; each attached here with SHA256SUMS and build provenance.
 
-[Unreleased]: https://github.com/kmoneil/thresh/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/kmoneil/thresh/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/kmoneil/thresh/releases/tag/v0.4.0
 [0.3.0]: https://github.com/kmoneil/thresh/releases/tag/v0.3.0
 [0.2.1]: https://github.com/kmoneil/thresh/releases/tag/v0.2.1
 [0.2.0]: https://github.com/kmoneil/thresh/releases/tag/v0.2.0
