@@ -519,8 +519,9 @@ zig build --release       # zig-out/bin/thresh and libthresh, ReleaseSafe: what 
                           # (python3 -I tools/release_archives.py packs the
                           # command for every platform into zig-out/release)
 zig build                 # Debug
-zig build test            # unit tests, the corpus, the command, examples/ and this page
-                          # (-Dcorpus=false skips the parts needing python3)
+zig build test            # unit tests, the corpus, the command, examples/, this page,
+                          # zigvet and gnarl (-Dcorpus=false skips the parts needing
+                          # python3, -Dlint=false zigvet and gnarl)
 zig build fmt-check       # zig fmt --check
 zig build vet             # zigvet, built from the pinned dependency
 zig build complexity      # gnarl: no function more complex than complexity.baseline allows
