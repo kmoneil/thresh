@@ -1,7 +1,25 @@
-// gnarl's classes for thresh (gnarl skill, "Thresholds and complexity.zon").
-// The build script and the benchmark are cold: held only to the critical
-// limits a test is. Everything else is normal. Tests are gnarl's own class
-// whatever their file.
+// gnarl's classes for thresh (github.com/kmoneil/gnarl). `zig build test`
+// and `zig build complexity` run `gnarl --check`, which fails a function
+// over a critical limit unless complexity.baseline holds it at that
+// number or above.
 .{
+    // Hot: runs per byte, per record or per value, so the tightest limits
+    // (cyclomatic 8 and 12, cognitive 10 and 15, 40 and 80 lines): the
+    // structural index and the parsers, the type readers, validation,
+    // inference and column statistics, and the column builders and
+    // writers. What runs once a file or on the sniffer's sample is normal.
+    .hot = .{
+        "src/scan.zig",
+        "src/records.zig",
+        "src/reference.zig",
+        "src/types/**",
+        "src/validate.zig",
+        "src/infer.zig",
+        "src/stats.zig",
+        "src/builders.zig",
+        "src/write/**",
+    },
+    // The build script and the benchmark: held only to the critical
+    // limits a test is. Tests are gnarl's own class whatever their file.
     .cold = .{ "build.zig", "bench/**" },
 }

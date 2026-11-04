@@ -80,7 +80,9 @@ jobs:
   # other (an allocation failing inside a union literal did, once).
   # Every platform a release ships for that a hosted runner has: Linux on
   # x86-64 and arm64, macOS (arm64), Windows. A runner with no python3
-  # skips the corpus, examples and NOTICE checks (-Dcorpus=false).
+  # skips the corpus, examples and NOTICE checks (-Dcorpus=false). zigvet
+  # and gnarl, which zig build test runs too, run once, in the job above
+  # (-Dlint=false).
   test:
     name: test (${{ matrix.os }}, ${{ matrix.optimize }})
     strategy:
@@ -98,7 +100,7 @@ jobs:
         run: |
           extra=""
           command -v python3 >/dev/null || extra="-Dcorpus=false"
-          zig build test -Doptimize=${{ matrix.optimize }} $extra --summary all
+          zig build test -Doptimize=${{ matrix.optimize }} -Dlint=false $extra --summary all
 
   # The release build for every target, glibc and musl, x86-64 and arm64,
   # cross-compiled from one runner, so a target no runner tests still builds.

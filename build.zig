@@ -281,12 +281,15 @@ pub fn build(b: *std.Build) void {
     b.step("fuzz", "Replay the fuzz seeds (tools/fuzz.sh to fuzz)").dependOn(&run_fuzz.step);
     test_step.dependOn(&run_fuzz.step);
 
-    lintSteps(b);
+    lintSteps(b, test_step);
 }
 
 /// zig fmt, zigvet and gnarl over the sources: the steps CI's "format,
-/// lint" job runs.
-fn lintSteps(b: *std.Build) void {
+/// lint" job runs. zigvet and gnarl run in `zig build test` too, so no
+/// change is tested without them; -Dlint=false leaves them out of it, for
+/// CI's test jobs, whose lint job runs them once.
+fn lintSteps(b: *std.Build, test_step: *std.Build.Step) void {
+    const in_test = b.option(bool, "lint", "Run zigvet and gnarl in zig build test (default true)") orelse true;
     const lint_paths = [_][]const u8{ "build.zig", "src", "bench" };
     var fmt_paths: [lint_paths.len]std.Build.LazyPath = undefined;
     for (lint_paths, &fmt_paths) |p, *lp| lp.* = b.path(p);
@@ -301,6 +304,7 @@ fn lintSteps(b: *std.Build) void {
     vet.setCwd(b.path("."));
     vet.addArgs(&lint_paths);
     b.step("vet", "Check sources with zigvet").dependOn(&vet.step);
+    if (in_test) test_step.dependOn(&vet.step);
 
     // gnarl (github.com/kmoneil/gnarl), built from the pinned dependency:
     // each function's complexity. It fails a function over a critical
@@ -316,9 +320,16 @@ fn lintSteps(b: *std.Build) void {
     complexity.setCwd(b.path("."));
     complexity.addArg(if (update_baseline) "--update-baseline" else "--check");
     complexity.addArgs(&lint_paths);
-    // The sources are named as paths, not inputs: run every time.
+    // Quiet when it passes: the table gnarl writes to stdout is captured,
+    // and its verdict on stderr shows only on a failure (a note there,
+    // such as a baselined function now within its limits, shows on a
+    // pass too, under Zig's "failed command:" label though the step
+    // succeeds). A checked run is cached on its arguments, and the
+    // sources are named as paths, not inputs: run every time.
+    complexity.expectExitCode(0);
     complexity.has_side_effects = true;
     b.step("complexity", "Hold each function's complexity to complexity.baseline (gnarl)").dependOn(&complexity.step);
+    if (in_test) test_step.dependOn(&complexity.step);
 }
 
 /// The corpus's dirty files (test/gen/corpus.py's DIRTY), whose reports are

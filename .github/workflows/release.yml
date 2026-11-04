@@ -84,7 +84,7 @@ jobs:
       - name: tests, Debug and ReleaseSafe
         run: |
           for mode in Debug ReleaseSafe; do
-            zig build test "-Doptimize=$mode" --summary line
+            zig build test "-Doptimize=$mode" -Dlint=false --summary line
           done
 
   wheels:
