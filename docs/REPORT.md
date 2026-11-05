@@ -376,7 +376,7 @@ The kinds, in the order explain gives them:
 | `encoding_unknown` | notice | a file not UTF-8 with bytes that neither Windows-1252 nor Latin-1 reads as a character: not read again |
 | `fails` | problem | read, the file fails as a whole: a column the schema has and the header does not, a last line cut off |
 | `rows_set_aside` | problem | how many rows were set aside, of how many |
-| `set_aside` | problem | the rows set aside for one reason, and the first one's line; or one column's values that do not fit, and the first one |
+| `set_aside` | problem | the rows set aside for one reason, and the first one's line; or one column's values that do not fit, and the first one. Rows with something after a closing quote say why when the first shows it: a quote inside a quoted value not doubled, its column and the value as written |
 | `no_rows` | notice | a header and nothing under it, or an empty file |
 | `no_header` | notice | no header row, so the columns have no names (with a schema given: its names, in order) |
 | `header_repeated` | notice | the header row again further down, as where files were joined; skipped |

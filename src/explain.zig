@@ -144,7 +144,7 @@ pub const Options = struct {
 /// What d says, in plain words; every string in a. Read again (o.worked),
 /// the findings after the stop are the read again's.
 pub fn of(a: Allocator, d: lib.Description, o: Options) Allocator.Error!Explanation {
-    var b: Builder = .{ .a = a };
+    var b: Builder = .{ .a = a, .form = formOf(d.file), .ordered = d.inferred };
     const f = d.file;
     try b.problems(f);
     if (o.worked) |w| switch (w) {
@@ -198,6 +198,12 @@ pub fn writeJson(w: *Io.Writer, e: Explanation, d: lib.Description, compact: boo
 const Builder = struct {
     a: Allocator,
     list: std.ArrayList(Finding) = .empty,
+    /// How the file is written, when the sniffer settled it: what reads a
+    /// row set aside again.
+    form: ?dialect.Dialect = null,
+    /// The columns are the file's own, in its order (inferred), so a
+    /// field's place names its column.
+    ordered: bool = false,
 
     fn put(b: *Builder, kind: Kind, code: ?[]const u8, text: []const u8) Allocator.Error!void {
         try b.list.append(b.a, .{ .kind = kind, .level = kind.level(), .code = code, .text = text });
@@ -305,10 +311,27 @@ const Builder = struct {
         else
             reason.text();
         const code = @tagName(reason);
-        const line = firstLine(r.rejected_lines, reason) orelse
+        const first = firstKept(r.rejected_lines, reason) orelse
             return b.add(.set_aside, code, "{d} row{s}: {s}.", .{ n, plural(n), what });
-        if (n == 1) return b.add(.set_aside, code, "Line {d}: {s}.", .{ line, what });
-        return b.add(.set_aside, code, "{d} rows: {s}, the first on line {d}.", .{ n, what, line });
+        if (reason == .bad_quote and try b.notDoubled(n, first, r.columns)) return;
+        if (n == 1) return b.add(.set_aside, code, "Line {d}: {s}.", .{ first.row, what });
+        return b.add(.set_aside, code, "{d} rows: {s}, the first on line {d}.", .{ n, what, first.row });
+    }
+
+    /// The n rows set aside for something after a closing quote, when the
+    /// first, l, shows why: a quote inside a quoted value, not doubled,
+    /// that ends it early. Whether it does.
+    fn notDoubled(b: *Builder, n: u64, l: report.Line, cols: []const report.Column) Allocator.Error!bool {
+        const form = b.form orelse return false;
+        const u = undoubled(l.text, form) orelse return false;
+        const at: Place = .{ .index = u.field, .name = if (b.ordered and u.field < cols.len) cols[u.field].name else null };
+        const as: Excerpt = .{ .s = u.value, .at = u.quote };
+        const twice = if (form.escape == .backslash) "\\\"" else "\"\"";
+        const why = "a quote inside a quoted value is not doubled and ends it early ({f}: {f}); inside quotes, a quote is written {s}.";
+        if (n == 1) {
+            try b.add(.set_aside, "bad_quote", "Line {d}: something after a closing quote, as " ++ why, .{ l.row, at, as, twice });
+        } else try b.add(.set_aside, "bad_quote", "{d} rows: something after a closing quote, the first on line {d}, where " ++ why, .{ n, l.row, at, as, twice });
+        return true;
     }
 
     /// Column c's values that do not fit, by its first sample.
@@ -555,14 +578,118 @@ fn plural(n: u64) []const u8 {
     return if (n == 1) "" else "s";
 }
 
-/// The line of the first row the report kept that was set aside whole
-/// for reason.
-fn firstLine(lines: []const report.Line, reason: types.Reason) ?u64 {
+/// The first row the report kept that was set aside whole for reason.
+fn firstKept(lines: []const report.Line, reason: types.Reason) ?report.Line {
     for (lines) |l| {
-        for (l.errors) |e| if (e.column == null and e.code == reason) return l.row;
+        for (l.errors) |e| if (e.column == null and e.code == reason) return l;
     }
     return null;
 }
+
+/// How f is written, when the sniffer settled it.
+fn formOf(f: report.File) ?dialect.Dialect {
+    const v = f.verdict orelse return null;
+    return v.dialect;
+}
+
+/// A quote inside a quoted value that is not doubled: the field it is in,
+/// from 0, the field as written, and where in it the quote is.
+const Undoubled = struct { field: usize, value: []const u8, quote: usize };
+
+/// The first quoted field in text, a record as d writes it, that a quote
+/// of its own ends early: more follows that quote, and the field, run on
+/// to the next delimiter as a reader runs it, ends in a quote. Null when
+/// text shows none: it is cut short, or what follows the quote does not
+/// end in one (a unit after a quoted number, "12"in).
+fn undoubled(text: []const u8, d: dialect.Dialect) ?Undoubled {
+    if (d.quote == null) return null;
+    var start: usize = 0;
+    var field: usize = 0;
+    while (start < text.len) : (field += 1) {
+        switch (step(text, start, d)) {
+            .next => |next| start = next,
+            .found => |u| return .{ .field = field, .value = u.value, .quote = u.quote },
+            .none => return null,
+        }
+    }
+    return null;
+}
+
+/// What the field at start in text shows: where the next field starts,
+/// or a quote of its own that ends it early, or nothing more (the row
+/// ends, or is cut short, or the quote is followed by what does not end
+/// in one).
+const Step = union(enum) {
+    next: usize,
+    found: struct { value: []const u8, quote: usize },
+    none,
+};
+
+fn step(text: []const u8, start: usize, d: dialect.Dialect) Step {
+    const q = d.quote.?;
+    if (text[start] != q) {
+        const end = std.mem.indexOfScalarPos(u8, text, start, d.delimiter) orelse return .none;
+        return .{ .next = end + 1 };
+    }
+    const close = closingQuote(text, start + 1, d) orelse return .none;
+    if (close + 1 == text.len) return .none;
+    if (text[close + 1] == d.delimiter) return .{ .next = close + 2 };
+    const run = std.mem.indexOfScalarPos(u8, text, close + 1, d.delimiter) orelse text.len;
+    if (text[run - 1] != q) return .none;
+    return .{ .found = .{ .value = text[start..run], .quote = close - start } };
+}
+
+/// The quote that closes the quoted field whose value starts at i: the
+/// first one not doubled, or under backslash escaping not escaped.
+fn closingQuote(text: []const u8, i: usize, d: dialect.Dialect) ?usize {
+    const q = d.quote.?;
+    var j = i;
+    while (j < text.len) : (j += 1) {
+        if (d.escape == .backslash and text[j] == '\\') {
+            j += 1;
+            continue;
+        }
+        if (text[j] != q) continue;
+        if (j + 1 < text.len and text[j + 1] == q) {
+            j += 1;
+            continue;
+        }
+        return j;
+    }
+    return null;
+}
+
+/// A field by its column's name, when the columns are the file's own in
+/// its order, or by its place.
+const Place = struct {
+    index: usize,
+    name: ?[]const u8,
+
+    pub fn format(p: Place, w: *Io.Writer) Io.Writer.Error!void {
+        if (p.name) |n| return w.print("{f}", .{Name{ .s = n }});
+        try w.print("field {d}", .{p.index + 1});
+    }
+};
+
+/// A value as written: whole when short, past that the part around at,
+/// cut at a character, an ellipsis where it is cut.
+const Excerpt = struct {
+    s: []const u8,
+    at: usize,
+
+    const most = 60;
+
+    pub fn format(e: Excerpt, w: *Io.Writer) Io.Writer.Error!void {
+        if (e.s.len <= most) return w.writeAll(e.s);
+        var to = @min(e.s.len, (e.at -| most / 2) + most);
+        var from = to - most;
+        while (from > 0 and e.s[from] & 0xc0 == 0x80) from -= 1;
+        while (to < e.s.len and e.s[to] & 0xc0 == 0x80) to += 1;
+        if (from > 0) try w.writeAll("…");
+        try w.writeAll(e.s[from..to]);
+        if (to < e.s.len) try w.writeAll("…");
+    }
+};
 
 /// Why a value does not fit, in plain words where the reason's own name
 /// is a type's.
@@ -939,6 +1066,67 @@ test "a header of another width, read again with row 1 as data: the types from t
     const again = v.object.get("read_again").?.object;
     try testing.expectEqualStrings("no", again.get("with").?.object.get("header").?.string);
     try testing.expect(!again.get("description").?.object.get("dialect").?.object.get("header").?.bool);
+}
+
+test "a quote inside a quoted value, not doubled: found in a row as written" {
+    const csv = dialect.Dialect.rfc4180;
+    const u = undoubled("7,\"bin \"B\" north\",12.50", csv).?;
+    try testing.expectEqual(@as(usize, 1), u.field);
+    try testing.expectEqualStrings("\"bin \"B\" north\"", u.value);
+    try testing.expectEqual(@as(usize, 5), u.quote);
+    // An empty quoted field before it, and doubled quotes, read as they are.
+    try testing.expectEqual(@as(usize, 2), undoubled("\"\",\"a \"\"b\"\"\",\"c \"d\" e\"", csv).?.field);
+    // None: quotes doubled, a unit after a quoted number, a row cut short.
+    for ([_][]const u8{ "1,\"a \"\"b\"\" c\",2", "1,\"12\"in,2", "1,\"bin \"B\" no" }) |text| {
+        try testing.expect(undoubled(text, csv) == null);
+    }
+    // Under backslash escaping an escaped quote is the value's.
+    var bs = csv;
+    bs.escape = .backslash;
+    try testing.expect(undoubled("1,\"a \\\"b\\\" c\",2", bs) == null);
+    try testing.expectEqual(@as(usize, 1), undoubled("1,\"a \"b\" c\",2", bs).?.field);
+}
+
+test "a long value is shown around its quote, cut at a character" {
+    var buf: [128]u8 = undefined;
+    var value: [200]u8 = undefined;
+    var v: Io.Writer = .fixed(&value);
+    try v.writeByte('"');
+    for (0..40) |_| try v.writeAll("é");
+    try v.writeAll(" \"word\" ");
+    for (0..40) |_| try v.writeByte('x');
+    try v.writeByte('"');
+    const s = v.buffered();
+    const at = 1 + 80 + 1;
+    const shown = try std.fmt.bufPrint(&buf, "{f}", .{Excerpt{ .s = s, .at = at }});
+    try testing.expect(std.mem.startsWith(u8, shown, "…é"));
+    try testing.expect(std.mem.endsWith(u8, shown, "x…"));
+    try testing.expect(std.mem.find(u8, shown, " \"word\" ") != null);
+    try testing.expect(std.unicode.utf8ValidateSlice(shown));
+    try testing.expectEqualStrings("\"short\"", try std.fmt.bufPrint(&buf, "{f}", .{Excerpt{ .s = "\"short\"", .at = 0 }}));
+}
+
+test "rows set aside for a quote not doubled: where, and how it is written" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var data: Io.Writer.Allocating = .init(a);
+    try data.writer.writeAll("lug_id,remark,lug_kg\n");
+    for (1..61) |i| switch (i) {
+        7, 9 => try data.writer.print("{d},\"bin \"B\" north\",12.50\n", .{i}),
+        else => try data.writer.print("{d},\"bin {d}\",{d}.50\n", .{ i, i, 10 + i }),
+    };
+    const two, _ = try explained(a, try tmpFile(a, tmp, "two.csv", data.written()), .{});
+    try expectFinding(two, .set_aside, "2 rows: something after a closing quote, the first on line 8, where a quote inside a quoted value is not doubled and ends it early (remark: \"bin \"B\" north\"); inside quotes, a quote is written \"\".");
+    // One row, and one whose quote is followed by a unit: said as before.
+    const one_text = try std.mem.replaceOwned(u8, a, data.written(), "9,\"bin \"B\" north\"", "9,\"bin 9\"");
+    const one, _ = try explained(a, try tmpFile(a, tmp, "one.csv", one_text), .{});
+    try expectFinding(one, .set_aside, "Line 8: something after a closing quote, as a quote inside a quoted value is not doubled and ends it early (remark: \"bin \"B\" north\"); inside quotes, a quote is written \"\".");
+    const unit_text = try std.mem.replaceOwned(u8, a, one_text, "7,\"bin \"B\" north\"", "7,\"12\"in");
+    const unit, _ = try explained(a, try tmpFile(a, tmp, "unit.csv", unit_text), .{});
+    try expectFinding(unit, .set_aside, "Line 8: something after a closing quote.");
 }
 
 /// The path of a file holding data, made in tmp.
