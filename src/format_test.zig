@@ -307,7 +307,7 @@ test "docs/REPORT.md: the reports' fields, as thresh writes them" {
         .file = f,
         .schema = if (i == 2) null else sample_schema,
         .inferred = i != 1,
-        .notes = if (i == 0) &.{.{ .rows_wider = .{ .rows = 1, .line = 5 } }} else &.{},
+        .notes = if (i == 0) &.{.{ .rows_wider = .{ .rows = 1, .line = 5, .columns = 4 } }} else &.{},
         .encoding = "utf8",
     }, i % 2 == 0 });
     _ = try expectRows(a, "describe", try descriptionRows(a), report.format_version, &descriptions);
