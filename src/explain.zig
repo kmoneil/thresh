@@ -148,7 +148,7 @@ pub fn of(a: Allocator, d: lib.Description, o: Options) Allocator.Error!Explanat
     const f = d.file;
     try b.problems(f);
     if (o.worked) |w| switch (w) {
-        .read => |r| return b.readAgain(f, r, o),
+        .encoding, .header => return b.readAgain(f, w, o),
         .mixed => |t| try b.mixed(f, t),
         .neither => |t| try b.neither(f, t),
     };
@@ -219,17 +219,17 @@ const Builder = struct {
         };
     }
 
-    /// f read again: why so and what the read found, then the rest of what
-    /// it found. The stop stays the summary and the result.
-    fn readAgain(b: *Builder, f: report.File, r: reread.Read, o: Options) Allocator.Error!Explanation {
-        const again = r.again.description;
-        const second = try of(b.a, again, .{ .day_first = o.day_first });
-        var w: Io.Writer.Allocating = .init(b.a);
-        writeAgain(&w.writer, r, second) catch return error.OutOfMemory;
-        try b.put(.read_again, stopCode(f), w.written());
+    /// f read again (w): why so and what the read found, then the rest of
+    /// what it found. The stop stays the summary and the result.
+    fn readAgain(b: *Builder, f: report.File, w: reread.Worked, o: Options) Allocator.Error!Explanation {
+        const g = w.again().?;
+        const second = try of(b.a, asShown(w, g.description), .{ .day_first = o.day_first });
+        var t: Io.Writer.Allocating = .init(b.a);
+        writeAgain(&t.writer, w, second) catch return error.OutOfMemory;
+        try b.put(.read_again, stopCode(f), t.written());
         for (second.findings, 0..) |x, i| if (second.headline != i) try b.list.append(b.a, x);
         var e = try b.done(f);
-        e.again = .{ .with = r.again.with, .result = second.result, .description = again };
+        e.again = .{ .with = g.with, .result = second.result, .description = g.description };
         return e;
     }
 
@@ -466,14 +466,30 @@ fn stopCode(f: report.File) ?[]const u8 {
     return @tagName(p);
 }
 
+/// d, read again as w did, as the text says it: a header of another width
+/// read as a row is still the file's header, so the file is said to have
+/// one, and its columns are not said to want names it has.
+fn asShown(w: reread.Worked, d: lib.Description) lib.Description {
+    var s = d;
+    if (w == .header) if (s.file.verdict) |*v| {
+        v.dialect.header = true;
+    };
+    return s;
+}
+
 /// Why the file was read again so, and what the read found.
-fn writeAgain(w: *Io.Writer, r: reread.Read, second: Explanation) Io.Writer.Error!void {
-    try writeBytes(w, r.bytes);
-    switch (r.again.with) {
-        .encoding => |e| try w.print(" Read as {s} ({f})", .{ encodingName(@tagName(e)), r.again.with }),
+fn writeAgain(w: *Io.Writer, worked: reread.Worked, second: Explanation) Io.Writer.Error!void {
+    const g = worked.again().?;
+    switch (worked) {
+        .encoding => |r| {
+            try writeBytes(w, r.bytes);
+            try w.print(" Read as {s} ({f})", .{ encodingName(@tagName(r.again.with.encoding)), g.with });
+        },
+        .header => try w.print("Read with row 1 as data ({f}), its names left out", .{g.with}),
+        .mixed, .neither => unreachable,
     }
     const h = second.headline orelse {
-        const rows = r.again.description.file.outcome.rows;
+        const rows = g.description.file.outcome.rows;
         return w.print(", it is fine: {d} row{s}, none set aside.", .{ rows, plural(rows) });
     };
     const x = second.findings[h];
@@ -898,6 +914,31 @@ test "a file not UTF-8, read again as Windows-1252: the stop, then what the read
     try testing.expectEqualStrings("cp1252", again.get("with").?.object.get("encoding").?.string);
     try testing.expectEqualStrings("pass", again.get("result").?.string);
     try testing.expectEqualStrings("cp1252", again.get("description").?.object.get("encoding").?.string);
+}
+
+test "a header of another width, read again with row 1 as data: the types from the rows" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const e, const d = try explained(a, "examples/data/header_short.csv", .{});
+    try testing.expectEqual(report.Result.@"error", e.result);
+    try testing.expect(std.mem.startsWith(u8, e.summary, "Stopped: row 1 is a header of 3 names over rows of 4 fields"));
+    try expectFinding(e, .read_again, "Read with row 1 as data (--header no), its names left out: 1 of 31 rows has a problem and was set aside; the other 30 are fine.");
+    try testing.expectEqualStrings("header_width", e.findings[1].code.?);
+    try expectFinding(e, .set_aside, "Line 1: a different number of fields from the 4 columns.");
+    // The file has a header row, if not one that fits: it is not said to
+    // want names.
+    try expectFinding(e, .written, "Pipe-separated, with a header row; Unix line ends (LF); UTF-8.");
+    try testing.expect(!hasKind(e, .no_header));
+    try expectFinding(e, .columns, "4 columns: 1 whole number, 1 decimal, 1 date and 1 text.");
+    try testing.expectEqual(report.Result.fail, e.again.?.result);
+    // The JSON's read again is as read: no header.
+    var w: Io.Writer.Allocating = .init(a);
+    try writeJson(&w.writer, e, d, true);
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, a, w.written(), .{});
+    const again = v.object.get("read_again").?.object;
+    try testing.expectEqualStrings("no", again.get("with").?.object.get("header").?.string);
+    try testing.expect(!again.get("description").?.object.get("dialect").?.object.get("header").?.bool);
 }
 
 /// The path of a file holding data, made in tmp.

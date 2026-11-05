@@ -334,11 +334,15 @@ decides the columns' types and never passes a file with rows set aside.
 
 A file that stopped may be worked out: explain weighs what its stop
 points at against the file and, when that settles it, reads the file
-again so and says what it found. One stop is worked out so far, a file
-that is not UTF-8: read as Windows-1252 when every byte past ASCII is a
-character there and none is part of a UTF-8 one. The file is still as
-it came: the stop is its `summary` and its `result`, and the read again
-is in `read_again`.
+again so and says what it found. Two stops are worked out so far. A
+file that is not UTF-8 is read as Windows-1252 when every byte past
+ASCII is a character there and none is part of a UTF-8 one. A header of
+another width than its rows is read as data (`--header no`), as its
+problem suggests: its names cannot be put to columns, and infer leaves
+the row out for its width, so the columns are typed from the rows alone
+and row 1 is the one row set aside. The file is still as it came: the
+stop is its `summary` and its `result`, and the read again is in
+`read_again`.
 
 <!-- fields: explain -->
 | Field | Type | Meaning |
@@ -356,6 +360,7 @@ is in `read_again`.
 | `read_again` | `object` | when the file stopped and was read again: how, and what that read found |
 | `read_again.with` | `object` | the setting explain changed, by the flag that changes it: give the same flag to read the file so |
 | `read_again.with.encoding` | `string` | `cp1252`, for a file not UTF-8 |
+| `read_again.with.header` | `string` | `no`, for a header of another width than its rows |
 | `read_again.result` | `string` | `pass`, `fail` or `error`: the read again's, as explain judges it |
 | `read_again.description` | `description` | the file's description, read so |
 
@@ -366,7 +371,7 @@ The kinds, in the order explain gives them:
 | --- | --- | --- |
 | `unreadable` | problem | the file could not be opened or read |
 | `stopped` | problem | the file stopped before its rows were read: its dialect is not settled, its header is another width than its rows, its quotes are data, it is not UTF-8 |
-| `read_again` | notice | the file read again as its stop points, why so, and what that read found: a file not UTF-8 read as Windows-1252, its bytes past ASCII counted, and how many Latin-1 would make control codes; the findings after it are that read's |
+| `read_again` | notice | the file read again as its stop points, why so, and what that read found: a file not UTF-8 read as Windows-1252, its bytes past ASCII counted, and how many Latin-1 would make control codes; a header of another width read as data, its names left out; the findings after it are that read's |
 | `encoding_mixed` | notice | a file not UTF-8 that is UTF-8 in part, as where files written two ways were joined: not read again, as either encoding would garble the UTF-8 |
 | `encoding_unknown` | notice | a file not UTF-8 with bytes that neither Windows-1252 nor Latin-1 reads as a character: not read again |
 | `fails` | problem | read, the file fails as a whole: a column the schema has and the header does not, a last line cut off |

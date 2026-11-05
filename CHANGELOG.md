@@ -28,6 +28,10 @@ and fields. Before 1.0 a breaking change is a minor bump.
   counted, the flag that reads it (`--encoding cp1252`), its rows and
   columns. A file part UTF-8, or with a byte neither encoding reads, is
   said to be so and not read again. The exit is still the stop's.
+- `thresh explain` reads a file whose header is another width than its
+  rows again with row 1 as data (`--header no`), the stop's own
+  suggestion, and says what that read found: the header row set aside,
+  the rest of the rows and the columns' types from them.
 
 ### Fixed
 

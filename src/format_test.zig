@@ -313,18 +313,22 @@ test "docs/REPORT.md: the reports' fields, as thresh writes them" {
     _ = try expectRows(a, "describe", try descriptionRows(a), report.format_version, &descriptions);
     // An explanation of each, its description held to describe's rows
     // above: findings with a code and without, a file that fails, one
-    // that cannot be read, and one that stopped and was read again.
+    // that cannot be read, and two that stopped and were read again: as
+    // Windows-1252, and with row 1 as data.
     var bytes: reread.Bytes = .{};
     bytes.add("caf\xe9 l\x92");
     bytes.finish();
-    const again: reread.Worked = .{ .read = .{ .bytes = bytes, .again = .{
-        .with = .{ .encoding = .cp1252 },
-        .description = .{ .file = files[0], .schema = sample_schema, .inferred = true, .encoding = "cp1252" },
-    } } };
+    const read_again: lib.Description = .{ .file = files[0], .schema = sample_schema, .inferred = true, .encoding = "cp1252" };
+    const worked = [files.len]?reread.Worked{
+        null,
+        .{ .encoding = .{ .bytes = bytes, .again = .{ .with = .{ .encoding = .cp1252 }, .description = read_again } } },
+        .{ .header = .{ .with = .{ .header = .no }, .description = read_again } },
+        null,
+    };
     var explanations: [files.len][]const u8 = undefined;
-    for (&explanations, files, 0..) |*x, f, i| {
+    for (&explanations, files, worked, 0..) |*x, f, w, i| {
         const d: lib.Description = .{ .file = f, .schema = sample_schema, .inferred = i != 1, .encoding = "utf8" };
-        x.* = try written(a, explain.writeJson, .{ try explain.of(a, d, .{ .worked = if (i == 1) again else null }), d, i % 2 == 0 });
+        x.* = try written(a, explain.writeJson, .{ try explain.of(a, d, .{ .worked = w }), d, i % 2 == 0 });
     }
     _ = try expectDocumented(a, "explain", report.format_version, &explanations);
     try expectValues(a, "explain", "result", report.Result);
