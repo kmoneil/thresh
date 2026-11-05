@@ -145,9 +145,7 @@ pub fn merge(arena: Allocator, files: []const Columns, o: Options) !Merged {
             headless += 1;
             widths = .{ @min(widths[0], r.columns.len), @max(widths[1], r.columns.len) };
         }
-        if (r.repeated_headers > 0) try notes.append(a, .{ .after = i, .file = path, .problem = .{ .header_repeated = .{ .line = r.repeated_line, .count = r.repeated_headers } } });
-        if (r.wide_rows > 0) try notes.append(a, .{ .after = i, .file = path, .problem = .{ .rows_wider = .{ .rows = r.wide_rows, .line = r.wide_line } } });
-        if (r.utf16_replaced > 0) try notes.append(a, .{ .after = i, .file = path, .problem = .{ .utf16_replaced = .{ .units = r.utf16_replaced } } });
+        try readNotes(a, &notes, i, r);
         const columns = try a.dupe(infer_mod.ColumnState, r.columns);
         for (columns) |*c| if (restOf(c, o.threshold)) |p| try notes.append(a, .{ .after = i, .file = path, .problem = p });
         for (columns) |c| {
@@ -183,6 +181,17 @@ pub fn merge(arena: Allocator, files: []const Columns, o: Options) !Merged {
         .notes = notes.items,
         .disagreement = try disagreement(a, merged.items, present.items, merged_files, headless, first_headless, widths),
     };
+}
+
+/// What infer noted reading file i, r: the header again, rows of another
+/// width, UTF-16 that made no character.
+fn readNotes(a: Allocator, notes: *std.ArrayList(Note), i: usize, r: Columns) Allocator.Error!void {
+    const path = r.outcome.file;
+    const width = r.columns.len;
+    if (r.repeated_headers > 0) try notes.append(a, .{ .after = i, .file = path, .problem = .{ .header_repeated = .{ .line = r.repeated_line, .count = r.repeated_headers } } });
+    if (r.wide_rows > 0) try notes.append(a, .{ .after = i, .file = path, .problem = .{ .rows_wider = .{ .rows = r.wide_rows, .line = r.wide_line, .columns = width } } });
+    if (r.short_rows > 0) try notes.append(a, .{ .after = i, .file = path, .problem = .{ .rows_short = .{ .rows = r.short_rows, .line = r.short_line, .columns = width } } });
+    if (r.utf16_replaced > 0) try notes.append(a, .{ .after = i, .file = path, .problem = .{ .utf16_replaced = .{ .units = r.utf16_replaced } } });
 }
 
 /// What describe says of a file: its report, the schema it was read

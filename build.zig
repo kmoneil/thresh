@@ -539,7 +539,7 @@ const cli_checks = [_]struct {
         .args = &.{ "infer", "test/cli/wide.csv" },
         .stdout = null,
         .stderr = "infer test/cli/wide.csv  39 rows  3 columns\n" ++
-            "thresh: test/cli/wide.csv: 1 row wider than the header left out, the first on line 21: ragged rows, which validate rejects\n",
+            "thresh: test/cli/wide.csv: 1 row with more fields than the 3 columns left out, the first on line 21: ragged rows, which validate rejects\n",
     },
     .{
         // Files that disagree on their columns: said, and exit 1.
@@ -547,7 +547,7 @@ const cli_checks = [_]struct {
         .stdout = null,
         .stderr = "infer test/cli/orders.csv  2 rows  3 columns\n" ++
             "infer test/cli/wide.csv  39 rows  3 columns\n" ++
-            "thresh: test/cli/wide.csv: 1 row wider than the header left out, the first on line 21: ragged rows, which validate rejects\n" ++
+            "thresh: test/cli/wide.csv: 1 row with more fields than the 3 columns left out, the first on line 21: ragged rows, which validate rejects\n" ++
             "thresh: id, amount: typed from fewer than 10 values; check them before reusing the schema\n" ++
             "thresh: the files disagree: 6 of the schema's 6 columns are not in every file: 'id' (1 of 2), 'name' (1 of 2), 'amount' (1 of 2) and 3 more; validate fails a file without one\n",
         .code = 1,

@@ -332,7 +332,7 @@ const Builder = struct {
         try b.warnings(f.warnings);
         for (d.notes) |p| switch (p) {
             // Said already: the rows set aside, and the header again.
-            .rows_wider, .header_repeated => {},
+            .rows_wider, .rows_short, .header_repeated => {},
             else => try b.problem(.note, "", p),
         };
     }

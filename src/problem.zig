@@ -60,7 +60,8 @@ pub const Problem = union(enum) {
     // What infer found.
     /// Read as UTF-8 and it is not; a guess would garble every accent.
     column_not_utf8: struct { column: []const u8, row: u64 },
-    rows_wider: struct { rows: u64, line: u64 },
+    rows_wider: struct { rows: u64, line: u64, columns: usize },
+    rows_short: struct { rows: u64, line: u64, columns: usize },
     utf16_replaced: struct { units: u64 },
     /// A later file took a merged column to a lower type.
     column_widened: struct { column: []const u8, from: infer.Kind, to: infer.Kind, file: []const u8 },
@@ -166,7 +167,8 @@ pub const Problem = union(enum) {
             else
                 try w.print("the header repeats at row {d} and {d} more: files joined? They are skipped", .{ x.line, x.count - 1 }),
             .column_not_utf8 => |x| try w.print("column '{s}' is not UTF-8 (row {d}); read the file with --encoding cp1252 (Windows) or latin1", .{ x.column, x.row }),
-            .rows_wider => |x| try w.print("{d} row{s} wider than the header left out, the first on line {d}: ragged rows, which validate rejects", .{ x.rows, plural(x.rows), x.line }),
+            .rows_wider => |x| try w.print("{d} row{s} with more fields than the {d} columns left out, the first on line {d}: ragged rows, which validate rejects", .{ x.rows, plural(x.rows), x.columns, x.line }),
+            .rows_short => |x| try w.print("{d} row{s} with fewer fields than the {d} columns left out, the first on line {d}: ragged rows, which validate rejects", .{ x.rows, plural(x.rows), x.columns, x.line }),
             .utf16_replaced => |x| try w.print("{d} UTF-16 code unit{s} made no character, read as U+FFFD", .{ x.units, plural(x.units) }),
             .column_widened => |x| try w.print("column '{s}': {t} until {s} made it {t}", .{ x.column, x.from, x.file, x.to }),
             .column_tolerated => |x| try w.print("column '{s}' inferred {t} with {d} of {d} values refusing it (row {d} first), as --threshold allows: validate rejects them", .{ x.column, x.type, x.misfits, x.values, x.row }),
@@ -336,7 +338,8 @@ test "every code says what the CLI has always said" {
         .{ .{ .cut_off = .{ .fields = 2, .width = 3 } }, "the file ends mid-record: its last line has no line break and 2 of 3 fields; was it cut off?" },
         .{ .{ .header_repeated = .{ .line = 4, .count = 1 } }, "the header repeats at row 4: files joined? It is skipped" },
         .{ .{ .column_not_utf8 = .{ .column = "name", .row = 7 } }, "column 'name' is not UTF-8 (row 7); read the file with --encoding cp1252 (Windows) or latin1" },
-        .{ .{ .rows_wider = .{ .rows = 1, .line = 9 } }, "1 row wider than the header left out, the first on line 9: ragged rows, which validate rejects" },
+        .{ .{ .rows_wider = .{ .rows = 1, .line = 9, .columns = 4 } }, "1 row with more fields than the 4 columns left out, the first on line 9: ragged rows, which validate rejects" },
+        .{ .{ .rows_short = .{ .rows = 2, .line = 1, .columns = 4 } }, "2 rows with fewer fields than the 4 columns left out, the first on line 1: ragged rows, which validate rejects" },
         .{ .{ .utf16_replaced = .{ .units = 2 } }, "2 UTF-16 code units made no character, read as U+FFFD" },
         .{ .{ .column_widened = .{ .column = "id", .from = .int64, .to = .string, .file = "b.csv" } }, "column 'id': int64 until b.csv made it string" },
         .{ .{ .column_tolerated = .{ .column = "id", .type = .int64, .misfits = 3, .values = 5000, .row = 12 } }, "column 'id' inferred int64 with 3 of 5000 values refusing it (row 12 first), as --threshold allows: validate rejects them" },

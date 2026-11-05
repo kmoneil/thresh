@@ -29,6 +29,19 @@ and fields. Before 1.0 a breaking change is a minor bump.
   columns. A file part UTF-8, or with a byte neither encoding reads, is
   said to be so and not read again. The exit is still the stop's.
 
+### Fixed
+
+- infer, and describe with no schema, leave out every row of another
+  width than the columns, as they left out rows wider than a header, and
+  validate still rejects them. A short row's values typed the columns
+  they landed in: a header read as a row (`--header no`) made its names'
+  columns text, and a cut-off last line made a date column text. In a
+  file with no header a wider row added columns, so the schema had more
+  than the file and failed it whole ("the file has 7 columns, the schema
+  12"); the columns are now the rows' width as sniffed. A new note,
+  `rows_short`, says how many short rows were left out, and `rows_wider`
+  now comes for a file with no header too; both name the column count.
+
 ## [0.4.0] - 2026-11-04
 
 A file whose quotes all close on the line they open on is stopped too,
