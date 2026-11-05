@@ -13,6 +13,7 @@ const cli = @import("cli.zig");
 const dialect = @import("dialect.zig");
 const report = @import("report.zig");
 const explain = @import("explain.zig");
+const reread = @import("reread.zig");
 const problem = @import("problem.zig");
 const types = @import("types.zig");
 const Problem = problem.Problem;
@@ -172,8 +173,9 @@ fn describeFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Wri
     return finishRun(env, cfg, outcomes, err);
 }
 
-/// explain: each file described (lib.describe, files in parallel) and said
-/// in plain words (explain.zig), on stdout in the order given with a blank
+/// explain: each file described (lib.describe, files in parallel), read
+/// again where its stop can be worked out (reread.zig), and said in plain
+/// words (explain.zig), on stdout in the order given with a blank
 /// line between; with --json a line apiece holding the explanation and the
 /// description, which then is all stdout holds; with --out, each one's JSON
 /// in DIR/<file>.explain.json too. The exit is the worst file's, a row set
@@ -194,7 +196,8 @@ fn explainFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writ
             const c: *@This() = @ptrCast(@alignCast(ctx));
             const a = w.scratch.allocator();
             const d = try lib.describe(w.env, a, c.files[i], c.schema, c.options);
-            const e = try explain.of(a, d, .{ .day_first = c.options.day_first });
+            const worked = try reread.of(w.env, a, .{ .path = c.files[i], .schema = c.schema, .options = c.options }, d);
+            const e = try explain.of(a, d, .{ .day_first = c.options.day_first, .worked = worked });
             if (c.out_dir) |dir| try writeExplanation(w.env, .{ .dir = dir, .name = c.names[i] }, e, d);
             // The text outlives the file: the run's arena.
             var text: Io.Writer.Allocating = .init(w.keep);
@@ -594,6 +597,7 @@ test {
     _ = render;
     _ = @import("infer.zig");
     _ = explain;
+    _ = reread;
     _ = lib;
     _ = pool;
     _ = interrupt;
@@ -784,6 +788,11 @@ test "explain: each file in plain words, in order, the exit the worst file's" {
     try t.expectEqual(Exit.ok, passed);
     const failed, _ = try explainRun(a, &.{ "explain", "examples/data/harvest_dirty.csv", "--threshold", "0.9" });
     try t.expectEqual(Exit.failed, failed);
+    // A file not UTF-8 is read again as Windows-1252, and exits as it stopped.
+    const stopped, const again = try explainRun(a, &.{ "explain", "examples/data/windows.csv" });
+    try t.expectEqual(Exit.unreadable, stopped);
+    try t.expect(std.mem.find(u8, again, "\n  Its 16 bytes past ASCII are each a letter or mark in Windows-1252") != null);
+    try t.expect(std.mem.find(u8, again, "Read as Windows-1252 (--encoding cp1252), it is fine: 30 rows") != null);
 }
 
 test "explain --json --out: a line apiece on stdout, and the same kept in DIR" {

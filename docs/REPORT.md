@@ -332,19 +332,32 @@ their wording. Its `result` is the description's but for one thing: a
 file with a row set aside is `fail`, since in explain `--threshold`
 decides the columns' types and never passes a file with rows set aside.
 
+A file that stopped may be worked out: explain weighs what its stop
+points at against the file and, when that settles it, reads the file
+again so and says what it found. One stop is worked out so far, a file
+that is not UTF-8: read as Windows-1252 when every byte past ASCII is a
+character there and none is part of a UTF-8 one. The file is still as
+it came: the stop is its `summary` and its `result`, and the read again
+is in `read_again`.
+
 <!-- fields: explain -->
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `format_version` | `integer` | 1 |
 | `file` | `string` | the input's path, as it was given |
-| `result` | `string` | `pass`, `fail` or `error`: the description's, but `fail` when a row was set aside |
+| `result` | `string` | `pass`, `fail` or `error`: the description's, but `fail` when a row was set aside; a file read again is still `error` |
 | `summary` | `string` | the file in a sentence: its first problem finding's `text`, a file with no rows said so, or that it is fine and how many rows it has |
-| `findings` | `array` | what explain found: problems first, then notices, then info |
+| `findings` | `array` | what explain found: problems first, then notices, then info; a file read again gives its stop, the `read_again` finding, and then what the read again found, in the same order |
 | `findings[].kind` | `string` | what it is about, one of the kinds below |
 | `findings[].level` | `string` | `problem` (why the file is not fine), `notice` (worth acting on) or `info` (what the file is) |
-| `findings[].code` | `string` | when its kind has one: the [problem's code](PROBLEMS.md#problems) for `unreadable`, `stopped`, `fails` and `note`, or why rows or a value were set aside for `set_aside` |
+| `findings[].code` | `string` | when its kind has one: the [problem's code](PROBLEMS.md#problems) for `unreadable`, `stopped`, `fails` and `note`, and the stop's for `read_again`, `encoding_mixed` and `encoding_unknown`; or why rows or a value were set aside for `set_aside` |
 | `findings[].text` | `string` | the finding as a sentence, for people: its wording may change from version to version |
 | `description` | `description` | the file's [description](#a-description-describe) |
+| `read_again` | `object` | when the file stopped and was read again: how, and what that read found |
+| `read_again.with` | `object` | the setting explain changed, by the flag that changes it: give the same flag to read the file so |
+| `read_again.with.encoding` | `string` | `cp1252`, for a file not UTF-8 |
+| `read_again.result` | `string` | `pass`, `fail` or `error`: the read again's, as explain judges it |
+| `read_again.description` | `description` | the file's description, read so |
 
 The kinds, in the order explain gives them:
 
@@ -353,6 +366,9 @@ The kinds, in the order explain gives them:
 | --- | --- | --- |
 | `unreadable` | problem | the file could not be opened or read |
 | `stopped` | problem | the file stopped before its rows were read: its dialect is not settled, its header is another width than its rows, its quotes are data, it is not UTF-8 |
+| `read_again` | notice | the file read again as its stop points, why so, and what that read found: a file not UTF-8 read as Windows-1252, its bytes past ASCII counted, and how many Latin-1 would make control codes; the findings after it are that read's |
+| `encoding_mixed` | notice | a file not UTF-8 that is UTF-8 in part, as where files written two ways were joined: not read again, as either encoding would garble the UTF-8 |
+| `encoding_unknown` | notice | a file not UTF-8 with bytes that neither Windows-1252 nor Latin-1 reads as a character: not read again |
 | `fails` | problem | read, the file fails as a whole: a column the schema has and the header does not, a last line cut off |
 | `rows_set_aside` | problem | how many rows were set aside, of how many |
 | `set_aside` | problem | the rows set aside for one reason, and the first one's line; or one column's values that do not fit, and the first one |
