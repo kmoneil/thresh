@@ -10,6 +10,13 @@ and fields. Before 1.0 a breaking change is a minor bump.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.5.0] - 2026-11-05
+
+`thresh explain`: each file in plain words, with why it stopped and what
+reads it; and infer types each column from the rows of its width alone.
+
 ### Added
 
 - `thresh explain FILE...`: each file in plain words, for a reader who
@@ -37,6 +44,14 @@ and fields. Before 1.0 a breaking change is a minor bump.
   value that is not doubled, so it ends the value early, with the column
   and the value as written (`remark: "bin "B" north"`), and that inside
   quotes a quote is written `""`.
+
+### Changed
+
+- Breaking: as infer types each column from the rows of its width alone,
+  an inferred schema can differ from 0.4.0's, and so can what describe
+  with no schema reports. A file with no header that failed whole for a
+  wider row ("the file has 7 columns, the schema 12") now keeps its rows
+  and sets that one aside.
 
 ### Fixed
 
@@ -171,7 +186,8 @@ The first release, for threshio on PyPI.
   musl), macOS 13 and later, and Windows, on x86-64 and arm64, Python 3.9
   and later; each attached here with SHA256SUMS and build provenance.
 
-[Unreleased]: https://github.com/kmoneil/thresh/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/kmoneil/thresh/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/kmoneil/thresh/releases/tag/v0.5.0
 [0.4.0]: https://github.com/kmoneil/thresh/releases/tag/v0.4.0
 [0.3.0]: https://github.com/kmoneil/thresh/releases/tag/v0.3.0
 [0.2.1]: https://github.com/kmoneil/thresh/releases/tag/v0.2.1
