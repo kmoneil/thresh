@@ -9,7 +9,10 @@
 //! The result is the file's as it came, but for one thing: a row set aside
 //! makes it a failure whatever --threshold allows, since in explain the
 //! threshold decides the columns' types and not the result. Nothing here
-//! reads a file; main.zig describes it first.
+//! reads a file: main.zig describes it first, and reread.zig reads it
+//! again where its stop can be worked out. Read again, it is still the
+//! file as it came: the stop is the summary and the result, and what the
+//! read again found follows it.
 
 const std = @import("std");
 const Io = std.Io;
@@ -19,6 +22,7 @@ const dialect = @import("dialect.zig");
 const lib = @import("lib.zig");
 const Problem = @import("problem.zig").Problem;
 const report = @import("report.zig");
+const reread = @import("reread.zig");
 const schema = @import("schema.zig");
 const stats = @import("stats.zig");
 const types = @import("types.zig");
@@ -31,6 +35,15 @@ pub const Kind = enum {
     unreadable,
     /// The file stopped before its rows were read: code is the problem's.
     stopped,
+    /// The file read again as its stop points, and why so; the findings
+    /// after it are that read's: code is the stop's.
+    read_again,
+    /// Not read again: some of it is UTF-8 and some is not. Code is the
+    /// stop's.
+    encoding_mixed,
+    /// Not read again: neither Windows-1252 nor Latin-1 reads every byte
+    /// past ASCII as a character. Code is the stop's.
+    encoding_unknown,
     /// Read, it fails as a whole (a column the schema has and the header
     /// does not, a last line cut off): code is the problem's.
     fails,
@@ -62,6 +75,7 @@ pub const Kind = enum {
     pub fn level(k: Kind) Level {
         return switch (k) {
             .unreadable, .stopped, .fails, .rows_set_aside, .set_aside => .problem,
+            .read_again, .encoding_mixed, .encoding_unknown => .notice,
             .no_rows, .no_header, .header_repeated, .extra_columns, .not_utf8 => .notice,
             .utf16_invalid, .mixed_newlines, .quote_in_unquoted, .dates_ambiguous, .note => .notice,
             .written, .columns, .dates, .digit_codes, .key, .one_value, .empty_columns => .info,
@@ -108,30 +122,41 @@ pub const Explanation = struct {
     findings: []const Finding,
     /// The finding summary is, which the text does not say twice.
     headline: ?usize = null,
+    /// The file read again, when its stop was worked out so.
+    again: ?ReadAgain = null,
+};
+
+/// The file read again as its stop pointed: with what, as explain judges
+/// that read, and its description.
+pub const ReadAgain = struct {
+    with: reread.With,
+    result: report.Result,
+    description: lib.Description,
 };
 
 pub const Options = struct {
     /// What --day-first said, for dates that read either way.
     day_first: bool = false,
+    /// How reread.zig worked the file's stop out, when it did.
+    worked: ?reread.Worked = null,
 };
 
-/// What d says, in plain words; every string in a.
+/// What d says, in plain words; every string in a. Read again (o.worked),
+/// the findings after the stop are the read again's.
 pub fn of(a: Allocator, d: lib.Description, o: Options) Allocator.Error!Explanation {
     var b: Builder = .{ .a = a };
     const f = d.file;
     try b.problems(f);
+    if (o.worked) |w| switch (w) {
+        .read => |r| return b.readAgain(f, r, o),
+        .mixed => |t| try b.mixed(f, t),
+        .neither => |t| try b.neither(f, t),
+    };
     if (f.read) |r| try b.setAside(f.outcome.rows, r);
     try b.notices(d, o);
     try b.written(d);
     if (f.read) |r| try b.columns(r.columns, d.inferred);
-    const headline = headlineOf(b.list.items);
-    return .{
-        .file = f.outcome.file,
-        .result = resultOf(f),
-        .summary = if (headline) |i| b.list.items[i].text else try fine(a, f.outcome.rows),
-        .findings = b.list.items,
-        .headline = headline,
-    };
+    return b.done(f);
 }
 
 /// The explanation as text: the file and its summary on a line, then
@@ -161,6 +186,10 @@ pub fn writeJson(w: *Io.Writer, e: Explanation, d: lib.Description, compact: boo
     try s.write(e.findings);
     try s.objectField("description");
     try s.write(d);
+    if (e.again) |g| {
+        try s.objectField("read_again");
+        try s.write(g);
+    }
     try s.endObject();
     try w.writeByte('\n');
 }
@@ -178,6 +207,47 @@ const Builder = struct {
         try b.put(kind, code, try std.fmt.allocPrint(b.a, fmt, args));
     }
 
+    /// The explanation of f that the findings make.
+    fn done(b: *Builder, f: report.File) Allocator.Error!Explanation {
+        const headline = headlineOf(b.list.items);
+        return .{
+            .file = f.outcome.file,
+            .result = resultOf(f),
+            .summary = if (headline) |i| b.list.items[i].text else try fine(b.a, f.outcome.rows),
+            .findings = b.list.items,
+            .headline = headline,
+        };
+    }
+
+    /// f read again: why so and what the read found, then the rest of what
+    /// it found. The stop stays the summary and the result.
+    fn readAgain(b: *Builder, f: report.File, r: reread.Read, o: Options) Allocator.Error!Explanation {
+        const again = r.again.description;
+        const second = try of(b.a, again, .{ .day_first = o.day_first });
+        var w: Io.Writer.Allocating = .init(b.a);
+        writeAgain(&w.writer, r, second) catch return error.OutOfMemory;
+        try b.put(.read_again, stopCode(f), w.written());
+        for (second.findings, 0..) |x, i| if (second.headline != i) try b.list.append(b.a, x);
+        var e = try b.done(f);
+        e.again = .{ .with = r.again.with, .result = second.result, .description = again };
+        return e;
+    }
+
+    /// Why a file not UTF-8 that is UTF-8 in part is not read again.
+    fn mixed(b: *Builder, f: report.File, t: reread.Bytes) Allocator.Error!void {
+        try b.add(.encoding_mixed, stopCode(f), "Some of it is UTF-8 ({d} character{s} past ASCII) and some is not ({d} byte{s}), as where files written two ways were joined, so it is not read again: as Windows-1252 (--encoding cp1252), each UTF-8 character would come out as two or three, é as Ã©.", .{ t.utf8, plural(t.utf8), t.lone, plural(t.lone) });
+    }
+
+    /// Why a file not UTF-8 that no encoding reads is not read again.
+    fn neither(b: *Builder, f: report.File, t: reread.Bytes) Allocator.Error!void {
+        const code = stopCode(f);
+        const first = t.firstControl() orelse
+            return b.put(.encoding_unknown, code, "Its bytes past ASCII are shaped as UTF-8, but some make no character, and Windows-1252 or Latin-1 would read them no better; it is not read again.");
+        const n = t.controls();
+        const are = if (n == 1) "is a control code" else "are control codes";
+        try b.add(.encoding_unknown, code, "{d} of its bytes {s} in Windows-1252 and Latin-1 alike (0x{x:0>2}{s}), so neither reads it, and it is not read again.", .{ n, are, first, if (n == 1) "" else " among them" });
+    }
+
     /// p's sentence after prefix, as a finding of its own with p's code:
     /// a capital first, unless it starts with a column's name.
     fn problem(b: *Builder, kind: Kind, comptime prefix: []const u8, p: Problem) Allocator.Error!void {
@@ -192,7 +262,7 @@ const Builder = struct {
         if (f.outcome.result == .@"error") {
             const p = f.outcome.problem orelse return;
             if (unreadable(p)) return b.problem(.unreadable, "Cannot be read: ", p);
-            return b.problem(.stopped, "Stopped: ", p);
+            return b.problem(.stopped, stopped_prefix, p);
         }
         for (f.problems) |p| try b.problem(.fails, "", p);
     }
@@ -386,6 +456,57 @@ fn verb(names: []const []const u8, one: []const u8, more: []const u8) []const u8
 
 /// The most reasons the text gives rows set aside; --json has every one.
 const max_reasons = 5;
+
+/// How a stop's finding starts.
+const stopped_prefix = "Stopped: ";
+
+/// The code of f's problem, when it has one.
+fn stopCode(f: report.File) ?[]const u8 {
+    const p = f.outcome.problem orelse return null;
+    return @tagName(p);
+}
+
+/// Why the file was read again so, and what the read found.
+fn writeAgain(w: *Io.Writer, r: reread.Read, second: Explanation) Io.Writer.Error!void {
+    try writeBytes(w, r.bytes);
+    switch (r.again.with) {
+        .encoding => |e| try w.print(" Read as {s} ({f})", .{ encodingName(@tagName(e)), r.again.with }),
+    }
+    const h = second.headline orelse {
+        const rows = r.again.description.file.outcome.rows;
+        return w.print(", it is fine: {d} row{s}, none set aside.", .{ rows, plural(rows) });
+    };
+    const x = second.findings[h];
+    if (x.kind == .stopped) return w.print(", it stops too: {s}", .{x.text[stopped_prefix.len..]});
+    try w.print(": {s}", .{x.text});
+}
+
+/// "Its 16 bytes past ASCII are each a letter or mark in Windows-1252 (’
+/// and é); Latin-1 reads 8 of them as control codes."
+fn writeBytes(w: *Io.Writer, t: reread.Bytes) Io.Writer.Error!void {
+    const n = t.high();
+    if (n == 1) try w.writeAll("Its one byte past ASCII is a letter or mark in Windows-1252") else try w.print("Its {d} bytes past ASCII are each a letter or mark in Windows-1252", .{n});
+    const c1 = t.c1();
+    if (c1 == 0) try w.writeAll(" and Latin-1 alike");
+    var buf: [3]u8 = undefined;
+    const common = t.common(&buf);
+    if (common.len > 0) try w.print(" ({f}{s})", .{ Chars{ .bytes = common }, if (t.distinct() > common.len) " most often" else "" });
+    if (c1 > 0 and n == 1) try w.writeAll("; Latin-1 reads it as a control code");
+    if (c1 > 0 and n > 1) try w.print("; Latin-1 reads {d} of them as control codes", .{c1});
+    try w.writeByte('.');
+}
+
+/// Bytes past ASCII as Windows-1252 reads them, listed: "’, é and –".
+const Chars = struct {
+    bytes: []const u8,
+
+    pub fn format(c: Chars, w: *Io.Writer) Io.Writer.Error!void {
+        for (c.bytes, 0..) |b, i| {
+            if (i > 0) try w.writeAll(if (i + 1 == c.bytes.len) " and " else ", ");
+            try w.print("{u}", .{types.codepoint(.cp1252, b)});
+        }
+    }
+};
 
 /// A problem that means the file could not be opened or read, as against
 /// one that stopped it once read.
@@ -660,10 +781,13 @@ fn tooLong(c: report.Column) bool {
 
 const testing = std.testing;
 
-/// The explanation of the file at path, read as describe reads it.
+/// The explanation of the file at path, read as main.zig reads it:
+/// described, and read again where its stop can be worked out.
 fn explained(a: Allocator, path: []const u8, o: lib.Options) !struct { Explanation, lib.Description } {
-    const d = try lib.describe(.{ .io = testing.io, .gpa = testing.allocator }, a, path, null, o);
-    return .{ try of(a, d, .{ .day_first = o.day_first }), d };
+    const env: lib.Env = .{ .io = testing.io, .gpa = testing.allocator };
+    const d = try lib.describe(env, a, path, null, o);
+    const worked = try reread.of(env, a, .{ .path = path, .options = o }, d);
+    return .{ try of(a, d, .{ .day_first = o.day_first, .worked = worked }), d };
 }
 
 fn expectFinding(e: Explanation, kind: Kind, text: []const u8) !void {
@@ -749,6 +873,63 @@ test "files that stop, or cannot be read, say why in their summary" {
         // An unsettled dialect is not said as if it were settled.
         if (std.mem.eql(u8, c[2], "dialect_unsettled")) try testing.expect(!hasKind(e, .written));
     }
+}
+
+test "a file not UTF-8, read again as Windows-1252: the stop, then what the read found" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const e, const d = try explained(a, "examples/data/windows.csv", .{});
+    try testing.expectEqual(report.Result.@"error", e.result);
+    try testing.expectEqualStrings("Stopped: column 'remark' is not UTF-8 (row 1); read the file with --encoding cp1252 (Windows) or latin1.", e.summary);
+    try testing.expectEqual(Kind.read_again, e.findings[1].kind);
+    try testing.expectEqualStrings("column_not_utf8", e.findings[1].code.?);
+    try testing.expectEqualStrings("Its 16 bytes past ASCII are each a letter or mark in Windows-1252 (’ and é); Latin-1 reads 8 of them as control codes. Read as Windows-1252 (--encoding cp1252), it is fine: 30 rows, none set aside.", e.findings[1].text);
+    // What follows is the read again's.
+    try expectFinding(e, .written, "Comma-separated, with a header row; Windows line ends (CRLF); Windows-1252.");
+    try expectFinding(e, .key, "lug_id is different in every row: likely the key.");
+    try testing.expectEqual(report.Result.pass, e.again.?.result);
+    // The JSON: the first description, then the read again.
+    var w: Io.Writer.Allocating = .init(a);
+    try writeJson(&w.writer, e, d, true);
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, a, w.written(), .{});
+    try testing.expectEqualStrings("utf8", v.object.get("description").?.object.get("encoding").?.string);
+    const again = v.object.get("read_again").?.object;
+    try testing.expectEqualStrings("cp1252", again.get("with").?.object.get("encoding").?.string);
+    try testing.expectEqualStrings("pass", again.get("result").?.string);
+    try testing.expectEqualStrings("cp1252", again.get("description").?.object.get("encoding").?.string);
+}
+
+/// The path of a file holding data, made in tmp.
+fn tmpFile(a: Allocator, tmp: testing.TmpDir, name: []const u8, data: []const u8) ![]const u8 {
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = name, .data = data });
+    return std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/{s}", .{ tmp.sub_path, name });
+}
+
+test "not UTF-8: in part, in no encoding, or read again with a row set aside" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // UTF-8's e acute, then Windows-1252's.
+    const mixed, _ = try explained(a, try tmpFile(a, tmp, "mixed.csv", "id,name\n1,caf\xc3\xa9\n2,caf\xe9\n"), .{});
+    try testing.expectEqual(@as(?ReadAgain, null), mixed.again);
+    try testing.expect(std.mem.startsWith(u8, mixed.findings[1].text, "Some of it is UTF-8 (1 character past ASCII) and some is not (1 byte), as where files"));
+    try testing.expectEqual(Kind.encoding_mixed, mixed.findings[1].kind);
+    // 0x81 is a control code in both.
+    const odd, _ = try explained(a, try tmpFile(a, tmp, "odd.csv", "id,name\n1,a\x81b\n2,caf\xe9\n"), .{});
+    try expectFinding(odd, .encoding_unknown, "1 of its bytes is a control code in Windows-1252 and Latin-1 alike (0x81), so neither reads it, and it is not read again.");
+    // Read again, a row is a field short: the stop, then the row. Enough
+    // rows for the dialect to settle.
+    var data: Io.Writer.Allocating = .init(a);
+    try data.writer.writeAll("id,name\n");
+    for (1..21) |i| if (i == 7) try data.writer.writeAll("7\n") else try data.writer.print("{d},caf\xe9 {d}\n", .{ i, i });
+    const short, _ = try explained(a, try tmpFile(a, tmp, "short.csv", data.written()), .{});
+    try testing.expectEqual(report.Result.@"error", short.result);
+    try testing.expectEqualStrings("Its 19 bytes past ASCII are each a letter or mark in Windows-1252 and Latin-1 alike (é). Read as Windows-1252 (--encoding cp1252): 1 of 20 rows has a problem and was set aside; the other 19 are fine.", short.findings[1].text);
+    try expectFinding(short, .set_aside, "Line 8: a different number of fields from the 2 columns.");
+    try testing.expectEqual(report.Result.fail, short.again.?.result);
 }
 
 test "what to notice: no header, the header again, no rows" {

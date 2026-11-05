@@ -22,6 +22,12 @@ and fields. Before 1.0 a breaking change is a minor bump.
   stable kind and a level, and `--json` (or `--out DIR`) gives them with
   the file's whole description (docs/REPORT.md, "An explanation"). A row
   set aside makes the file fail, exit 1, whatever `--threshold` allows.
+- `thresh explain` reads a file that is not UTF-8 again, as Windows-1252,
+  when every byte past ASCII is a character there and none is part of a
+  UTF-8 one, and says what that read found under the stop: the bytes
+  counted, the flag that reads it (`--encoding cp1252`), its rows and
+  columns. A file part UTF-8, or with a byte neither encoding reads, is
+  said to be so and not read again. The exit is still the stop's.
 
 ## [0.4.0] - 2026-11-04
 
