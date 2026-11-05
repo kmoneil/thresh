@@ -197,6 +197,27 @@ pub const Description = struct {
     /// As read: the options' encoding, or utf16le or utf16be when a byte
     /// order mark said so.
     encoding: []const u8,
+
+    /// The description as a JSON object (docs/REPORT.md, "A description"):
+    /// on its own (writeDescription), or a field of another (explain's).
+    pub fn jsonStringify(d: Description, s: *std.json.Stringify) std.json.Stringify.Error!void {
+        try s.beginObject();
+        try report.writeReportFields(s, d.file);
+        try s.objectField("encoding");
+        try s.write(d.encoding);
+        try s.objectField("inferred");
+        try s.write(d.inferred);
+        if (d.schema) |sc| {
+            try s.objectField("schema");
+            const emit = s.options.emit_null_optional_fields;
+            s.options.emit_null_optional_fields = false;
+            defer s.options.emit_null_optional_fields = emit;
+            try s.write(sc);
+        }
+        try s.objectField("notes");
+        try s.write(d.notes);
+        try s.endObject();
+    }
 };
 
 /// Everything thresh can say of the file at path, in a document bounded
@@ -275,21 +296,7 @@ fn describeAgainst(env: Env, arena: Allocator, path: []const u8, s: *const Schem
 /// A description as JSON: indented as a report is, or compact on one line.
 pub fn writeDescription(w: *Io.Writer, d: Description, compact: bool) std.json.Stringify.Error!void {
     var s: std.json.Stringify = .{ .writer = w, .options = .{ .whitespace = if (compact) .minified else .indent_2 } };
-    try s.beginObject();
-    try report.writeReportFields(&s, d.file);
-    try s.objectField("encoding");
-    try s.write(d.encoding);
-    try s.objectField("inferred");
-    try s.write(d.inferred);
-    if (d.schema) |sc| {
-        try s.objectField("schema");
-        s.options.emit_null_optional_fields = false;
-        defer s.options.emit_null_optional_fields = true;
-        try s.write(sc);
-    }
-    try s.objectField("notes");
-    try s.write(d.notes);
-    try s.endObject();
+    try s.write(d);
     try w.writeByte('\n');
 }
 

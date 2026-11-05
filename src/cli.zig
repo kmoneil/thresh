@@ -18,6 +18,9 @@ pub const usage =
     \\  describe   everything about each file in one JSON document: read against
     \\             --schema, or one inferred from it; with --shapes-only, no data;
     \\             --report and --reject as validate writes them
+    \\  explain    each file in plain words: what is wrong, or that it is fine,
+    \\             what to notice, how it is written and what its columns hold;
+    \\             --json for describe's document beside it, --out DIR to keep it
     \\
     \\Dialect (each pins one dimension; the sniffer scores the rest):
     \\      --delimiter C      one ASCII byte, tab, \t or \xHH
@@ -49,7 +52,8 @@ pub const usage =
     \\
     \\Output (convert, run):
     \\      --to F             csv or arrow
-    \\      --out DIR          where output goes (infer: the schema file)
+    \\      --out DIR          where output goes (infer: the schema file;
+    \\                         explain: <file>.explain.json)
     \\      --out-delimiter C  csv: the field separator (default ,)
     \\      --out-newline N    csv: lf (the default) or crlf
     \\      --normalize-dates  csv: write dates and timestamps as RFC 3339
@@ -75,7 +79,7 @@ pub const usage =
     \\
 ;
 
-pub const Command = enum { sniff, infer, validate, convert, run, describe };
+pub const Command = enum { sniff, infer, validate, convert, run, describe, explain };
 
 pub const Format = enum { csv, arrow, parquet };
 
@@ -189,8 +193,8 @@ const Flag = enum {
     /// The commands a flag means something to; null for all of them.
     fn commands(f: Flag) ?[]const Command {
         return switch (f) {
-            .sample => &.{ .infer, .describe },
-            .out => &.{ .infer, .convert, .run },
+            .sample => &.{ .infer, .describe, .explain },
+            .out => &.{ .infer, .convert, .run, .explain },
             // What reads a file against a schema has rows to reject and a report.
             .report, .reject => &.{ .validate, .convert, .run, .describe },
             .to, .out_delimiter, .out_newline, .normalize_dates, .arrow_file => &.{ .convert, .run },
@@ -220,7 +224,7 @@ pub fn parse(gpa: std.mem.Allocator, args: []const []const u8, diag: *Diagnostic
     // A defer, not an errdefer: --help after a file returns early too.
     defer p.files.deinit(gpa);
     while (p.i < args.len) : (p.i += 1) if (try p.one()) |action| return action;
-    p.cfg.command = p.command orelse return diag.fail("no command: sniff, infer, validate, convert, run or describe", .{});
+    p.cfg.command = p.command orelse return diag.fail("no command: sniff, infer, validate, convert, run, describe or explain", .{});
     try check(&p.cfg, p.seen, p.files.items.len, diag);
     p.cfg.files = try p.files.toOwnedSlice(gpa);
     return .{ .run = p.cfg };
@@ -273,7 +277,7 @@ const Parser = struct {
         }
         if (std.mem.eql(u8, arg, "help")) return .help;
         p.command = std.meta.stringToEnum(Command, arg) orelse
-            return p.diag.fail("no command '{s}': sniff, infer, validate, convert, run or describe", .{arg});
+            return p.diag.fail("no command '{s}': sniff, infer, validate, convert, run, describe or explain", .{arg});
         return null;
     }
 
@@ -425,7 +429,7 @@ fn checkPins(pins: Pins, diag: *Diagnostic) error{Usage}!void {
 /// What each command needs.
 fn checkCommand(cfg: *const Config, diag: *Diagnostic) error{Usage}!void {
     switch (cfg.command) {
-        .sniff, .infer, .describe => {},
+        .sniff, .infer, .describe, .explain => {},
         .validate => if (cfg.schema == null and cfg.columns == null)
             return diag.fail("validate needs --schema or --columns", .{}),
         .convert => {
@@ -583,8 +587,8 @@ test "help and version win wherever they are" {
 }
 
 test "usage errors" {
-    try expectUsage(&.{}, "no command: sniff, infer, validate, convert, run or describe");
-    try expectUsage(&.{"split"}, "no command 'split': sniff, infer, validate, convert, run or describe");
+    try expectUsage(&.{}, "no command: sniff, infer, validate, convert, run, describe or explain");
+    try expectUsage(&.{"split"}, "no command 'split': sniff, infer, validate, convert, run, describe or explain");
     try expectUsage(&.{"sniff"}, "sniff: no input files");
     try expectUsage(&.{ "sniff", "a", "--bogus" }, "no option --bogus");
     try expectUsage(&.{ "sniff", "a", "--delimiter" }, "--delimiter needs a value");
@@ -604,6 +608,8 @@ test "usage errors" {
     try expectUsage(&.{ "infer", "a", "--report", "r" }, "--report is not an option of infer");
     try expectUsage(&.{ "describe", "a", "--reject", "r", "--shapes-only" }, "--reject writes the rows themselves; --shapes-only leaves them out");
     try expectUsage(&.{ "convert", "a", "--out-newline", "cr" }, "--out-newline cr: lf or crlf");
+    try expectUsage(&.{ "explain", "a", "--report", "r" }, "--report is not an option of explain");
+    try expectUsage(&.{ "explain", "a", "--to", "csv" }, "--to is not an option of explain");
 }
 
 test "a value a flag does not take says what it does" {
@@ -628,6 +634,14 @@ test "a value a flag does not take says what it does" {
     }
     try expectUsage(&.{ "infer", "a.csv", "--sample", "0" }, "--sample 0: a row count above 0");
     try expectUsage(&.{ "run", "a.csv", "--to", "xml" }, "--to xml: csv or arrow");
+}
+
+test "explain takes --out, a directory, and --sample" {
+    const cfg = try expectConfig(&.{ "explain", "a.csv", "b.csv", "--out", "explained/", "--sample", "100", "--json" });
+    defer testing.allocator.free(cfg.files);
+    try testing.expectEqual(Command.explain, cfg.command);
+    try testing.expectEqualStrings("explained/", cfg.out.?);
+    try testing.expectEqual(@as(?u64, 100), cfg.sample_rows);
 }
 
 test "-- ends the options" {
