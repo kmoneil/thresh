@@ -191,6 +191,7 @@ fn readNotes(a: Allocator, notes: *std.ArrayList(Note), i: usize, r: Columns) Al
     if (r.repeated_headers > 0) try notes.append(a, .{ .after = i, .file = path, .problem = .{ .header_repeated = .{ .line = r.repeated_line, .count = r.repeated_headers } } });
     if (r.wide_rows > 0) try notes.append(a, .{ .after = i, .file = path, .problem = .{ .rows_wider = .{ .rows = r.wide_rows, .line = r.wide_line, .columns = width } } });
     if (r.short_rows > 0) try notes.append(a, .{ .after = i, .file = path, .problem = .{ .rows_short = .{ .rows = r.short_rows, .line = r.short_line, .columns = width } } });
+    if (r.bad_quotes.rows > 0) try notes.append(a, .{ .after = i, .file = path, .problem = .{ .rows_bad_quote = .{ .rows = r.bad_quotes.rows, .line = r.bad_quotes.line } } });
     if (r.utf16_replaced > 0) try notes.append(a, .{ .after = i, .file = path, .problem = .{ .utf16_replaced = .{ .units = r.utf16_replaced } } });
 }
 
@@ -838,6 +839,35 @@ test "statistics: a large file sampled evenly, merged across files" {
     try testing.expectEqualStrings("18.00", kg.max.?);
     try testing.expectEqualStrings("18.0", kg.top[0].value);
     try testing.expectEqual(@as(u64, 2), kg.top[0].count);
+}
+
+test "infer notes the rows it leaves out: short, and with something after a closing quote" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const env: Env = .{ .io = testing.io, .gpa = testing.allocator };
+    var text: Io.Writer.Allocating = .init(testing.allocator);
+    defer text.deinit();
+    try text.writer.writeAll("lug_id,remark,lug_kg\n");
+    // Enough rows for the dialect to settle past the odd ones.
+    for (1..61) |i| switch (i) {
+        // A quote inside a quoted value, not doubled; a row a field short.
+        7, 9 => try text.writer.print("{d},\"bin \"B\" north\",12.50\n", .{i}),
+        12 => try text.writer.print("{d},short\n", .{i}),
+        else => try text.writer.print("{d},\"bin {d}\",{d}.50\n", .{ i, i, 10 + i }),
+    };
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "lugs.csv", .data = text.written() });
+    const d = try describe(env, a, try pathIn(a, tmp, "lugs.csv"), null, .{});
+    try testing.expectEqual(@as(usize, 2), d.notes.len);
+    try testing.expectEqual(Problem.Code.rows_short, std.meta.activeTag(d.notes[0]));
+    try testing.expectEqual(@as(u64, 13), d.notes[0].rows_short.line);
+    const bad = d.notes[1].rows_bad_quote;
+    try testing.expectEqual(@as(u64, 2), bad.rows);
+    try testing.expectEqual(@as(u64, 8), bad.line);
+    // Left out, they type nothing: lug_kg is a decimal.
+    try testing.expectEqual(schema_mod.Type.decimal, d.schema.?.columns[2].type);
 }
 
 test "describe: a schema inferred, or given; a file not read; UTF-16; shapes" {
