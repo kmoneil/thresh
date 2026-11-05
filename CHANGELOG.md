@@ -32,6 +32,11 @@ and fields. Before 1.0 a breaking change is a minor bump.
   rows again with row 1 as data (`--header no`), the stop's own
   suggestion, and says what that read found: the header row set aside,
   the rest of the rows and the columns' types from them.
+- `thresh explain` says why rows were set aside for something after a
+  closing quote, when the first one shows it: a quote inside a quoted
+  value that is not doubled, so it ends the value early, with the column
+  and the value as written (`remark: "bin "B" north"`), and that inside
+  quotes a quote is written `""`.
 
 ### Fixed
 
