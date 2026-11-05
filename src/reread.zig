@@ -1,9 +1,14 @@
 //! A file that stopped, worked out for explain: what the stop points at is
 //! weighed against the file, and when the weighing settles it, the file is
-//! described again that way. One stop so far: a file that is not UTF-8
-//! (column_not_utf8), weighed by its bytes past ASCII.
+//! described again that way. Two stops so far:
 //!
-//! Its problem suggests cp1252 or latin1. Windows-1252 has a letter or a
+//! A header of another width than its rows (header_width) is read with row
+//! 1 as data, as its problem suggests. Its names cannot be put to columns,
+//! but infer leaves row 1 out, being of another width, so the columns are
+//! typed from the rows alone.
+//!
+//! A file that is not UTF-8 (column_not_utf8) is weighed by its bytes past
+//! ASCII. Its problem suggests cp1252 or latin1. Windows-1252 has a letter or a
 //! mark for 27 of the 32 bytes 0x80 to 0x9f, where Latin-1 has control
 //! codes, and the two agree on every other byte, so Windows-1252 is read
 //! whenever every byte is a character in it. Either way a file part UTF-8
@@ -11,8 +16,10 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const dialect = @import("dialect.zig");
 const input = @import("input.zig");
 const lib = @import("lib.zig");
+const schema = @import("schema.zig");
 const types = @import("types.zig");
 
 /// The bytes past ASCII in a file, and how many of them UTF-8 reads.
@@ -159,11 +166,13 @@ pub const Fit = enum {
 /// What explain changed to read the file again: a setting, by its flag.
 pub const With = union(enum) {
     encoding: types.Encoding,
+    header: dialect.HeaderMode,
 
-    /// "--encoding cp1252"
+    /// "--encoding cp1252", "--header no"
     pub fn format(w: With, out: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (w) {
             .encoding => |e| try out.print("--encoding {t}", .{e}),
+            .header => |h| try out.print("--header {t}", .{h}),
         }
     }
 };
@@ -174,18 +183,26 @@ pub const Again = struct {
     description: lib.Description,
 };
 
-/// A file read again, and why so.
-pub const Read = struct { bytes: Bytes, again: Again };
-
 /// How a stop was worked out.
 pub const Worked = union(enum) {
-    /// Read again, as the bytes say.
-    read: Read,
+    /// Read again as Windows-1252, as the bytes say.
+    encoding: struct { bytes: Bytes, again: Again },
+    /// Read again with row 1 as data, its names left out.
+    header: Again,
     /// Not read again: some of it is UTF-8 and some is not.
     mixed: Bytes,
     /// Not read again: no encoding reads every byte past ASCII as a
     /// character.
     neither: Bytes,
+
+    /// The file read again, when it was.
+    pub fn again(w: Worked) ?Again {
+        return switch (w) {
+            .encoding => |r| r.again,
+            .header => |g| g,
+            .mixed, .neither => null,
+        };
+    }
 };
 
 /// A file as explain reads it.
@@ -199,7 +216,16 @@ pub const Reading = struct {
 /// file can still be read; null otherwise.
 pub fn of(env: lib.Env, a: Allocator, r: Reading, d: lib.Description) !?Worked {
     const p = d.file.outcome.problem orelse return null;
-    if (p != .column_not_utf8) return null;
+    return switch (p) {
+        .column_not_utf8 => try encoding(env, a, r),
+        .header_width => if (r.options.pins.header == .no) null else .{ .header = try readWith(env, a, r, .{ .header = .no }) },
+        else => null,
+    };
+}
+
+/// A file not UTF-8, weighed by its bytes, and read again as Windows-1252
+/// when they say so.
+fn encoding(env: lib.Env, a: Allocator, r: Reading) !?Worked {
     const t = tally(env, r.path) catch |e| switch (e) {
         error.OutOfMemory => return e,
         else => return null,
@@ -209,10 +235,17 @@ pub fn of(env: lib.Env, a: Allocator, r: Reading, d: lib.Description) !?Worked {
         .neither => return .{ .neither = t },
         .cp1252 => {},
     }
+    return .{ .encoding = .{ .bytes = t, .again = try readWith(env, a, r, .{ .encoding = .cp1252 }) } };
+}
+
+/// The file described again, with as the one setting changed.
+fn readWith(env: lib.Env, a: Allocator, r: Reading, with: With) !Again {
     var o = r.options;
-    o.encoding = .cp1252;
-    const again = try lib.describe(env, a, r.path, r.schema, o);
-    return .{ .read = .{ .bytes = t, .again = .{ .with = .{ .encoding = .cp1252 }, .description = again } } };
+    switch (with) {
+        .encoding => |e| o.encoding = e,
+        .header => |h| o.pins.header = h,
+    }
+    return .{ .with = with, .description = try lib.describe(env, a, r.path, r.schema, o) };
 }
 
 /// The bytes past ASCII in the file at path, read through, mapped where it
@@ -272,13 +305,33 @@ test "a file not UTF-8 is read again as Windows-1252" {
     const path = "examples/data/windows.csv";
     const d = try lib.describe(env, a, path, null, .{});
     const w = (try of(env, a, .{ .path = path }, d)).?;
-    try testing.expectEqual(@as(u64, 16), w.read.bytes.high());
-    try testing.expectEqual(@as(u64, 8), w.read.bytes.c1());
-    try testing.expectEqual(types.Encoding.cp1252, w.read.again.with.encoding);
-    const again = w.read.again.description;
+    try testing.expectEqual(@as(u64, 16), w.encoding.bytes.high());
+    try testing.expectEqual(@as(u64, 8), w.encoding.bytes.c1());
+    try testing.expectEqual(types.Encoding.cp1252, w.encoding.again.with.encoding);
+    const again = w.encoding.again.description;
     try testing.expect(again.file.outcome.result == .pass);
     try testing.expectEqualStrings("cp1252", again.encoding);
     // A file that stopped for something else, or did not stop, is as it was.
     const fine = try lib.describe(env, a, "examples/data/harvest.csv", null, .{});
     try testing.expect(try of(env, a, .{ .path = "examples/data/harvest.csv" }, fine) == null);
+}
+
+test "a header of another width than its rows is read again with row 1 as data" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const env: lib.Env = .{ .io = testing.io, .gpa = testing.allocator };
+    const path = "examples/data/header_short.csv";
+    const d = try lib.describe(env, a, path, null, .{});
+    const g = (try of(env, a, .{ .path = path }, d)).?.header;
+    try testing.expectEqual(dialect.HeaderMode.no, g.with.header);
+    // Row 1, of 3 fields, is set aside, and types none of the 4 columns.
+    const read = g.description.file.read.?;
+    try testing.expectEqual(@as(u64, 1), read.rows_rejected);
+    const want = [_]schema.Type{ .int64, .date, .string, .decimal };
+    for (read.columns, want) |c, t| try testing.expectEqual(t, c.type);
+    // Pinned so already, there is nothing to read again.
+    var no: lib.Options = .{};
+    no.pins.header = .no;
+    try testing.expect(try of(env, a, .{ .path = path, .options = no }, d) == null);
 }
