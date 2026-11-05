@@ -371,6 +371,21 @@ pub const Inferred = struct {
     /// Rows narrower than the columns, left out, and the first one's line.
     short_rows: u64 = 0,
     short_line: u64 = 0,
+    /// Records with something after a closing quote, left out.
+    bad_quotes: Count = .{},
+};
+
+/// Records of a kind, and the first one's line.
+pub const Count = struct {
+    rows: u64 = 0,
+    line: u64 = 0,
+
+    /// Counts rec when it has problem p.
+    pub fn add(c: *Count, rec: records.Record, p: records.Problem) void {
+        if (rec.problem != p) return;
+        if (c.rows == 0) c.line = rec.line;
+        c.rows += 1;
+    }
 };
 
 /// Infers the file at path's columns, reading all of it, or the first
@@ -413,6 +428,7 @@ pub fn inferFile(env: Env, opts: Options, nulls: []const []const u8, path: []con
     var repeated: u64 = 0;
     var repeated_line: u64 = 0;
     var quotes: records.QuoteCheck = .{};
+    var bad_quotes: Count = .{};
     var stray: u64 = 0;
     const limit = opts.sample_rows orelse std.math.maxInt(u64);
     read: while (f.rows < limit) {
@@ -424,6 +440,7 @@ pub fn inferFile(env: Env, opts: Options, nulls: []const []const u8, path: []con
             stray += rec.stray_quotes;
             if (rec.problem != null) {
                 quotes.record(rec, batch.recordFields(i), verdict.fields, verdict.dialect, in.data(), in.base);
+                bad_quotes.add(rec, .bad_quote);
                 continue;
             }
             try records.values(gpa, batch.recordFields(i), in.data(), in.base, verdict.dialect, &scratch, &values);
@@ -481,6 +498,7 @@ pub fn inferFile(env: Env, opts: Options, nulls: []const []const u8, path: []con
         .wide_line = f.wide_line,
         .short_rows = f.short_rows,
         .short_line = f.short_line,
+        .bad_quotes = bad_quotes,
     };
 }
 

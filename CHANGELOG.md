@@ -45,6 +45,10 @@ and fields. Before 1.0 a breaking change is a minor bump.
   12"); the columns are now the rows' width as sniffed. A new note,
   `rows_short`, says how many short rows were left out, and `rows_wider`
   now comes for a file with no header too; both name the column count.
+- infer notes the rows it leaves out for something after a closing quote
+  (`rows_bad_quote`), as where a quote inside a quoted value is not
+  doubled. It left them out without a word, so infer on its own passed a
+  file that validate then failed.
 
 ## [0.4.0] - 2026-11-04
 

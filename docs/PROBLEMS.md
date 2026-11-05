@@ -101,6 +101,7 @@ infer prints these on stderr and goes on; only `files_*` make its exit 1.
 | `header_repeated` | `line`, `count` | records that were the header again, skipped: files joined? |
 | `rows_wider` | `rows`, `line` (the first), `columns` | rows with more fields than the columns (the header's, or with no header the rows' width as sniffed), left out: validate rejects them |
 | `rows_short` | `rows`, `line` (the first), `columns` | rows with fewer fields than the columns, left out, so their values do not type columns they do not belong to: validate rejects them |
+| `rows_bad_quote` | `rows`, `line` (the first) | rows with something after a closing quote, as where a quote inside a quoted value is not doubled, left out: validate rejects them |
 | `utf16_replaced` | `units` | UTF-16 code units that made no character, read as U+FFFD |
 | `column_widened` | `column`, `from`, `to`, `file` | a later file took a column the earlier ones agreed on to a lower type |
 | `column_tolerated` | `column`, `type`, `misfits`, `values`, `row`, the first | under `--threshold`, a column kept a type some of its values refuse; validate rejects those |
