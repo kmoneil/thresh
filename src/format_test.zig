@@ -11,6 +11,7 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const testing = std.testing;
 const dialect = @import("dialect.zig");
+const explain = @import("explain.zig");
 const lib = @import("lib.zig");
 const Problem = @import("problem.zig").Problem;
 const Field = @import("records.zig").Field;
@@ -25,7 +26,7 @@ const doc_text = @embedFile("report_doc");
 /// A field's JSON types, as a row's second cell names them. A problem is an
 /// object PROBLEMS.md describes, held to it by problems_doc_test.zig; a
 /// schema is one the schema's own table describes, held to it below.
-const Kind = enum { string, integer, number, boolean, null, array, object, problem, schema };
+const Kind = enum { string, integer, number, boolean, null, array, object, problem, schema, description };
 const Kinds = std.EnumSet(Kind);
 
 const Row = struct { kinds: Kinds, meaning: []const u8 };
@@ -75,32 +76,47 @@ fn kindOf(v: std.json.Value) Kind {
     };
 }
 
+/// The kinds a row may give an object that the walk goes no further into,
+/// each with the fields it must have, and of which kind when that matters:
+/// a problem, held to PROBLEMS.md elsewhere; a schema and a description,
+/// held to their own tables.
+const held = [_]struct { kind: Kind, what: []const u8, fields: []const struct { []const u8, ?Kind } }{
+    .{ .kind = .problem, .what = "a problem without its code and message", .fields = &.{ .{ "code", .string }, .{ "message", .string } } },
+    .{ .kind = .schema, .what = "a schema without its columns", .fields = &.{.{ "columns", null }} },
+    .{ .kind = .description, .what = "a description without its format_version and inferred", .fields = &.{ .{ "format_version", null }, .{ "inferred", null } } },
+};
+
+/// The kind of held that the row for path gives v, its fields checked;
+/// null when v is not an object or its row gives it none of them.
+fn heldKind(rows: *const Rows, path: []const u8, v: std.json.Value) !?Kind {
+    if (v != .object) return null;
+    const row = rows.get(path) orelse return null;
+    for (held) |h| {
+        if (!row.kinds.contains(h.kind)) continue;
+        for (h.fields) |f| {
+            const field = v.object.get(f[0]);
+            if (field != null and (f[1] == null or kindOf(field.?) == f[1].?)) continue;
+            std.debug.print("`{s}`: {s}\n", .{ path, h.what });
+            return error.TestUnexpectedResult;
+        }
+        return h.kind;
+    }
+    return null;
+}
+
 /// Each field under v, at its path: `a.b` for a field of an object,
 /// `a[]` for an array's items, `a{}` for a map's values (a row for
-/// `a{}` says a is one), and no further into a problem or a schema. An
-/// array's objects need no row of their own: their fields have them.
+/// `a{}` says a is one), and no further into a problem, a schema or a
+/// description. An array's objects need no row of their own: their
+/// fields have them.
 fn walk(a: Allocator, rows: *const Rows, seen: *std.StringArrayHashMapUnmanaged(Kinds), path: []const u8, v: std.json.Value) !void {
     const items_of_their_own = v == .object and std.mem.endsWith(u8, path, "[]") and !rows.contains(path);
     if (path.len > 0 and !items_of_their_own) {
-        const kind: Kind = if (v == .object and rows.contains(path) and rows.get(path).?.kinds.contains(.problem)) kind: {
-            const code = v.object.get("code");
-            const message = v.object.get("message");
-            if (code == null or code.? != .string or message == null or message.? != .string) {
-                std.debug.print("`{s}`: a problem without its code and message\n", .{path});
-                return error.TestUnexpectedResult;
-            }
-            break :kind .problem;
-        } else if (v == .object and rows.contains(path) and rows.get(path).?.kinds.contains(.schema)) kind: {
-            if (v.object.get("columns") == null) {
-                std.debug.print("`{s}`: a schema without its columns\n", .{path});
-                return error.TestUnexpectedResult;
-            }
-            break :kind .schema;
-        } else kindOf(v);
+        const stop = try heldKind(rows, path, v);
         const kinds = try seen.getOrPut(a, path);
         if (!kinds.found_existing) kinds.value_ptr.* = .empty;
-        kinds.value_ptr.insert(kind);
-        if (kind == .problem or kind == .schema) return;
+        kinds.value_ptr.insert(stop orelse kindOf(v));
+        if (stop != null) return;
     }
     switch (v) {
         .array => |items| {
@@ -294,6 +310,24 @@ test "docs/REPORT.md: the reports' fields, as thresh writes them" {
         .encoding = "utf8",
     }, i % 2 == 0 });
     _ = try expectRows(a, "describe", try descriptionRows(a), report.format_version, &descriptions);
+    // An explanation of each, its description held to describe's rows
+    // above: findings with a code and without, a file that fails, one
+    // that cannot be read.
+    var explanations: [files.len][]const u8 = undefined;
+    for (&explanations, files, 0..) |*x, f, i| {
+        const d: lib.Description = .{ .file = f, .schema = sample_schema, .inferred = i != 1, .encoding = "utf8" };
+        x.* = try written(a, explain.writeJson, .{ try explain.of(a, d, .{}), d, i % 2 == 0 });
+    }
+    _ = try expectDocumented(a, "explain", report.format_version, &explanations);
+    try expectValues(a, "explain", "result", report.Result);
+    try expectValues(a, "explain", "findings[].level", explain.Level);
+    // The kinds' own table: every kind explain gives, and no other.
+    const kinds = try documented(a, "explain kinds");
+    for (std.enums.values(explain.Kind)) |k| if (!kinds.contains(@tagName(k))) {
+        std.debug.print("docs/REPORT.md: explain's kind `{t}` has no row in its kinds\n", .{k});
+        return error.TestUnexpectedResult;
+    };
+    try testing.expectEqual(std.enums.values(explain.Kind).len, kinds.count());
     _ = try expectDocumented(a, "summary", report.format_version, &.{
         try written(a, report.writeSummary, .{ &[_]report.Outcome{ ok_outcome, error_outcome }, @as(u8, 2) }),
     });

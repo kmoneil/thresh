@@ -12,6 +12,7 @@ const build_options = @import("build_options");
 const cli = @import("cli.zig");
 const dialect = @import("dialect.zig");
 const report = @import("report.zig");
+const explain = @import("explain.zig");
 const problem = @import("problem.zig");
 const types = @import("types.zig");
 const Problem = problem.Problem;
@@ -105,6 +106,7 @@ fn execute(env: Env, args: []const []const u8, out: *Io.Writer, err: *Io.Writer)
         .run => validateFiles(env, &cfg, out, err),
         .convert => convertFiles(env, &cfg, out, err),
         .describe => describeFiles(env, &cfg, out, err),
+        .explain => explainFiles(env, &cfg, out, err),
     };
 }
 
@@ -168,6 +170,67 @@ fn describeFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Wri
     if (interrupt.requested()) return interrupted(err);
     for (ctx.texts) |t| try out.writeAll(t);
     return finishRun(env, cfg, outcomes, err);
+}
+
+/// explain: each file described (lib.describe, files in parallel) and said
+/// in plain words (explain.zig), on stdout in the order given with a blank
+/// line between; with --json a line apiece holding the explanation and the
+/// description, which then is all stdout holds; with --out, each one's JSON
+/// in DIR/<file>.explain.json too. The exit is the worst file's, a row set
+/// aside counting as a failure.
+fn explainFiles(env: Env, cfg: *const cli.Config, out: *Io.Writer, err: *Io.Writer) !Exit {
+    var owned: ?lib.OwnedSchema = if (cfg.schema != null or cfg.columns != null) (try loadSchema(env, cfg, err)) orelse return .usage else null;
+    defer if (owned) |*o| o.deinit();
+    const Ctx = struct {
+        options: lib.Options,
+        schema: ?*const lib.Schema,
+        files: []const []const u8,
+        names: []const []const u8,
+        texts: [][]const u8,
+        json: bool,
+        out_dir: ?[]const u8,
+
+        fn run(ctx: *anyopaque, w: *pool.Worker, i: usize) anyerror!report.Outcome {
+            const c: *@This() = @ptrCast(@alignCast(ctx));
+            const a = w.scratch.allocator();
+            const d = try lib.describe(w.env, a, c.files[i], c.schema, c.options);
+            const e = try explain.of(a, d, .{ .day_first = c.options.day_first });
+            if (c.out_dir) |dir| try writeExplanation(w.env, .{ .dir = dir, .name = c.names[i] }, e, d);
+            // The text outlives the file: the run's arena.
+            var text: Io.Writer.Allocating = .init(w.keep);
+            const said = if (c.json) explain.writeJson(&text.writer, e, d, true) else explain.writeText(&text.writer, e);
+            said catch return error.OutOfMemory;
+            c.texts[i] = text.written();
+            var o = d.file.outcome;
+            o.result = e.result;
+            return o;
+        }
+    };
+    var ctx: Ctx = .{
+        .options = try optionsOf(env.arena, cfg),
+        .schema = if (owned) |*o| &o.schema else null,
+        .files = cfg.files,
+        .names = try pool.uniqueNames(env.arena, cfg.files),
+        .texts = try env.arena.alloc([]const u8, cfg.files.len),
+        .json = cfg.json,
+        .out_dir = cfg.out,
+    };
+    @memset(ctx.texts, "");
+    const outcomes = try runPool(env, cfg, .{ .ctx = &ctx, .files = cfg.files, .run = Ctx.run }, out, err, true);
+    if (interrupt.requested()) return interrupted(err);
+    for (ctx.texts, 0..) |t, i| {
+        if (i > 0 and !cfg.json) try out.writeByte('\n');
+        try out.writeAll(t);
+    }
+    return finishRun(env, cfg, outcomes, err);
+}
+
+/// An explanation and its description as at.dir/<name>.explain.json.
+fn writeExplanation(e: lib.Env, at: render.Place, x: explain.Explanation, d: lib.Description) !void {
+    var sink: render.Sink = try .create(e.io, e.gpa, at.dir, at.name, ".explain.json");
+    defer sink.close(e.io, e.gpa);
+    try explain.writeJson(&sink.writer.interface, x, d, false);
+    try sink.writer.interface.flush();
 }
 
 /// How each file is read, from the flags; Ctrl-C (interrupt) cancels.
@@ -530,6 +593,7 @@ test {
     _ = @import("worker.zig");
     _ = render;
     _ = @import("infer.zig");
+    _ = explain;
     _ = lib;
     _ = pool;
     _ = interrupt;
@@ -593,6 +657,8 @@ test "--shapes-only: none of a file's values leaves thresh; --shape-names, none 
         &.{ "describe", file },
         &.{ "describe", file, "--columns", columns, "--json" },
         &.{ "describe", file, "--report", reports },
+        &.{ "explain", file, "--columns", columns },
+        &.{ "explain", file, "--json" },
     };
     for (runs) |args| {
         // Without the flags the markers are there: the test sees them.
@@ -690,6 +756,54 @@ test "describe --reject --report: every rejected row, the report and summary.jso
     try t.expectEqual(@as(i64, 1), summary.object.get("passed").?.integer);
     try t.expectEqual(@as(i64, 1), summary.object.get("failed").?.integer);
     try t.expectEqual(@as(i64, 1), summary.object.get("exit").?.integer);
+}
+
+/// What one explain run said and its exit status.
+fn explainRun(a: Allocator, args: []const []const u8) !struct { Exit, []const u8 } {
+    var out: Io.Writer.Allocating = .init(a);
+    var err: Io.Writer.Allocating = .init(a);
+    const code = try execute(.{ .io = std.testing.io, .gpa = std.testing.allocator, .arena = a }, args, &out.writer, &err.writer);
+    try std.testing.expectEqualStrings("", err.written());
+    return .{ code, out.written() };
+}
+
+test "explain: each file in plain words, in order, the exit the worst file's" {
+    const t = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const code, const said = try explainRun(a, &.{ "explain", "examples/data/harvest.csv", "examples/data/header_short.csv", "examples/data/none.csv" });
+    try t.expectEqual(Exit.unreadable, code);
+    var blocks = std.mem.splitSequence(u8, said, "\n\n");
+    try t.expect(std.mem.startsWith(u8, blocks.next().?, "examples/data/harvest.csv: Fine: 40 rows, none set aside.\n  Comma-separated"));
+    try t.expect(std.mem.startsWith(u8, blocks.next().?, "examples/data/header_short.csv: Stopped: row 1 is a header of 3 names"));
+    try t.expectEqualStrings("examples/data/none.csv: Cannot be read: no such file.\n", blocks.next().?);
+    try t.expectEqual(@as(?[]const u8, null), blocks.next());
+    // A row set aside fails the file, though --threshold passes it to describe.
+    const passed, _ = try explainRun(a, &.{ "describe", "examples/data/harvest_dirty.csv", "--threshold", "0.9", "--json", "--quiet" });
+    try t.expectEqual(Exit.ok, passed);
+    const failed, _ = try explainRun(a, &.{ "explain", "examples/data/harvest_dirty.csv", "--threshold", "0.9" });
+    try t.expectEqual(Exit.failed, failed);
+}
+
+test "explain --json --out: a line apiece on stdout, and the same kept in DIR" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const dir = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/explained", .{tmp.sub_path});
+    const code, const said = try explainRun(a, &.{ "explain", "examples/data/harvest_dirty.csv", "--json", "--out", dir });
+    try t.expectEqual(Exit.failed, code);
+    try t.expectEqual(@as(usize, 1), std.mem.count(u8, said, "\n"));
+    const line = try std.json.parseFromSliceLeaky(std.json.Value, a, said, .{});
+    try t.expectEqualStrings("fail", line.object.get("result").?.string);
+    try t.expectEqualStrings("harvest_dirty.csv", std.fs.path.basename(line.object.get("description").?.object.get("file").?.string));
+    const kept_text = try tmp.dir.readFileAlloc(t.io, "explained/harvest_dirty.csv.explain.json", a, .limited(1 << 20));
+    try t.expect(std.mem.count(u8, kept_text, "\n") > 1);
+    const kept = try std.json.parseFromSliceLeaky(std.json.Value, a, kept_text, .{});
+    try t.expectEqualStrings(line.object.get("summary").?.string, kept.object.get("summary").?.string);
 }
 
 test "worst keeps the higher status" {

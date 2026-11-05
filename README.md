@@ -448,6 +448,8 @@ thresh convert  <file>... --to csv|arrow        writes output; infers types if n
 thresh run      <file>... --schema s.json --to arrow --out dir/
 thresh describe <file>... [--schema s.json]     everything about each file in one JSON document
                 [--reject dir/] [--report dir/]  and its rejected rows and report, no schema needed
+thresh explain  <file>... [--json] [--out dir/]  each file in plain words: what is wrong, or that
+                                                it is fine; what to notice; what its columns hold
 ```
 
 Files run in parallel, one per worker (`--jobs`, default one per CPU).

@@ -1,6 +1,6 @@
 # Reports: the JSON thresh writes
 
-thresh writes seven kinds of JSON document for programs to read:
+thresh writes eight kinds of JSON document for programs to read:
 
 | Document | Written by | Where |
 | --- | --- | --- |
@@ -10,6 +10,7 @@ thresh writes seven kinds of JSON document for programs to read:
 | [A sniff line](#a-sniff-line-sniff---json) | sniff with `--json`; the C library's `thresh_sniff` | stdout, one line per input |
 | [An infer result](#an-infer-result-the-c-library) | the C library's `thresh_infer` | returned, one per call |
 | [A description](#a-description-describe) | describe; the C library's `thresh_describe` | stdout, one per input (a line apiece with `--json`) |
+| [An explanation](#an-explanation-explain) | explain with `--json` or `--out DIR` | stdout, a line per input; `DIR/<file>.explain.json` |
 | [The schema](#the-schema) | infer | stdout, or `--out FILE`; validate, convert and run read it with `--schema` |
 
 Every code in them (a problem, a warning, why a value was rejected) is
@@ -40,9 +41,9 @@ so `--reject` with either is refused.
 
 ## Versions
 
-Each document starts with `format_version`, an integer. The four reports
-share one number; the schema has its own, as a schema is also something
-people write and thresh reads.
+Each document starts with `format_version`, an integer. The reports, an
+explanation included, share one number; the schema has its own, as a
+schema is also something people write and thresh reads.
 
 A reader can rely on this:
 
@@ -53,10 +54,13 @@ A reader can rely on this:
   field it does not know.
 - **Codes are added without a new version.** A problem, warning or reason
   code a reader does not know should be treated as one more of its kind:
-  a problem that stopped the file, a warning, a rejected value.
+  a problem that stopped the file, a warning, a rejected value. So are
+  the kinds of an explanation's findings: one a reader does not know is
+  one more finding of its `level`.
 - **A field's listed values are closed.** `result`, `confidence`,
-  `escape`, `newline`, `type`, `match`, `utf8` and `fits` take only the
-  values given here; a new one takes the version to the next number.
+  `escape`, `newline`, `type`, `match`, `utf8`, `fits` and `level` take
+  only the values given here; a new one takes the version to the next
+  number.
 - **Order and spacing are not part of the format.** Fields may come in
   another order; the report and summary.json are indented, the lines are
   not.
@@ -310,6 +314,69 @@ a file is the same from run to run. And these:
 | `schema` | `schema` | when the file could be read: the schema it was read against, as [The schema](#the-schema) describes it, with an inferred one's `samples` and `stats` left out (`columns` has them) |
 | `notes` | `array` | what inference found, when it inferred: as an infer result's `files[].notes` and `notes` |
 | `notes[]` | `problem` | a [problem object](PROBLEMS.md#problems) |
+
+## An explanation (`explain`)
+
+What `thresh explain` says of a file, for code and for an AI: with
+`--json`, a line apiece on stdout; with `--out DIR`, indented, in
+`DIR/<file>.explain.json`. Without `--json` the same findings are
+printed as text, the summary on the file's own line and each other
+finding indented under it; that text is for people and is not part of
+the format.
+
+It holds the file's [description](#a-description-describe) whole, as
+`describe --json` writes it, and what explain makes of it: a result, one
+sentence for the file, and findings, each a sentence with a stable
+`kind`, so findings can be counted and grouped across files whatever
+their wording. Its `result` is the description's but for one thing: a
+file with a row set aside is `fail`, since in explain `--threshold`
+decides the columns' types and never passes a file with rows set aside.
+
+<!-- fields: explain -->
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `format_version` | `integer` | 1 |
+| `file` | `string` | the input's path, as it was given |
+| `result` | `string` | `pass`, `fail` or `error`: the description's, but `fail` when a row was set aside |
+| `summary` | `string` | the file in a sentence: its first problem finding's `text`, a file with no rows said so, or that it is fine and how many rows it has |
+| `findings` | `array` | what explain found: problems first, then notices, then info |
+| `findings[].kind` | `string` | what it is about, one of the kinds below |
+| `findings[].level` | `string` | `problem` (why the file is not fine), `notice` (worth acting on) or `info` (what the file is) |
+| `findings[].code` | `string` | when its kind has one: the [problem's code](PROBLEMS.md#problems) for `unreadable`, `stopped`, `fails` and `note`, or why rows or a value were set aside for `set_aside` |
+| `findings[].text` | `string` | the finding as a sentence, for people: its wording may change from version to version |
+| `description` | `description` | the file's [description](#a-description-describe) |
+
+The kinds, in the order explain gives them:
+
+<!-- fields: explain kinds -->
+| Kind | Level | Says |
+| --- | --- | --- |
+| `unreadable` | problem | the file could not be opened or read |
+| `stopped` | problem | the file stopped before its rows were read: its dialect is not settled, its header is another width than its rows, its quotes are data, it is not UTF-8 |
+| `fails` | problem | read, the file fails as a whole: a column the schema has and the header does not, a last line cut off |
+| `rows_set_aside` | problem | how many rows were set aside, of how many |
+| `set_aside` | problem | the rows set aside for one reason, and the first one's line; or one column's values that do not fit, and the first one |
+| `no_rows` | notice | a header and nothing under it, or an empty file |
+| `no_header` | notice | no header row, so the columns have no names (with a schema given: its names, in order) |
+| `header_repeated` | notice | the header row again further down, as where files were joined; skipped |
+| `extra_columns` | notice | the header has columns the schema does not |
+| `not_utf8` | notice | bytes that are not UTF-8, and the encodings to try |
+| `utf16_invalid` | notice | UTF-16 that makes no character |
+| `mixed_newlines` | notice | lines that end in more than one way |
+| `quote_in_unquoted` | notice | a quote mark inside a field that is not quoted, read as part of it |
+| `dates_ambiguous` | notice | a column's dates that read either day first or month first, and which thresh took |
+| `note` | notice | what inference said of the file, as its problem's sentence: a column typed from few values, a column a few values hold at text |
+| `written` | info | how the file is written: its separator, header, quoting, line ends and encoding |
+| `columns` | info | how many columns, and how many of each type |
+| `dates` | info | each date, time or timestamp column and how it is written (`MM/DD/YYYY`), and whether the day or the month comes first |
+| `digit_codes` | info | text columns of digits alone, kept as text for a leading zero or for more digits than a number holds |
+| `key` | info | a column different in every row, likely the key, and any others that are |
+| `one_value` | info | columns that hold one value throughout |
+| `empty_columns` | info | columns empty in every row |
+
+The claims about every row (`key`, `one_value`, `digit_codes`) are made
+only from statistics over every value, so a file past the statistics'
+limits (`limits.distinct`, `limits.sample_rows`) makes fewer of them.
 
 ## The schema
 

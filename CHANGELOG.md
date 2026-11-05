@@ -10,7 +10,18 @@ and fields. Before 1.0 a breaking change is a minor bump.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- `thresh explain FILE...`: each file in plain words, for a reader who
+  knows neither the file nor thresh. A line says what is wrong, or that
+  the file is fine; under it, the rows set aside and why, what to notice
+  (no header row, the header again, dates that read either way) and what
+  the file is (how it is written, its columns by type, its dates as
+  `MM/DD/YYYY`, a likely key, columns of one value or none, digit codes
+  kept as text). It works from what `describe` finds. Each finding has a
+  stable kind and a level, and `--json` (or `--out DIR`) gives them with
+  the file's whole description (docs/REPORT.md, "An explanation"). A row
+  set aside makes the file fail, exit 1, whatever `--threshold` allows.
 
 ## [0.4.0] - 2026-11-04
 
